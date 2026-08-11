@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""
+logrender — minimal VT100 line-buffer renderer for tmux session logs.
+
+Processes the raw terminal stream the same way a real terminal does:
+  - \r  → carriage return (go to column 0 on current line)
+  - \b  → backspace (move left one column)
+  - ESC[ND → cursor left N
+  - ESC[NC → cursor right N
+  - ESC[NG → cursor to absolute column N
+  - ESC[K / ESC[0K → erase to end of line
+  - ESC[2K / ESC[1K → erase whole/left line
+  - ESC[J / ESC[2J → erase display (skip line)
+  - OSC sequences (title/URL) → stripped
+  - All other ANSI sequences → stripped (including color codes)
+
+Result: clean plain text matching what `cat` renders in a real terminal.
+
+Usage:
+  logrender <file>
+  logrender          (reads stdin)
+"""
+
+import sys
+import re
+
+# ─── Regex patterns ───────────────────────────────────────────────────────────
+
+# OSC sequences: ESC ] ... BEL  or  ESC ] ... ST (ESC \)
+RE_OSC = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
+
+# CSI sequences: ESC [ ... <final byte>  — captured for selective processing
+RE_CSI = re.compile(r'\x1b\[([0-9;?]*)([A-Za-z])')
+
+# Remaining lone ESC sequences (ESC = ESC > ESC \ etc.)
+RE_ESC_MISC = re.compile(r'\x1b[^[\]]')
+
+# Non-printable control bytes we want to drop (but NOT \r \n \b which we handle)
+RE_CTRL = re.compile(r'[\x00-\x07\x0e-\x1f\x7f]')
+
+# TACMUX prompt timestamp: [Mon DD, YYYY - HH:MM:SS (TZ)]
+RE_PROMPT_TS = re.compile(
+    r'\[[A-Z][a-z]{2} \d{2}, \d{4} - \d{2}:\d{2}:\d{2} \([A-Z]{2,5}\)\]'
+)
+
+
+def render(data: str) -> str:
+    # Strip OSC and misc ESC first (they don't affect cursor position)
+    data = RE_OSC.sub('', data)
+    data = RE_ESC_MISC.sub('', data)
+
+    lines = []
+    # line buffer as a list of chars; pos = current column index
+    buf: list[str] = []
+    pos: int = 0
+
+    i = 0
+    n = len(data)
+
+    while i < n:
+        ch = data[i]
+
+        # ── newline ───────────────────────────────────────────────────────────
+        if ch == '\n':
+            lines.append(''.join(buf).rstrip())
+            buf = []
+            pos = 0
+            i += 1
+            continue
+
+        # ── carriage return ───────────────────────────────────────────────────
+        if ch == '\r':
+            pos = 0
+            i += 1
+            continue
+
+        # ── backspace ─────────────────────────────────────────────────────────
+        if ch == '\x08':
+            if pos > 0:
+                pos -= 1
+            i += 1
+            continue
+
+        # ── CSI sequence ──────────────────────────────────────────────────────
+        if ch == '\x1b' and i + 1 < n and data[i + 1] == '[':
+            m = RE_CSI.match(data, i)
+            if m:
+                params_str, final = m.group(1), m.group(2)
+                # Strip DEC private mode prefix '?' and parse numeric params
+                clean = params_str.lstrip('?')
+                try:
+                    params = [int(x) if x else 0 for x in clean.split(';')]
+                except ValueError:
+                    params = [0]
+
+                if final == 'D':      # cursor left
+                    n_cols = params[0] if params[0] else 1
+                    pos = max(0, pos - n_cols)
+
+                elif final == 'C':    # cursor right
+                    n_cols = params[0] if params[0] else 1
+                    pos += n_cols
+
+                elif final == 'G':    # cursor to column (1-based)
+                    col = (params[0] if params[0] else 1) - 1
+                    pos = max(0, col)
+
+                elif final == 'K':    # erase in line
+                    p = params[0]
+                    if p == 0:        # erase to end
+                        buf = buf[:pos]
+                    elif p == 1:      # erase to start
+                        buf = [' '] * pos + buf[pos:]
+                    elif p == 2:      # erase whole line
+                        buf = []
+                        pos = 0
+
+                elif final == 'J':    # erase display — just flush current line
+                    buf = buf[:pos]
+
+                # all other CSI sequences (colors, mode sets, etc.) — drop
+                i = m.end()
+                continue
+            else:
+                # malformed ESC[ — skip the ESC
+                i += 1
+                continue
+
+        # ── remaining lone ESC ────────────────────────────────────────────────
+        if ch == '\x1b':
+            i += 1
+            continue
+
+        # ── drop other non-printable control chars ────────────────────────────
+        if ord(ch) < 0x20 or ch == '\x7f':
+            i += 1
+            continue
+
+        # ── printable character — write into buffer at pos ────────────────────
+        if pos < len(buf):
+            buf[pos] = ch
+        else:
+            # extend with spaces if cursor jumped right past end
+            if pos > len(buf):
+                buf.extend([' '] * (pos - len(buf)))
+            buf.append(ch)
+        pos += 1
+        i += 1
+
+    # flush last line if no trailing newline
+    if buf:
+        lines.append(''.join(buf).rstrip())
+
+    return '\n'.join(lines)
+
+
+def clean(text: str) -> str:
+    """Post-process rendered output to remove common terminal artifacts."""
+    lines = text.split('\n')
+
+    # ── Split merged prompt lines (two timestamps on one line from \r redraw) ──
+    expanded = []
+    for line in lines:
+        hits = list(RE_PROMPT_TS.finditer(line))
+        if len(hits) >= 2:
+            prev = 0
+            for hit in hits[1:]:
+                expanded.append(line[prev:hit.start()].rstrip())
+                prev = hit.start()
+            expanded.append(line[prev:])
+        else:
+            expanded.append(line)
+    lines = expanded
+
+    # ── Strip runs of 3+ tilde-only lines (vim/less padding) ─────────────────
+    filtered = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip() == '~':
+            j = i
+            while j < len(lines) and lines[j].strip() == '~':
+                j += 1
+            if j - i < 3:              # short runs might be real output
+                filtered.extend(lines[i:j])
+            i = j
+        else:
+            filtered.append(lines[i])
+            i += 1
+    lines = filtered
+
+    # ── Strip animation artifacts (runs of ≥6 blank-or-sparse lines) ────────
+    # TUI apps animate text one char at a time via cursor positioning, leaving
+    # runs of lines with very few printable chars spread across wide columns.
+    cleaned = []
+    i = 0
+    while i < len(lines):
+        nws = sum(1 for c in lines[i] if not c.isspace())
+        if nws <= 3:
+            j = i
+            while j < len(lines):
+                nws_j = sum(1 for c in lines[j] if not c.isspace())
+                if nws_j <= 3:
+                    j += 1
+                else:
+                    break
+            if j - i >= 6:
+                i = j               # drop the whole run
+                continue
+            else:
+                cleaned.extend(lines[i:j])
+                i = j
+        else:
+            cleaned.append(lines[i])
+            i += 1
+    lines = cleaned
+
+    # ── Remove consecutively repeated blocks (screen re-render artifacts) ────
+    # Terminal re-renders (fzf, tab completion redraw, etc.) dump the same
+    # block of lines multiple times.  Keep one copy, drop the rest.
+    lines = _dedup_blocks(lines)
+
+    # ── Collapse 3+ consecutive identical lines → one + [×N] ────────────────
+    deduped = []
+    i = 0
+    while i < len(lines):
+        j = i + 1
+        while j < len(lines) and lines[j] == lines[i]:
+            j += 1
+        deduped.append(lines[i])
+        count = j - i
+        if count >= 3:
+            deduped.append(f'  [\u00d7{count}]')
+        elif count == 2:
+            deduped.append(lines[i])
+        i = j
+    lines = deduped
+
+    # ── Collapse 3+ consecutive blank lines → 1 ─────────────────────────────
+    result = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip() == '':
+            j = i
+            while j < len(lines) and lines[j].strip() == '':
+                j += 1
+            if j - i >= 3:
+                result.append('')       # collapse run to single blank
+            else:
+                result.extend(lines[i:j])
+            i = j
+        else:
+            result.append(lines[i])
+            i += 1
+
+    return '\n'.join(result)
+
+
+def _dedup_blocks(lines):
+    """Remove consecutively repeated blocks of 5+ lines."""
+    n = len(lines)
+    if n < 10:
+        return lines
+
+    result = []
+    i = 0
+
+    while i < n:
+        max_bl = min(60, (n - i) // 2)
+        best_bl = 0
+        best_reps = 0
+
+        for bl in range(max_bl, 4, -1):
+            # Fast skip: first lines of the two blocks must match
+            if lines[i] != lines[i + bl]:
+                continue
+            if lines[i:i + bl] == lines[i + bl:i + 2 * bl]:
+                reps = 2
+                j = i + 2 * bl
+                while j + bl <= n and lines[j:j + bl] == lines[i:i + bl]:
+                    reps += 1
+                    j += bl
+                best_bl = bl
+                best_reps = reps
+                break           # greedy — take largest matching block
+
+        if best_bl > 0:
+            result.extend(lines[i:i + best_bl])
+            i += best_bl * best_reps
+        else:
+            result.append(lines[i])
+            i += 1
+
+    return result
+
+
+def main():
+    path = sys.argv[1] if len(sys.argv) > 1 else None
+    if path:
+        with open(path, 'rb') as f:
+            raw = f.read()
+    else:
+        raw = sys.stdin.buffer.read()
+
+    text = raw.decode('utf-8', errors='replace')
+    print(clean(render(text)))
+
+
+if __name__ == '__main__':
+    main()

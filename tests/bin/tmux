@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+    attach|attach-session|switch-client) exit 0 ;;
+esac
+
+exec /usr/bin/tmux -S "$TACMUX_TEST_SOCKET" "$@"

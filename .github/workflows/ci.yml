@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y tmux zsh fzf
+
+      - name: Check shell syntax
+        run: |
+          zsh -n bin/tacmux lib/*.zsh lib/*.sh tests/test_tmux_integration.zsh
+          bash -n install.sh uninstall.sh bin/tacmux-clip bin/logview lib/tacmux-completions.bash tests/bin/tmux scripts/public-audit.sh
+
+      - name: Run unit and installer tests
+        run: python3 -m pytest -q
+
+      - name: Run isolated tmux integration test
+        run: tests/test_tmux_integration.zsh
+
+      - name: Run public-repository audit
+        run: scripts/public-audit.sh

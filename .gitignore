@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Shell
+*.log
+
+# Secrets and local configuration
+.env
+.env.*
+*.key
+*.pem
+id_rsa*
+id_ed25519*
+
+# Archives and generated workspaces
+*.tar.gz
+workspace/
+archives/
+
+# Local agent state
+.claude/
+.codex/
+.agents/

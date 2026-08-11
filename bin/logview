@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+#
+# logview — fzf-based log browser for TACMUX workspaces
+#
+# Default preview uses logrender: a minimal VT100 line-buffer emulator that
+# processes \r, ^H, and cursor-movement escape sequences the same way a real
+# terminal does — giving clean output identical to `cat` in a terminal.
+#
+# Usage:
+#   logview                           # browse $TACMUX_LOG_DIR and $TACMUX_WORKSPACE
+#   logview ~/logs                    # browse a specific directory
+#   logview ~/logs /workspace         # browse multiple directories
+#
+# Keybindings inside fzf:
+#   Enter     open file in less -SR (rendered, no wrap)
+#   alt-r     rendered preview (default — VT100-emulated, clean)
+#   alt-c     raw color preview (ANSI codes passed through)
+#   ctrl-d    toggle preview pane visibility
+#   ctrl-y    copy selected file path through `tacmux clip`
+
+set -euo pipefail
+
+# ─── Config ───────────────────────────────────────────────────────────────────
+
+TACMUX_HOME="${TACMUX_HOME:-$HOME/.local/share/tacmux}"
+TACMUX_CONFIG="${TACMUX_CONFIG:-$HOME/.config/tacmux/tacmux.conf}"
+[[ -f "$TACMUX_CONFIG" ]] && source "$TACMUX_CONFIG"
+: "${TACMUX_WORKSPACE:=$HOME/workspace}"
+: "${TACMUX_LOG_DIR:=$HOME/logs}"
+
+SCRIPT_PATH="$(realpath "$0")"
+RENDERER="${TACMUX_HOME}/bin/logrender"
+# Fallback: check alongside this script
+[[ ! -f "$RENDERER" ]] && RENDERER="$(dirname "$SCRIPT_PATH")/logrender"
+
+DEFAULT_DIRS=("$TACMUX_LOG_DIR" "$TACMUX_WORKSPACE")
+
+# ─── Preview modes ────────────────────────────────────────────────────────────
+
+preview_rendered() {
+    local file="$1"
+    [[ -r "$file" ]] || { echo "File not readable: $file"; return 1; }
+    python3 "$RENDERER" "$file"
+}
+
+preview_raw_color() {
+    local file="$1"
+    [[ -r "$file" ]] || { echo "File not readable: $file"; return 1; }
+    sed \
+        -e $'s/\r//g' \
+        -e 's/\x1b\][^\x07]*\x07//g' \
+        -e $'s/\x1b\][^\x1b]*\x1b\\\\//g' \
+        -e 's/\x1b\[[0-9;?]*[A-HJKSTf]//g' \
+        -e 's/\x1b[=>]//g' \
+        -e 's/\x1b\[?[0-9]*[hl]//g' \
+        "$file"
+}
+
+# ─── Internal dispatch (called by fzf --preview) ─────────────────────────────
+
+case "${1:-}" in
+    --preview-rendered)  preview_rendered  "${2}"; exit 0 ;;
+    --preview-raw-color) preview_raw_color "${2}"; exit 0 ;;
+esac
+
+# ─── Build file list ─────────────────────────────────────────────────────────
+
+if [[ $# -gt 0 ]]; then
+    SEARCH_DIRS=("$@")
+else
+    SEARCH_DIRS=("${DEFAULT_DIRS[@]}")
+fi
+
+log_files() {
+    for dir in "${SEARCH_DIRS[@]}"; do
+        [[ -d "$dir" ]] || continue
+        find "$dir" -type f -iname "*.log" \
+            -not -path "*/.git/*" \
+            -printf '%T@ %p\n' \
+            2>/dev/null
+    done | sort -rn | cut -d' ' -f2-
+}
+
+# ─── Main fzf log browser ────────────────────────────────────────────────────
+
+log_files \
+| fzf \
+    --ansi \
+    --prompt="logs > " \
+    --header="Enter:less -SR  alt-r:rendered(default)  alt-c:raw-color  ctrl-d:toggle-preview  ctrl-y:copy-path" \
+    --preview="$SCRIPT_PATH --preview-rendered {}" \
+    --preview-window="right:60%:wrap" \
+    --preview-label=" rendered " \
+    --bind="alt-r:change-preview($SCRIPT_PATH --preview-rendered {})+change-preview-label( rendered )" \
+    --bind="alt-c:change-preview($SCRIPT_PATH --preview-raw-color {})+change-preview-label( raw-color )" \
+    --bind="ctrl-d:toggle-preview" \
+    --bind="ctrl-y:execute-silent(printf %s {} | tacmux clip)" \
+    --bind="enter:become(python3 $RENDERER {} | less -SR)"
