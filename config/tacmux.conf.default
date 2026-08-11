@@ -14,6 +14,10 @@
 # Auto-start logging on new panes/windows (true/false)
 #TACMUX_AUTOLOG="true"
 
+# Permissions for newly created data. 077 is owner-only; use 027 only when an
+# approved local group must share an engagement workspace.
+#TACMUX_UMASK="077"
+
 # Target subdirectories (space-separated)
 #TACMUX_TARGET_DIRS="recon exploitation loot screenshots reports logs"
 

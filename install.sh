@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+# Installation state and newly created workspaces may lead directly to client
+# evidence. Do not let the caller's permissive shell umask make them public.
+umask 077
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${TACMUX_HOME:-$HOME/.local/share/tacmux}"
 BIN_DIR="$HOME/.local/bin"
@@ -79,7 +83,9 @@ install_block() {
 step "Installing TACMUX"
 mkdir -p "$INSTALL_DIR"/{bin,lib,tmux} "$BIN_DIR" "$CONFIG_DIR"
 cp "$SCRIPT_DIR"/bin/{tacmux,tacmux-clip,logview,logrender} "$INSTALL_DIR/bin/"
-cp "$SCRIPT_DIR"/lib/* "$INSTALL_DIR/lib/"
+for library_file in "$SCRIPT_DIR"/lib/*; do
+    [[ -f "$library_file" ]] && cp "$library_file" "$INSTALL_DIR/lib/"
+done
 cp "$SCRIPT_DIR"/tmux/* "$INSTALL_DIR/tmux/"
 chmod +x "$INSTALL_DIR"/bin/* "$INSTALL_DIR"/lib/tacmux-{logging,pane-guard,status}.sh
 cp "$INSTALL_DIR/bin/tacmux" "$BIN_DIR/tacmux"

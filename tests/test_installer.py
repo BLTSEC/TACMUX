@@ -1,4 +1,5 @@
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -36,6 +37,12 @@ def test_install_reinstall_and_uninstall_preserve_user_data(tmp_path):
     assert "tacmux-core" not in zshrc
     assert (home / ".local/bin/tacmux").is_file()
     assert (home / ".local/share/tacmux/lib/tacmux-logging.sh").is_file()
+    assert (home / ".local/share/tacmux/lib/tacmux-manifest.py").is_file()
+    assert stat.S_IMODE((home / ".config/tacmux").stat().st_mode) == 0o700
+    assert stat.S_IMODE(
+        (home / ".config/tacmux/tacmux.conf").stat().st_mode
+    ) == 0o600
+    assert stat.S_IMODE(workspace.stat().st_mode) == 0o700
 
     evidence = workspace / "keep-me.txt"
     evidence.write_text("preserve")

@@ -11,13 +11,23 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2ea44f"></a>
 </p>
 
-TACMUX turns tmux into a repeatable assessment workspace: one command creates the target tree, starts a session, exports routing context, and logs every pane. It uses native tmux features—no plugin manager or runtime plugin dependency.
+TACMUX is the target-aware execution and evidence layer for terminal-based security assessments. One command creates the target tree, starts tmux, exports routing context, and logs every pane to the correct evidence directory.
+
+> **Start a target once. Every pane inherits its context, logs to the right place, and is ready to archive.**
+
+It uses native tmux features—no plugin manager, database, daemon, cloud account, or runtime plugin dependency.
 
 > Use TACMUX only on systems and engagements you are authorized to assess. Review scope, logging, evidence handling, and retention requirements before testing.
 
-## Install
+## Before you install
 
-Requires Linux, tmux 3.2+, zsh, and Python 3. `fzf` and `autorecon` are optional.
+TACMUX is ready to clone and install as an unprivileged user. It requires Linux, Git, tmux 3.2+, zsh, and Python 3. `fzf` and `autorecon` are optional.
+
+The installer writes under `~/.local`, `~/.config/tacmux`, and your shell configuration. If `~/.tmux.conf` already exists, TACMUX adds only its integration block; otherwise it installs the complete default tmux configuration. Existing configuration and workspace data are preserved.
+
+New workspaces, logs, archives, and manifests are owner-only by default (`umask 077`). Existing data is not recursively re-permissioned. Filesystems that ignore Unix modes—including some VM shared folders, FAT volumes, and network mounts—cannot enforce this protection; keep sensitive assessment evidence on a local encrypted Linux filesystem or an approved protected volume.
+
+## Install
 
 ```bash
 git clone https://github.com/BLTSEC/TACMUX.git
@@ -26,7 +36,7 @@ cd TACMUX
 exec "$SHELL" -l
 ```
 
-The installer uses the full TACMUX tmux configuration when `~/.tmux.conf` does not exist. If one already exists, it adds only the bindings and hooks in `tacmux-integration.conf`. Existing configuration and workspace data are preserved.
+Confirm the installation with `tacmux health`. No root privileges are required by TACMUX itself.
 
 ## Start in 60 seconds
 
@@ -55,7 +65,7 @@ Inside each session, `TARGET`, `RPORT`, and `TACMUX_TARGET` identify the host an
 - Context-aware pane logs under the active target; ordinary tmux sessions fall back to `~/logs`.
 - Secure remote copy paths through tmux `load-buffer -w`, with Wayland, X11, macOS, and OSC 52 fallbacks.
 - A minimal engagement root for authorization, scope, activity, payloads, attack path, and findings.
-- Target lifecycle commands for pause, resume, status, rename, archive, and interactive selection.
+- Target lifecycle commands for pause, resume, status, rename, and archive. Every archive receives a JSON sidecar manifest with context, counts, and SHA-256 hashes for the tarball and each archived file.
 - Optional AutoRecon launch with `-a`, and shared workspace routing when [NOCAP](https://github.com/BLTSEC/NOCAP) is installed.
 
 ## Commands
@@ -65,7 +75,7 @@ tacmux engagement [name|clear]      Show or select workspace mode
 tacmux start [-n] [-a] <target>     Create and attach to a target session
 tacmux pause|resume|status <target> Manage a target session
 tacmux stop <target> [archive]      Stop it, optionally archive it
-tacmux archive <target>             Create a timestamped tar.gz
+tacmux archive <target>             Create a tar.gz and SHA-256 manifest
 tacmux rename <old> <new>           Rename workspace and live session
 tacmux list | tacmux pick           Find active target sessions
 tacmux mkop <directory>             Create only the target directory tree
@@ -125,8 +135,11 @@ TACMUX_WORKSPACE="$HOME/workspace"
 TACMUX_ARCHIVE_DIR="$HOME/archives"
 TACMUX_LOG_DIR="$HOME/logs"
 TACMUX_AUTOLOG="true"
+TACMUX_UMASK="077"
 TACMUX_TARGET_DIRS="recon exploitation loot screenshots reports logs"
 ```
+
+Use `TACMUX_UMASK="027"` only when an approved local group must share newly created data. TACMUX does not change permissions on pre-existing workspace content.
 
 Useful installer modes:
 

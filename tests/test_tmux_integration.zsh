@@ -55,6 +55,10 @@ wait_for '[[ "$(tmux display-message -t "$session:0.1" -p "#{pane_pipe}")" == 1 
     fail "split pane did not start logging" || exit 1
 wait_for 'rg -q TACMUX_LOG_MARKER "$TACMUX_WORKSPACE/acme/targets/10.20.0.20/logs"' || \
     fail "pane output was not logged" || exit 1
+target_log=$(find "$TACMUX_WORKSPACE/acme/targets/10.20.0.20/logs" -type f -name '*.log' | head -1)
+[[ "$(stat -c %a "$target_log")" == 600 ]] || fail "target log was not private" || exit 1
+[[ "$(stat -c %a "$TACMUX_WORKSPACE/acme/targets/10.20.0.20")" == 700 ]] || \
+    fail "target workspace was not private" || exit 1
 
 printf 'osc52-test' | tacmux clip
 [[ "$(tmux show-buffer)" == osc52-test ]] || fail "tmux clipboard buffer mismatch" || exit 1
@@ -74,5 +78,6 @@ wait_for '[[ "$(tmux display-message -t "=plain:" -p "#{pane_pipe}")" == 1 ]]' |
     fail "ordinary tmux session did not start fallback logging" || exit 1
 plain_log=$(tmux show-option -p -t '=plain:' -qv @tacmux_log_file)
 [[ "$plain_log" == "$TACMUX_LOG_DIR"/* ]] || fail "ordinary session used target log path" || exit 1
+[[ "$(stat -c %a "$plain_log")" == 600 ]] || fail "fallback log was not private" || exit 1
 
 print -- '[PASS] target/fallback logging, routing, no-log, and clipboard'

@@ -12,6 +12,15 @@ TACMUX_CONFIG="${TACMUX_CONFIG:-$HOME/.config/tacmux/tacmux.conf}"
 : "${TACMUX_WORKSPACE:=$HOME/workspace}"
 : "${TACMUX_LOG_DIR:=$HOME/logs}"
 : "${TACMUX_AUTOLOG:=true}"
+: "${TACMUX_UMASK:=077}"
+
+case "$TACMUX_UMASK" in
+    [0-7][0-7][0-7]|0[0-7][0-7][0-7]) umask "$TACMUX_UMASK" ;;
+    *) print -u2 -- "tacmux log: invalid TACMUX_UMASK '$TACMUX_UMASK'"; exit 2 ;;
+esac
+typeset -gi _tx_umask_value=$(( 8#$TACMUX_UMASK ))
+typeset -g _tx_file_mode
+printf -v _tx_file_mode '%03o' $(( 8#666 & ~_tx_umask_value ))
 
 _tx_log_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -94,6 +103,7 @@ _tx_log_start() {
         print -r -- "Date: $(_tx_log_ts)"
         print -r -- "================================"
     } >> "$log_file"
+    chmod "$_tx_file_mode" "$log_file" || return 1
 
     tmux pipe-pane -t "$pane" -o "$pipe_command"
     tmux set-option -p -t "$pane" @tacmux_log_file "$log_file"
@@ -122,6 +132,7 @@ _tx_log_capture() {
     _tx_log_path "$pane" scrollback || return 1
     local log_file="$reply[1]"
     tmux capture-pane -t "$pane" -S -50000 -p > "$log_file"
+    chmod "$_tx_file_mode" "$log_file" || return 1
     tmux display-message -t "$pane" "Scrollback saved: ${log_file:t}"
     print -r -- "$log_file"
 }

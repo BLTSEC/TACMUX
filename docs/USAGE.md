@@ -58,7 +58,30 @@ tacmux stop dc01 archive            # stop, then create tar.gz
 tacmux archive dc01                 # archive an inactive workspace
 ```
 
-`archive` asks before stopping an attached session and again before deleting the source directory. Archives go to `TACMUX_ARCHIVE_DIR`.
+`archive` asks before stopping an attached session and again before deleting the source directory. Archives go to `TACMUX_ARCHIVE_DIR` and are created with a JSON sidecar:
+
+```text
+acme_targets_dc01_20260811_150000.tar.gz
+acme_targets_dc01_20260811_150000.tar.gz.manifest.json
+```
+
+The `tacmux.archive-manifest/v1` document is generated from the completed tarball. It records the UTC creation time, TACMUX version, engagement, target, relative workspace route, tmux session, archive size and SHA-256, entry counts, and each regular file's modification time, size, and SHA-256. Links and their timestamps are recorded without following them outside the archive. Usernames, hostnames, and absolute local paths are intentionally omitted.
+
+To verify the tarball against a manifest when `jq` and GNU `sha256sum` are available:
+
+```bash
+manifest=/path/to/archive.tar.gz.manifest.json
+jq -r '"\(.archive.sha256)  \(.archive.filename)"' "$manifest" |
+  (cd "$(dirname "$manifest")" && sha256sum -c -)
+```
+
+The manifest proves integrity relative to the sidecar; it is not a digital signature. Store or transmit both files through the engagement's approved evidence channel.
+
+## Data permissions
+
+TACMUX applies `umask 077` at install time and whenever its workspace or logging runtime creates data. New directories are therefore normally mode `700`; new logs, notes, archives, manifests, and state files are normally mode `600`.
+
+Set `TACMUX_UMASK="027"` in `~/.config/tacmux/tacmux.conf` only for an approved group-shared workflow. Existing files are not recursively changed. Some VM shared folders, network mounts, and non-Unix filesystems ignore or emulate permission bits; use a protected local Linux filesystem for sensitive evidence.
 
 ## Logging
 

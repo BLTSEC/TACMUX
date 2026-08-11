@@ -20,7 +20,7 @@ Usage: tacmux <command> [arguments]
   start [-n] [-a] <target>     Start a target session
   stop <target> [archive]      Stop a target session
   pause|resume|status <target> Manage a target session
-  archive <target>             Archive a target workspace
+  archive <target>             Archive with a SHA-256 manifest
   rename <old> <new>           Rename a target workspace
   list | pick                  Find active target sessions
   mkop <directory>             Create a target directory tree

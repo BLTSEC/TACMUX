@@ -3,7 +3,7 @@
 # Internal command library. The installer does not source this into user shells.
 # https://github.com/BLTSEC/TACMUX
 
-TACMUX_VERSION="1.0.0"
+TACMUX_VERSION="1.1.0"
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -28,6 +28,21 @@ _tacmux_load_engagement_state
 : "${TACMUX_TARGET_DIRS:=recon exploitation loot screenshots reports logs}"
 : "${TACMUX_NOCAP_INTEGRATION:=true}"
 : "${TACMUX_COLOR:=true}"
+: "${TACMUX_UMASK:=077}"
+
+# Assessment workspaces routinely contain credentials, payloads, client data,
+# and complete terminal transcripts. New TACMUX data is private to the current
+# user unless an operator deliberately selects a group-sharing umask such as 027.
+case "$TACMUX_UMASK" in
+    [0-7][0-7][0-7]|0[0-7][0-7][0-7]) umask "$TACMUX_UMASK" ;;
+    *)
+        echo "TACMUX: invalid TACMUX_UMASK '$TACMUX_UMASK' (expected 077, 027, or similar)" >&2
+        return 1 2>/dev/null || exit 1
+        ;;
+esac
+typeset -gi _tx_umask_value=$(( 8#$TACMUX_UMASK ))
+typeset -g _tx_file_mode
+printf -v _tx_file_mode '%03o' $(( 8#666 & ~_tx_umask_value ))
 
 # ─── Nocap Integration ───────────────────────────────────────────────────────
 
@@ -531,7 +546,9 @@ _tacmux_list() {
     done <<< "$sessions"
 }
 
-# Archive completed engagement
+# Archive a completed target and write a sidecar manifest derived from the
+# finished tarball. Hashing the archive itself avoids races with a live source
+# tree and makes the manifest describe the exact bytes an operator preserves.
 _tacmux_archive() {
     local target="${1:-}"
 
@@ -547,6 +564,8 @@ _tacmux_archive() {
     local archive_dir="$TACMUX_ARCHIVE_DIR"
     # Flatten the engagement separator so the archive name reflects the full path.
     local archive_file="$archive_dir/${relpath//\//_}_$(date +%Y%m%d_%H%M%S).tar.gz"
+    local manifest_file="${archive_file}.manifest.json"
+    local created_utc=$(_tx_ts)
 
     if [[ ! -d "$base_dir" ]]; then
         echo "Engagement directory not found: $base_dir"
@@ -569,7 +588,28 @@ _tacmux_archive() {
 
     echo "Creating archive..."
     if tar -czf "$archive_file" -C "$TACMUX_WORKSPACE" -- "$relpath"; then
+        chmod "$_tx_file_mode" "$archive_file" || {
+            echo "${_tx_red}Failed to secure archive permissions:${_tx_reset} $archive_file"
+            return 1
+        }
+
+        if ! python3 "$TACMUX_HOME/lib/tacmux-manifest.py" \
+            --archive "$archive_file" \
+            --output "$manifest_file" \
+            --file-mode "$_tx_file_mode" \
+            --created-utc "$created_utc" \
+            --tacmux-version "$TACMUX_VERSION" \
+            --engagement "${TACMUX_ENGAGEMENT:-}" \
+            --target "$workspace_name" \
+            --workspace-relative-path "$relpath" \
+            --session "$session"; then
+            echo "${_tx_red}Archive manifest generation failed.${_tx_reset}"
+            echo "Archive retained and source preserved: $archive_file"
+            return 1
+        fi
+
         echo "${_tx_green}Archive created:${_tx_reset} $archive_file"
+        echo "Manifest: $manifest_file"
         echo "Archive size: $(ls -lh "$archive_file" | awk '{print $5}')"
 
         read -q "REPLY?Remove original engagement directory? (y/N): "
@@ -751,6 +791,7 @@ _tacmux_show_config() {
     echo "  TACMUX_TARGET_DIRS   = $TACMUX_TARGET_DIRS"
     echo "  TACMUX_NOCAP_INTEGRATION = $TACMUX_NOCAP_INTEGRATION"
     echo "  TACMUX_COLOR         = $TACMUX_COLOR"
+    echo "  TACMUX_UMASK         = $TACMUX_UMASK"
     echo
     if [[ -f "$TACMUX_CONFIG" ]]; then
         echo "${_tx_dim}Config loaded from: $TACMUX_CONFIG${_tx_reset}"
@@ -771,7 +812,7 @@ ${_tx_bold}Usage:${_tx_reset} tacmux <command> [arguments]
   start [-n] [-a] <target>     Create and attach to a logged session
   pause|resume|status <target> Manage a target session
   stop <target> [archive]      Stop it, optionally archive it
-  archive <target>             Create a timestamped tar.gz
+  archive <target>             Create a tar.gz and SHA-256 manifest
   rename <old> <new>           Rename a target workspace and session
   list | pick                  List or interactively select sessions
   mkop <directory>             Create only the target directory tree

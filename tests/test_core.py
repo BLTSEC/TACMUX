@@ -1,4 +1,7 @@
+import hashlib
+import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -59,6 +62,14 @@ def test_engagement_state_and_structure(tmp_path):
         """,
     )
     assert result.returncode == 0, result.stderr
+
+    engagement = tmp_path / "workspace/acme_client"
+    assert stat.S_IMODE(engagement.stat().st_mode) == 0o700
+    assert stat.S_IMODE((engagement / "ENGAGEMENT.md").stat().st_mode) == 0o600
+    assert stat.S_IMODE((engagement / "notes").stat().st_mode) == 0o700
+    assert stat.S_IMODE(
+        (tmp_path / "home/.config/tacmux/engagementrc").stat().st_mode
+    ) == 0o600
 
 
 def test_state_file_overrides_inherited_session_context(tmp_path):
@@ -130,7 +141,7 @@ def test_cli_version_and_unknown_command(tmp_path):
         capture_output=True,
     )
     assert version.returncode == 0
-    assert version.stdout.strip() == "tacmux 1.0.0"
+    assert version.stdout.strip() == "tacmux 1.1.0"
     unknown = subprocess.run(
         [str(ROOT / "bin/tacmux"), "nope"],
         env=env,
@@ -138,3 +149,78 @@ def test_cli_version_and_unknown_command(tmp_path):
         capture_output=True,
     )
     assert unknown.returncode == 2
+
+
+def test_archive_manifest_hashes_exact_tar_contents(tmp_path):
+    target = tmp_path / "workspace/acme/targets/dc01"
+    (target / "logs").mkdir(parents=True)
+    (target / "logs/session.log").write_bytes(b"command output\n")
+    (target / "notes.txt").write_text("finding notes\n")
+    (target / "latest.log").symlink_to("logs/session.log")
+
+    result = run_zsh(
+        tmp_path,
+        f"""
+        source {CORE}
+        export TACMUX_ENGAGEMENT=acme
+        tmux() {{ return 1 }}
+        read() {{ REPLY=n }}
+        _tacmux_archive dc01
+        """,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Archived files: 2" in result.stdout
+    assert "Archive SHA-256:" in result.stdout
+
+    archives = list((tmp_path / "archives").glob("*.tar.gz"))
+    manifests = list((tmp_path / "archives").glob("*.manifest.json"))
+    assert len(archives) == 1
+    assert len(manifests) == 1
+    archive, manifest = archives[0], manifests[0]
+    assert stat.S_IMODE(archive.stat().st_mode) == 0o600
+    assert stat.S_IMODE(manifest.stat().st_mode) == 0o600
+
+    document = json.loads(manifest.read_text())
+    assert document["schema"] == "tacmux.archive-manifest/v1"
+    assert document["tacmux_version"] == "1.1.0"
+    assert document["context"] == {
+        "engagement": "acme",
+        "target": "dc01",
+        "workspace_relative_path": "acme/targets/dc01",
+        "tmux_session": "op_acme_targets_dc01",
+    }
+    assert document["archive"]["filename"] == archive.name
+    assert document["archive"]["size_bytes"] == archive.stat().st_size
+    assert document["archive"]["sha256"] == hashlib.sha256(
+        archive.read_bytes()
+    ).hexdigest()
+    assert document["contents"]["file_count"] == 2
+    assert document["contents"]["link_count"] == 1
+    assert document["contents"]["total_file_bytes"] == len(
+        b"command output\nfinding notes\n"
+    )
+    files = {item["path"]: item for item in document["contents"]["files"]}
+    assert all(item["modified_utc"].endswith("Z") for item in files.values())
+    assert files["acme/targets/dc01/logs/session.log"]["sha256"] == hashlib.sha256(
+        b"command output\n"
+    ).hexdigest()
+    assert files["acme/targets/dc01/notes.txt"]["sha256"] == hashlib.sha256(
+        b"finding notes\n"
+    ).hexdigest()
+
+
+def test_configurable_group_umask(tmp_path):
+    result = run_zsh(
+        tmp_path,
+        f"""
+        export TACMUX_UMASK=027
+        source {CORE}
+        [[ "$_tx_file_mode" == 640 ]]
+        _tacmux_mkop "$TACMUX_WORKSPACE/shared"
+        printf private > "$TACMUX_WORKSPACE/shared/sample.txt"
+        [[ "$(stat -c %a "$TACMUX_WORKSPACE/shared")" == 750 ]]
+        [[ "$(stat -c %a "$TACMUX_WORKSPACE/shared/logs")" == 750 ]]
+        [[ "$(stat -c %a "$TACMUX_WORKSPACE/shared/sample.txt")" == 640 ]]
+        """,
+    )
+    assert result.returncode == 0, result.stderr
