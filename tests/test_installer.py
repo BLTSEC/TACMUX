@@ -13,7 +13,11 @@ def test_install_reinstall_and_uninstall_preserve_user_data(tmp_path):
     (home / ".bashrc").write_text("# user bash config\n")
     workspace = tmp_path / "workspace"
     env = os.environ.copy()
-    env.update(HOME=str(home), PATH=f"{home}/.local/bin:{env['PATH']}")
+    env.update(
+        HOME=str(home),
+        XDG_CONFIG_HOME=str(home / ".config"),
+        PATH=f"{home}/.local/bin:{env['PATH']}",
+    )
 
     command = [
         str(ROOT / "install.sh"),
