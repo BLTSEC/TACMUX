@@ -62,7 +62,7 @@ Inside each session, `TARGET`, `RPORT`, and `TACMUX_TARGET` identify the host an
 
 ## What you get
 
-- Context-aware pane logs under the active target; ordinary tmux sessions fall back to `~/logs`.
+- Context-aware pane logs under the active target; ordinary tmux sessions fall back to `~/logs`. Raw logs remain authoritative, and the default viewer does not deduplicate evidence.
 - Secure remote copy paths through tmux `load-buffer -w`, with Wayland, X11, macOS, and OSC 52 fallbacks.
 - A minimal engagement root for authorization, scope, activity, payloads, attack path, and findings.
 - Target lifecycle commands for pause, resume, status, rename, and archive. Every archive receives a JSON sidecar manifest with context, counts, and SHA-256 hashes for the tarball and each archived file.
@@ -79,7 +79,7 @@ tacmux archive <target>             Create a tar.gz and SHA-256 manifest
 tacmux rename <old> <new>           Rename workspace and live session
 tacmux list | tacmux pick           Find active target sessions
 tacmux mkop <directory>             Create only the target directory tree
-tacmux logs [directory...]          Browse logs with fzf
+tacmux logs [directory...]          Browse logs; Alt-k enables compact preview
 tacmux log <action>                 start|force|stop|toggle|capture|status
 tacmux clip                         Copy stdin to the trusted clipboard path
 tacmux health | config | help       Diagnose or inspect TACMUX

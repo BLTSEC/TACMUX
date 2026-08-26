@@ -1,309 +1,161 @@
 #!/usr/bin/env python3
-"""
-logrender — minimal VT100 line-buffer renderer for tmux session logs.
+"""Render raw TACMUX pane logs without rewriting or dropping evidence."""
 
-Processes the raw terminal stream the same way a real terminal does:
-  - \r  → carriage return (go to column 0 on current line)
-  - \b  → backspace (move left one column)
-  - ESC[ND → cursor left N
-  - ESC[NC → cursor right N
-  - ESC[NG → cursor to absolute column N
-  - ESC[K / ESC[0K → erase to end of line
-  - ESC[2K / ESC[1K → erase whole/left line
-  - ESC[J / ESC[2J → erase display (skip line)
-  - OSC sequences (title/URL) → stripped
-  - All other ANSI sequences → stripped (including color codes)
+from __future__ import annotations
 
-Result: clean plain text matching what `cat` renders in a real terminal.
-
-Usage:
-  logrender <file>
-  logrender          (reads stdin)
-"""
-
+import argparse
+import codecs
 import sys
-import re
+from collections.abc import Iterator
+from typing import BinaryIO
 
-# ─── Regex patterns ───────────────────────────────────────────────────────────
-
-# OSC sequences: ESC ] ... BEL  or  ESC ] ... ST (ESC \)
-RE_OSC = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
-
-# CSI sequences: ESC [ ... <final byte>  — captured for selective processing
-RE_CSI = re.compile(r'\x1b\[([0-9;?]*)([A-Za-z])')
-
-# Remaining lone ESC sequences (ESC = ESC > ESC \ etc.)
-RE_ESC_MISC = re.compile(r'\x1b[^[\]]')
-
-# Non-printable control bytes we want to drop (but NOT \r \n \b which we handle)
-RE_CTRL = re.compile(r'[\x00-\x07\x0e-\x1f\x7f]')
-
-# TACMUX prompt timestamp: [Mon DD, YYYY - HH:MM:SS (TZ)]
-RE_PROMPT_TS = re.compile(
-    r'\[[A-Z][a-z]{2} \d{2}, \d{4} - \d{2}:\d{2}:\d{2} \([A-Z]{2,5}\)\]'
-)
+COL_CAP = 500
 
 
-def render(data: str) -> str:
-    # Strip OSC and misc ESC first (they don't affect cursor position)
-    data = RE_OSC.sub('', data)
-    data = RE_ESC_MISC.sub('', data)
+class TerminalLine:
+    def __init__(self) -> None:
+        self.buffer: list[str] = []
+        self.column = 0
+        self.mode = "text"
+        self.escape = ""
+        self.osc_escape = False
 
-    lines = []
-    # line buffer as a list of chars; pos = current column index
-    buf: list[str] = []
-    pos: int = 0
+    def flush(self) -> str:
+        line = "".join(self.buffer).rstrip()
+        self.buffer = []
+        self.column = 0
+        return line
 
-    i = 0
-    n = len(data)
+    def csi(self, value: str) -> None:
+        final = value[-1:] or ""
+        try:
+            params = [int(item) if item else 0 for item in value[:-1].lstrip("?").split(";")]
+        except ValueError:
+            params = [0]
+        amount = params[0] if params else 0
+        if final == "D":
+            self.column = max(0, self.column - (amount or 1))
+        elif final == "C":
+            self.column = min(self.column + (amount or 1), COL_CAP)
+        elif final == "G":
+            self.column = min(max(0, (amount or 1) - 1), COL_CAP)
+        elif final == "K":
+            if amount == 0:
+                self.buffer = self.buffer[: self.column]
+            elif amount == 1:
+                if self.column > len(self.buffer):
+                    self.buffer.extend([" "] * (self.column - len(self.buffer)))
+                for index in range(min(self.column + 1, len(self.buffer))):
+                    self.buffer[index] = " "
+            elif amount == 2:
+                self.buffer = []
+                self.column = 0
+        elif final == "J" and amount in {0, 2}:
+            self.buffer = self.buffer[: self.column] if amount == 0 else []
+            if amount == 2:
+                self.column = 0
 
-    while i < n:
-        ch = data[i]
-
-        # ── newline ───────────────────────────────────────────────────────────
-        if ch == '\n':
-            lines.append(''.join(buf).rstrip())
-            buf = []
-            pos = 0
-            i += 1
-            continue
-
-        # ── carriage return ───────────────────────────────────────────────────
-        if ch == '\r':
-            pos = 0
-            i += 1
-            continue
-
-        # ── backspace ─────────────────────────────────────────────────────────
-        if ch == '\x08':
-            if pos > 0:
-                pos -= 1
-            i += 1
-            continue
-
-        # ── CSI sequence ──────────────────────────────────────────────────────
-        if ch == '\x1b' and i + 1 < n and data[i + 1] == '[':
-            m = RE_CSI.match(data, i)
-            if m:
-                params_str, final = m.group(1), m.group(2)
-                # Strip DEC private mode prefix '?' and parse numeric params
-                clean = params_str.lstrip('?')
-                try:
-                    params = [int(x) if x else 0 for x in clean.split(';')]
-                except ValueError:
-                    params = [0]
-
-                if final == 'D':      # cursor left
-                    n_cols = params[0] if params[0] else 1
-                    pos = max(0, pos - n_cols)
-
-                elif final == 'C':    # cursor right
-                    n_cols = params[0] if params[0] else 1
-                    pos += n_cols
-
-                elif final == 'G':    # cursor to column (1-based)
-                    col = (params[0] if params[0] else 1) - 1
-                    pos = max(0, col)
-
-                elif final == 'K':    # erase in line
-                    p = params[0]
-                    if p == 0:        # erase to end
-                        buf = buf[:pos]
-                    elif p == 1:      # erase to start
-                        buf = [' '] * pos + buf[pos:]
-                    elif p == 2:      # erase whole line
-                        buf = []
-                        pos = 0
-
-                elif final == 'J':    # erase display — just flush current line
-                    buf = buf[:pos]
-
-                # all other CSI sequences (colors, mode sets, etc.) — drop
-                i = m.end()
-                continue
-            else:
-                # malformed ESC[ — skip the ESC
-                i += 1
-                continue
-
-        # ── remaining lone ESC ────────────────────────────────────────────────
-        if ch == '\x1b':
-            i += 1
-            continue
-
-        # ── drop other non-printable control chars ────────────────────────────
-        if ord(ch) < 0x20 or ch == '\x7f':
-            i += 1
-            continue
-
-        # ── printable character — write into buffer at pos ────────────────────
-        if pos < len(buf):
-            buf[pos] = ch
-        else:
-            # extend with spaces if cursor jumped right past end
-            if pos > len(buf):
-                buf.extend([' '] * (pos - len(buf)))
-            buf.append(ch)
-        pos += 1
-        i += 1
-
-    # flush last line if no trailing newline
-    if buf:
-        lines.append(''.join(buf).rstrip())
-
-    return '\n'.join(lines)
-
-
-def clean(text: str) -> str:
-    """Post-process rendered output to remove common terminal artifacts."""
-    lines = text.split('\n')
-
-    # ── Split merged prompt lines (two timestamps on one line from \r redraw) ──
-    expanded = []
-    for line in lines:
-        hits = list(RE_PROMPT_TS.finditer(line))
-        if len(hits) >= 2:
-            prev = 0
-            for hit in hits[1:]:
-                expanded.append(line[prev:hit.start()].rstrip())
-                prev = hit.start()
-            expanded.append(line[prev:])
-        else:
-            expanded.append(line)
-    lines = expanded
-
-    # ── Strip runs of 3+ tilde-only lines (vim/less padding) ─────────────────
-    filtered = []
-    i = 0
-    while i < len(lines):
-        if lines[i].strip() == '~':
-            j = i
-            while j < len(lines) and lines[j].strip() == '~':
-                j += 1
-            if j - i < 3:              # short runs might be real output
-                filtered.extend(lines[i:j])
-            i = j
-        else:
-            filtered.append(lines[i])
-            i += 1
-    lines = filtered
-
-    # ── Strip animation artifacts (runs of ≥6 blank-or-sparse lines) ────────
-    # TUI apps animate text one char at a time via cursor positioning, leaving
-    # runs of lines with very few printable chars spread across wide columns.
-    cleaned = []
-    i = 0
-    while i < len(lines):
-        nws = sum(1 for c in lines[i] if not c.isspace())
-        if nws <= 3:
-            j = i
-            while j < len(lines):
-                nws_j = sum(1 for c in lines[j] if not c.isspace())
-                if nws_j <= 3:
-                    j += 1
+    def feed(self, text: str) -> list[str]:
+        lines: list[str] = []
+        for char in text:
+            if self.mode == "osc":
+                if char == "\x07" or (self.osc_escape and char == "\\"):
+                    self.mode = "text"
+                    self.osc_escape = False
                 else:
-                    break
-            if j - i >= 6:
-                i = j               # drop the whole run
+                    self.osc_escape = char == "\x1b"
+                continue
+            if self.mode == "esc":
+                if char == "[":
+                    self.mode = "csi"
+                    self.escape = ""
+                elif char == "]":
+                    self.mode = "osc"
+                    self.osc_escape = False
+                else:
+                    self.mode = "text"
+                continue
+            if self.mode == "csi":
+                self.escape += char
+                if "@" <= char <= "~":
+                    self.csi(self.escape)
+                    self.mode = "text"
+                    self.escape = ""
+                elif len(self.escape) > 64:
+                    self.mode = "text"
+                    self.escape = ""
+                continue
+
+            if char == "\x1b":
+                self.mode = "esc"
+            elif char == "\n":
+                lines.append(self.flush())
+            elif char == "\r":
+                self.column = 0
+            elif char == "\x08":
+                self.column = max(0, self.column - 1)
+            elif char == "\t":
+                stop = min(((self.column // 8) + 1) * 8, COL_CAP)
+                if stop > len(self.buffer):
+                    self.buffer.extend([" "] * (stop - len(self.buffer)))
+                self.column = stop
+            elif ord(char) < 0x20 or char == "\x7f":
                 continue
             else:
-                cleaned.extend(lines[i:j])
-                i = j
-        else:
-            cleaned.append(lines[i])
-            i += 1
-    lines = cleaned
-
-    # ── Remove consecutively repeated blocks (screen re-render artifacts) ────
-    # Terminal re-renders (fzf, tab completion redraw, etc.) dump the same
-    # block of lines multiple times.  Keep one copy, drop the rest.
-    lines = _dedup_blocks(lines)
-
-    # ── Collapse 3+ consecutive identical lines → one + [×N] ────────────────
-    deduped = []
-    i = 0
-    while i < len(lines):
-        j = i + 1
-        while j < len(lines) and lines[j] == lines[i]:
-            j += 1
-        deduped.append(lines[i])
-        count = j - i
-        if count >= 3:
-            deduped.append(f'  [\u00d7{count}]')
-        elif count == 2:
-            deduped.append(lines[i])
-        i = j
-    lines = deduped
-
-    # ── Collapse 3+ consecutive blank lines → 1 ─────────────────────────────
-    result = []
-    i = 0
-    while i < len(lines):
-        if lines[i].strip() == '':
-            j = i
-            while j < len(lines) and lines[j].strip() == '':
-                j += 1
-            if j - i >= 3:
-                result.append('')       # collapse run to single blank
-            else:
-                result.extend(lines[i:j])
-            i = j
-        else:
-            result.append(lines[i])
-            i += 1
-
-    return '\n'.join(result)
-
-
-def _dedup_blocks(lines):
-    """Remove consecutively repeated blocks of 5+ lines."""
-    n = len(lines)
-    if n < 10:
+                if self.column < len(self.buffer):
+                    self.buffer[self.column] = char
+                else:
+                    if self.column > len(self.buffer):
+                        self.buffer.extend([" "] * (self.column - len(self.buffer)))
+                    self.buffer.append(char)
+                self.column += 1
         return lines
 
-    result = []
-    i = 0
 
-    while i < n:
-        max_bl = min(60, (n - i) // 2)
-        best_bl = 0
-        best_reps = 0
+def iter_rendered(stream: BinaryIO, chunk_size: int = 65536) -> Iterator[str]:
+    terminal = TerminalLine()
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    for chunk in iter(lambda: stream.read(chunk_size), b""):
+        yield from terminal.feed(decoder.decode(chunk))
+    yield from terminal.feed(decoder.decode(b"", final=True))
+    if terminal.buffer:
+        yield terminal.flush()
 
-        for bl in range(max_bl, 4, -1):
-            # Fast skip: first lines of the two blocks must match
-            if lines[i] != lines[i + bl]:
-                continue
-            if lines[i:i + bl] == lines[i + bl:i + 2 * bl]:
-                reps = 2
-                j = i + 2 * bl
-                while j + bl <= n and lines[j:j + bl] == lines[i:i + bl]:
-                    reps += 1
-                    j += bl
-                best_bl = bl
-                best_reps = reps
-                break           # greedy — take largest matching block
 
-        if best_bl > 0:
-            result.extend(lines[i:i + best_bl])
-            i += best_bl * best_reps
-        else:
-            result.append(lines[i])
-            i += 1
-
+def compact(lines: list[str]) -> list[str]:
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        end = index + 1
+        while end < len(lines) and lines[end] == lines[index]:
+            end += 1
+        count = end - index
+        result.append(lines[index])
+        if count >= 3:
+            result.append(f"  [×{count}]")
+        elif count == 2:
+            result.append(lines[index])
+        index = end
     return result
 
 
-def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else None
-    if path:
-        with open(path, 'rb') as f:
-            raw = f.read()
-    else:
-        raw = sys.stdin.buffer.read()
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="logrender")
+    parser.add_argument("--compact", action="store_true", help="condense repeated lines")
+    parser.add_argument("file", nargs="?")
+    args = parser.parse_args()
 
-    text = raw.decode('utf-8', errors='replace')
-    print(clean(render(text)))
+    stream = open(args.file, "rb") if args.file else sys.stdin.buffer
+    try:
+        lines = iter_rendered(stream)
+        if args.compact:
+            lines = iter(compact(list(lines)))
+        for line in lines:
+            print(line)
+    finally:
+        if args.file:
+            stream.close()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

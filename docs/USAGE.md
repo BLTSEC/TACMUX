@@ -103,7 +103,7 @@ tacmux logs /path/to/logs
 
 `Ctrl+Space T`, `S`, `L`, `H`, and `q` provide the same common controls. `H` intentionally forces a fallback log rather than target routing.
 
-Raw tmux logs contain terminal control sequences. The bundled log browser uses `logrender` to show a clean terminal-like view without rewriting the evidence file.
+Raw `.log` files are authoritative. The browser renders terminal control sequences without rewriting the file and preserves repeated or sparse lines by default. Press `Alt-k` for an explicitly compact preview.
 
 ## Clipboard over SSH
 
@@ -130,8 +130,9 @@ This does not select an engagement or start tmux.
 When NOCAP integration is enabled, TACMUX exports `NOCAP_WORKSPACE` and supplies each session’s relative target route so `cap` output lands in the same tree:
 
 ```bash
-cap nmap -sC -sV "$TARGET"
-cap recon whatweb "http://$TARGET"
+cap -a nmap -sC -sV "$TARGET"
+cap -a whatweb "http://$TARGET"
+cap timeline --format md
 ```
 
 Disable it with `TACMUX_NOCAP_INTEGRATION="false"`.

@@ -3,7 +3,7 @@
 # Internal command library. The installer does not source this into user shells.
 # https://github.com/BLTSEC/TACMUX
 
-TACMUX_VERSION="1.1.0"
+TACMUX_VERSION="1.2.0"
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -361,9 +361,6 @@ _tacmux_start() {
         -e "TACMUX_TARGET=$relpath"
         -e "RPORT=$raw_port"
         -e "NOCAP_WORKSPACE=$TACMUX_WORKSPACE"
-        # NOCAP 1.1.x still reads this legacy routing key. It is session-local
-        # and is not part of TACMUX's public configuration or command surface.
-        -e "LOADOUT_TARGET=$relpath"
         -e "TACMUX_BOOTSTRAP=1"
         -e "TACMUX_NO_AUTOLOG=$no_log"
     )
@@ -882,8 +879,6 @@ _tacmux_rename() {
         fi
         tmux set-environment -t "=$new_session" TARGET "$new_ws"
         tmux set-environment -t "=$new_session" TACMUX_TARGET "$new_rel"
-        # Temporary NOCAP 1.1.x compatibility; see _tacmux_start.
-        tmux set-environment -t "=$new_session" LOADOUT_TARGET "$new_rel"
 
         # Re-pipe logging to new directory
         if [[ "$(tmux show-environment -t "=$new_session" TACMUX_NO_AUTOLOG 2>/dev/null)" != "TACMUX_NO_AUTOLOG=1" ]]; then

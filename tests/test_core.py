@@ -17,7 +17,6 @@ def run_zsh(tmp_path, script, **extra_env):
         "TACMUX_TARGET",
         "TARGET",
         "RPORT",
-        "LOADOUT_TARGET",
     ):
         env.pop(name, None)
     env.update(
@@ -121,7 +120,6 @@ def test_no_log_start_uses_canonical_engagement_route(tmp_path):
         args=$(<"$HOME/new-session-args")
         [[ "$args" == *"-s op_acme_targets_targets_file_safe"* ]]
         [[ "$args" == *"-e TACMUX_TARGET=acme/targets/targets_file_safe"* ]]
-        [[ "$args" == *"-e LOADOUT_TARGET=acme/targets/targets_file_safe"* ]]
         [[ "$args" == *"-e TACMUX_NO_AUTOLOG=1"* ]]
         [[ -d "$TACMUX_WORKSPACE/acme/targets/targets_file_safe/recon" ]]
         [[ -d "$TACMUX_WORKSPACE/acme/targets/targets_file_safe/logs" ]]
@@ -141,7 +139,7 @@ def test_cli_version_and_unknown_command(tmp_path):
         capture_output=True,
     )
     assert version.returncode == 0
-    assert version.stdout.strip() == "tacmux 1.1.0"
+    assert version.stdout.strip() == "tacmux 1.2.0"
     unknown = subprocess.run(
         [str(ROOT / "bin/tacmux"), "nope"],
         env=env,
@@ -182,7 +180,7 @@ def test_archive_manifest_hashes_exact_tar_contents(tmp_path):
 
     document = json.loads(manifest.read_text())
     assert document["schema"] == "tacmux.archive-manifest/v1"
-    assert document["tacmux_version"] == "1.1.0"
+    assert document["tacmux_version"] == "1.2.0"
     assert document["context"] == {
         "engagement": "acme",
         "target": "dc01",

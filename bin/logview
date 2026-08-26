@@ -43,6 +43,12 @@ preview_rendered() {
     python3 "$RENDERER" "$file"
 }
 
+preview_compact() {
+    local file="$1"
+    [[ -r "$file" ]] || { echo "File not readable: $file"; return 1; }
+    python3 "$RENDERER" --compact "$file"
+}
+
 preview_raw_color() {
     local file="$1"
     [[ -r "$file" ]] || { echo "File not readable: $file"; return 1; }
@@ -60,6 +66,7 @@ preview_raw_color() {
 
 case "${1:-}" in
     --preview-rendered)  preview_rendered  "${2}"; exit 0 ;;
+    --preview-compact)   preview_compact   "${2}"; exit 0 ;;
     --preview-raw-color) preview_raw_color "${2}"; exit 0 ;;
 esac
 
@@ -87,11 +94,12 @@ log_files \
 | fzf \
     --ansi \
     --prompt="logs > " \
-    --header="Enter:less -SR  alt-r:rendered(default)  alt-c:raw-color  ctrl-d:toggle-preview  ctrl-y:copy-path" \
+    --header="Enter:less -SR  alt-r:safe(default)  alt-k:compact  alt-c:raw-color  ctrl-d:toggle-preview  ctrl-y:copy-path" \
     --preview="$SCRIPT_PATH --preview-rendered {}" \
     --preview-window="right:60%:wrap" \
     --preview-label=" rendered " \
     --bind="alt-r:change-preview($SCRIPT_PATH --preview-rendered {})+change-preview-label( rendered )" \
+    --bind="alt-k:change-preview($SCRIPT_PATH --preview-compact {})+change-preview-label( compact )" \
     --bind="alt-c:change-preview($SCRIPT_PATH --preview-raw-color {})+change-preview-label( raw-color )" \
     --bind="ctrl-d:toggle-preview" \
     --bind="ctrl-y:execute-silent(printf %s {} | tacmux clip)" \
