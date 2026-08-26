@@ -62,7 +62,7 @@ Inside each session, `TARGET`, `RPORT`, and `TACMUX_TARGET` identify the host an
 
 ## What you get
 
-- Context-aware pane logs under the active target; ordinary tmux sessions fall back to `~/logs`. Raw logs remain authoritative, and the default viewer does not deduplicate evidence.
+- Context-aware pane logs under the active target; ordinary tmux sessions fall back to `~/logs`. Raw logs remain authoritative. The default rendered view is non-compacting and preserves repeated and sparse rendered lines; compact mode explicitly removes prompt redraw, padding, animation, and repeated-output artifacts.
 - Secure remote copy paths through tmux `load-buffer -w`, with Wayland, X11, macOS, and OSC 52 fallbacks.
 - A minimal engagement root for authorization, scope, activity, payloads, attack path, and findings.
 - Target lifecycle commands for pause, resume, status, rename, and archive. Every archive receives a JSON sidecar manifest with context, counts, and SHA-256 hashes for the tarball and each archived file.

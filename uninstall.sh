@@ -9,7 +9,7 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tacmux"
 remove_block() {
     local file="$1" temporary
     [[ -f "$file" ]] || return 0
-    temporary=$(mktemp "${file##*/}.XXXXXX")
+    temporary=$(mktemp "${file}.XXXXXX")
     awk '
         $0 == "# >>> TACMUX >>>" { skip=1; next }
         $0 == "# <<< TACMUX <<<" { skip=0; next }

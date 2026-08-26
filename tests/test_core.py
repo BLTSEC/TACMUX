@@ -3,6 +3,7 @@ import json
 import os
 import stat
 import subprocess
+import tarfile
 from pathlib import Path
 
 
@@ -177,6 +178,10 @@ def test_archive_manifest_hashes_exact_tar_contents(tmp_path):
     archive, manifest = archives[0], manifests[0]
     assert stat.S_IMODE(archive.stat().st_mode) == 0o600
     assert stat.S_IMODE(manifest.stat().st_mode) == 0o600
+    with tarfile.open(archive, "r:gz") as bundle:
+        names = [member.name for member in bundle.getmembers()]
+    assert not any(Path(name).name.startswith("._") for name in names)
+    assert not any("__MACOSX" in Path(name).parts for name in names)
 
     document = json.loads(manifest.read_text())
     assert document["schema"] == "tacmux.archive-manifest/v1"
@@ -216,9 +221,9 @@ def test_configurable_group_umask(tmp_path):
         [[ "$_tx_file_mode" == 640 ]]
         _tacmux_mkop "$TACMUX_WORKSPACE/shared"
         printf private > "$TACMUX_WORKSPACE/shared/sample.txt"
-        [[ "$(stat -c %a "$TACMUX_WORKSPACE/shared")" == 750 ]]
-        [[ "$(stat -c %a "$TACMUX_WORKSPACE/shared/logs")" == 750 ]]
-        [[ "$(stat -c %a "$TACMUX_WORKSPACE/shared/sample.txt")" == 640 ]]
         """,
     )
     assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE((tmp_path / "workspace/shared").stat().st_mode) == 0o750
+    assert stat.S_IMODE((tmp_path / "workspace/shared/logs").stat().st_mode) == 0o750
+    assert stat.S_IMODE((tmp_path / "workspace/shared/sample.txt").stat().st_mode) == 0o640

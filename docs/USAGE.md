@@ -103,7 +103,10 @@ tacmux logs /path/to/logs
 
 `Ctrl+Space T`, `S`, `L`, `H`, and `q` provide the same common controls. `H` intentionally forces a fallback log rather than target routing.
 
-Raw `.log` files are authoritative. The browser renders terminal control sequences without rewriting the file and preserves repeated or sparse lines by default. Press `Alt-k` for an explicitly compact preview.
+Raw `.log` files are authoritative. The browser resolves terminal control
+sequences without rewriting the file and preserves repeated and sparse rendered
+lines by default. Press `Alt-k` for the explicitly lossy compact preview, which
+removes prompt redraw, padding, animation, and repeated-output artifacts.
 
 ## Clipboard over SSH
 

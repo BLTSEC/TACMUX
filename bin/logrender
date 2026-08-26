@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Render raw TACMUX pane logs without rewriting or dropping evidence."""
+"""Render TACMUX pane logs; the untouched raw log remains authoritative."""
 
 from __future__ import annotations
 
 import argparse
 import codecs
+import re
 import sys
 from collections.abc import Iterator
 from typing import BinaryIO
 
 COL_CAP = 500
+PROMPT_TIMESTAMP = re.compile(
+    r"\[[A-Z][a-z]{2} \d{2}, \d{4} - \d{2}:\d{2}:\d{2} \([A-Z]{2,5}\)\]"
+)
 
 
 class TerminalLine:
@@ -122,7 +126,85 @@ def iter_rendered(stream: BinaryIO, chunk_size: int = 65536) -> Iterator[str]:
         yield terminal.flush()
 
 
+def deduplicate_blocks(lines: list[str]) -> list[str]:
+    """Keep one copy of consecutively repeated terminal redraw blocks."""
+    if len(lines) < 10:
+        return lines
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        max_size = min(60, (len(lines) - index) // 2)
+        block_size = repetitions = 0
+        for size in range(max_size, 4, -1):
+            if lines[index] != lines[index + size]:
+                continue
+            if lines[index : index + size] != lines[index + size : index + 2 * size]:
+                continue
+            block_size = size
+            repetitions = 2
+            cursor = index + 2 * size
+            while (
+                cursor + size <= len(lines)
+                and lines[cursor : cursor + size] == lines[index : index + size]
+            ):
+                repetitions += 1
+                cursor += size
+            break
+        if block_size:
+            result.extend(lines[index : index + block_size])
+            index += block_size * repetitions
+        else:
+            result.append(lines[index])
+            index += 1
+    return result
+
+
 def compact(lines: list[str]) -> list[str]:
+    """Apply the legacy lossy cleanup only when explicitly requested."""
+    expanded: list[str] = []
+    for line in lines:
+        timestamps = list(PROMPT_TIMESTAMP.finditer(line))
+        if len(timestamps) < 2:
+            expanded.append(line)
+            continue
+        start = 0
+        for timestamp in timestamps[1:]:
+            expanded.append(line[start : timestamp.start()].rstrip())
+            start = timestamp.start()
+        expanded.append(line[start:])
+
+    without_padding: list[str] = []
+    index = 0
+    while index < len(expanded):
+        end = index + 1
+        if expanded[index].strip() == "~":
+            while end < len(expanded) and expanded[end].strip() == "~":
+                end += 1
+            if end - index < 3:
+                without_padding.extend(expanded[index:end])
+            index = end
+            continue
+        without_padding.append(expanded[index])
+        index += 1
+
+    without_animation: list[str] = []
+    index = 0
+    while index < len(without_padding):
+        if sum(not char.isspace() for char in without_padding[index]) > 3:
+            without_animation.append(without_padding[index])
+            index += 1
+            continue
+        end = index + 1
+        while (
+            end < len(without_padding)
+            and sum(not char.isspace() for char in without_padding[end]) <= 3
+        ):
+            end += 1
+        if end - index < 6:
+            without_animation.extend(without_padding[index:end])
+        index = end
+
+    lines = deduplicate_blocks(without_animation)
     result: list[str] = []
     index = 0
     while index < len(lines):
@@ -136,12 +218,29 @@ def compact(lines: list[str]) -> list[str]:
         elif count == 2:
             result.append(lines[index])
         index = end
-    return result
+
+    collapsed: list[str] = []
+    index = 0
+    while index < len(result):
+        if result[index].strip():
+            collapsed.append(result[index])
+            index += 1
+            continue
+        end = index + 1
+        while end < len(result) and not result[end].strip():
+            end += 1
+        collapsed.extend(result[index : index + 1] if end - index >= 3 else result[index:end])
+        index = end
+    return collapsed
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="logrender")
-    parser.add_argument("--compact", action="store_true", help="condense repeated lines")
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="apply lossy prompt, padding, animation, and repetition cleanup",
+    )
     parser.add_argument("file", nargs="?")
     args = parser.parse_args()
 

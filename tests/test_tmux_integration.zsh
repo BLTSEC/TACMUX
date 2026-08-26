@@ -5,6 +5,7 @@ setopt pipe_fail
 
 ROOT="${0:A:h:h}"
 TEST_ROOT=$(mktemp -d /tmp/tacmux-integration.XXXXXX) || exit 1
+export TACMUX_REAL_TMUX=$(command -v tmux)
 export TACMUX_TEST_SOCKET="$TEST_ROOT/tmux.sock"
 export HOME="$TEST_ROOT/home"
 export PATH="$HOME/.local/bin:$ROOT/tests/bin:$PATH"
@@ -18,12 +19,15 @@ export TACMUX_COLOR=false
 export TMUX=test
 
 cleanup() {
-    /usr/bin/tmux -S "$TACMUX_TEST_SOCKET" kill-server >/dev/null 2>&1 || true
+    "$TACMUX_REAL_TMUX" -S "$TACMUX_TEST_SOCKET" kill-server >/dev/null 2>&1 || true
     [[ "$TEST_ROOT" == /tmp/tacmux-integration.* ]] && rm -rf -- "$TEST_ROOT"
 }
 trap cleanup EXIT INT TERM
 
 fail() { print -u2 -- "[FAIL] $*"; return 1; }
+mode_of() {
+    python3 -c 'import stat, sys; print(oct(stat.S_IMODE(__import__("os").stat(sys.argv[1]).st_mode))[2:])' "$1"
+}
 wait_for() {
     local command="$1"
     local attempt
@@ -56,8 +60,8 @@ wait_for '[[ "$(tmux display-message -t "$session:0.1" -p "#{pane_pipe}")" == 1 
 wait_for 'rg -q TACMUX_LOG_MARKER "$TACMUX_WORKSPACE/acme/targets/10.20.0.20/logs"' || \
     fail "pane output was not logged" || exit 1
 target_log=$(find "$TACMUX_WORKSPACE/acme/targets/10.20.0.20/logs" -type f -name '*.log' | head -1)
-[[ "$(stat -c %a "$target_log")" == 600 ]] || fail "target log was not private" || exit 1
-[[ "$(stat -c %a "$TACMUX_WORKSPACE/acme/targets/10.20.0.20")" == 700 ]] || \
+[[ "$(mode_of "$target_log")" == 600 ]] || fail "target log was not private" || exit 1
+[[ "$(mode_of "$TACMUX_WORKSPACE/acme/targets/10.20.0.20")" == 700 ]] || \
     fail "target workspace was not private" || exit 1
 
 printf 'osc52-test' | tacmux clip
@@ -78,6 +82,6 @@ wait_for '[[ "$(tmux display-message -t "=plain:" -p "#{pane_pipe}")" == 1 ]]' |
     fail "ordinary tmux session did not start fallback logging" || exit 1
 plain_log=$(tmux show-option -p -t '=plain:' -qv @tacmux_log_file)
 [[ "$plain_log" == "$TACMUX_LOG_DIR"/* ]] || fail "ordinary session used target log path" || exit 1
-[[ "$(stat -c %a "$plain_log")" == 600 ]] || fail "fallback log was not private" || exit 1
+[[ "$(mode_of "$plain_log")" == 600 ]] || fail "fallback log was not private" || exit 1
 
 print -- '[PASS] target/fallback logging, routing, no-log, and clipboard'

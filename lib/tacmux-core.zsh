@@ -584,7 +584,7 @@ _tacmux_archive() {
     fi
 
     echo "Creating archive..."
-    if tar -czf "$archive_file" -C "$TACMUX_WORKSPACE" -- "$relpath"; then
+    if COPYFILE_DISABLE=1 tar -czf "$archive_file" -C "$TACMUX_WORKSPACE" -- "$relpath"; then
         chmod "$_tx_file_mode" "$archive_file" || {
             echo "${_tx_red}Failed to secure archive permissions:${_tx_reset} $archive_file"
             return 1

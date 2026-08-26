@@ -61,7 +61,7 @@ fi
 remove_block() {
     local file="$1" start="$2" end="$3" temporary
     [[ -f "$file" ]] || return 0
-    temporary=$(mktemp "${file##*/}.XXXXXX")
+    temporary=$(mktemp "${file}.XXXXXX")
     awk -v start="$start" -v end="$end" '
         $0 == start { skip=1; next }
         $0 == end   { skip=0; next }
