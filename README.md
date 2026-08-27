@@ -3,7 +3,6 @@
 <p align="center">
   <img src="assets/TACMUX.jpg" alt="TACMUX — tactical engagement workspaces for tmux" width="100%">
 </p>
-<p align="center"><sub><a href="https://grok.com/imagine">Created with Grok</a></sub></p>
 
 <p align="center">
   <a href="https://github.com/BLTSEC/TACMUX/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/BLTSEC/TACMUX/actions/workflows/ci.yml/badge.svg"></a>
