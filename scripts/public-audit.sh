@@ -47,7 +47,7 @@ scan() {
 }
 
 scan 'no personal absolute home paths' '(/Users|/home)/[A-Za-z0-9._-]+'
-scan 'no non-noreply email addresses' '[A-Z0-9._%+-]+@(?!users\.noreply\.github\.com\b)[A-Z0-9.-]+\.[A-Z]{2,}'
+scan 'no non-platform email addresses' '(?!(?:[A-Z0-9._%+-]+@users\.noreply\.github\.com\b|noreply@github\.com\b))[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}'
 scan 'no common token or private-key signatures' '(-----BEGIN [A-Z ]*PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})'
 
 if command -v exiftool >/dev/null 2>&1; then
@@ -63,16 +63,25 @@ else
 fi
 
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
-    identities=$(
-        git log --all --format='%ae%n%ce'
+    author_and_tagger_identities=$(
+        git log --all --format='%ae'
         git for-each-ref refs/tags --format='%(taggeremail)' | tr -d '<>'
     )
-    bad_identity=$(printf '%s\n' "$identities" | sed '/^$/d' | sort -u | rg -v '^[0-9]+\+BLTSEC@users\.noreply\.github\.com$' || true)
-    if [[ -n "$bad_identity" ]]; then
-        printf '%s\n' "$bad_identity" >&2
-        fail 'Git history contains a non-approved email identity'
+    bad_author_or_tagger=$(printf '%s\n' "$author_and_tagger_identities" | sed '/^$/d' | sort -u | rg -v '^[0-9]+\+BLTSEC@users\.noreply\.github\.com$' || true)
+    if [[ -n "$bad_author_or_tagger" ]]; then
+        printf '%s\n' "$bad_author_or_tagger" >&2
+        fail 'Git history contains a non-approved author or tagger identity'
     else
-        pass 'Git history uses the approved noreply identity'
+        pass 'Git authors and taggers use the approved noreply identity'
+    fi
+
+    committer_identities=$(git log --all --format='%ce')
+    bad_committer=$(printf '%s\n' "$committer_identities" | sed '/^$/d' | sort -u | rg -v '^([0-9]+\+BLTSEC@users\.noreply\.github\.com|noreply@github\.com)$' || true)
+    if [[ -n "$bad_committer" ]]; then
+        printf '%s\n' "$bad_committer" >&2
+        fail 'Git history contains a non-approved committer identity'
+    else
+        pass 'Git committers use an approved noreply identity'
     fi
 
     if command -v trufflehog >/dev/null 2>&1; then

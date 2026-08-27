@@ -177,9 +177,13 @@ _engagement_root_init() {
 ## Objectives
 -
 
-## Targets
-| Target | Role | Status | Notes |
+## Network Boundaries
+| Boundary | CIDR / Host | Access Path | Notes |
 |---|---|---|---|
+
+## Targets
+| Target | Boundary | Role | Status | Notes |
+|---|---|---|---|---|
 
 ---
 Created: $(_tx_ts)

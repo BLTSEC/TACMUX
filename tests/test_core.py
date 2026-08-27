@@ -65,11 +65,34 @@ def test_engagement_state_and_structure(tmp_path):
 
     engagement = tmp_path / "workspace/acme_client"
     assert stat.S_IMODE(engagement.stat().st_mode) == 0o700
-    assert stat.S_IMODE((engagement / "ENGAGEMENT.md").stat().st_mode) == 0o600
+    overview = engagement / "ENGAGEMENT.md"
+    assert stat.S_IMODE(overview.stat().st_mode) == 0o600
+    overview_text = overview.read_text()
+    assert "## Network Boundaries" in overview_text
+    assert "| Boundary | CIDR / Host | Access Path | Notes |" in overview_text
+    assert "| Target | Boundary | Role | Status | Notes |" in overview_text
     assert stat.S_IMODE((engagement / "notes").stat().st_mode) == 0o700
     assert stat.S_IMODE(
         (tmp_path / "home/.config/tacmux/engagementrc").stat().st_mode
     ) == 0o600
+
+
+def test_existing_engagement_overview_is_preserved(tmp_path):
+    overview = tmp_path / "workspace/acme/ENGAGEMENT.md"
+    overview.parent.mkdir(parents=True)
+    overview.write_text("# Existing operator notes\n")
+
+    result = run_zsh(
+        tmp_path,
+        f"""
+        export TACMUX_ENGAGEMENT=acme
+        source {CORE}
+        _engagement_root_init >/dev/null
+        """,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert overview.read_text() == "# Existing operator notes\n"
 
 
 def test_state_file_overrides_inherited_session_context(tmp_path):

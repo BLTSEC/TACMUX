@@ -46,13 +46,15 @@ tacmux start 10.10.10.5
 # workspace/10.10.10.5/{recon,exploitation,loot,screenshots,reports,logs}
 ```
 
-Select an engagement for multi-target work:
+Select one engagement for an authorized operation, even when it crosses more
+than one network boundary:
 
 ```bash
-tacmux engagement acme-internal
-tacmux start 10.10.10.5
-tacmux start -a 10.10.10.6:445
-# workspace/acme-internal/targets/<target>/...
+tacmux engagement acme
+tacmux start 203.0.113.0/28
+tacmux start vpn.acme.example
+tacmux start 10.20.0.0/24
+# workspace/acme/targets/<target>/...
 
 tacmux engagement clear       # return future commands to flat mode
 ```
@@ -139,6 +141,46 @@ NOCAP uses the first five routes for selected command captures; TACMUX owns
 Add client-specific `Admin`, `Deliverables`, `Retest`, or specialist evidence
 directories only when the engagement requires them.
 
+### One engagement, multiple networks
+
+Use the engagement as the authorization, evidence, and reporting boundary. Keep
+external ranges, internal ranges, and individual hosts as targets beneath it:
+
+```bash
+tacmux engagement acme
+
+# Directly reachable external range and initial-access host
+tacmux start 203.0.113.0/28
+tacmux start vpn.acme.example
+
+# Internal discovery through an approved route
+tacmux start 10.20.0.0/24
+cap -a proxychains nmap -Pn -sT "$TARGET"
+
+# Give important systems their own sessions as the path develops
+tacmux start dc01.corp.acme.example
+tacmux start 10.20.0.25
+tacmux list
+```
+
+A range session holds broad discovery work. Start a dedicated host session when
+a system becomes part of the access path, needs deeper enumeration, or produces
+evidence worth keeping separate. TACMUX records the target and evidence route;
+your VPN, SOCKS proxy, or Ligolo route still provides network access.
+The `cap` line uses the optional NOCAP integration; run Nmap directly when NOCAP
+is not installed.
+
+Record each target's boundary and access path in `ENGAGEMENT.md`. TACMUX 1.2 has
+no separate scope hierarchy: every target remains under `acme/targets/`. When
+two networks reuse the same RFC1918 address, use unique DNS or `/etc/hosts`
+aliases that resolve through the correct route. Use separate engagement roots
+only when authorization, reporting, retention, or an unavoidable address
+collision requires a real separation.
+
+`tacmux rename` changes `TARGET` for panes created after the rename, so rename an
+IP only to a hostname or alias your tools can resolve. Existing pane shells keep
+their original environment; open a new pane before relying on the new value.
+
 ## Configure
 
 Edit `~/.config/tacmux/tacmux.conf`:
@@ -165,7 +207,7 @@ Useful installer modes:
 
 Upgrade by pulling a trusted release and rerunning `./install.sh`; local config is preserved. Remove the installed program with `./uninstall.sh`; config, archives, and workspace data remain in place.
 
-More detail: [usage guide](docs/USAGE.md) · [keybindings](docs/KEYBINDINGS.md) · [security policy](SECURITY.md)
+More detail: [usage guide](docs/USAGE.md) · [field workflow](https://bltsec.com/blog/tacmux/) · [keybindings](docs/KEYBINDINGS.md) · [security policy](SECURITY.md)
 
 ## License
 
