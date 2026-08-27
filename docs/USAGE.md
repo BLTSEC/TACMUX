@@ -10,13 +10,13 @@ tacmux start 10.10.10.5
 # ~/workspace/10.10.10.5/
 ```
 
-For a multi-host assessment, select one engagement before starting targets:
+For an authorized operation, select one engagement before starting targets:
 
 ```bash
-tacmux engagement acme-internal
-tacmux engagement                 # prints acme-internal
-tacmux start 10.10.10.5
-# ~/workspace/acme-internal/targets/10.10.10.5/
+tacmux engagement acme
+tacmux engagement                 # prints acme
+tacmux start 203.0.113.0/28
+# ~/workspace/acme/targets/203.0.113.0-28/
 ```
 
 The selection is persisted in `~/.config/tacmux/engagementrc`. It affects future CLI commands, not already-running sessions. Run `tacmux engagement clear` when you want new operations to use flat mode again.
@@ -28,6 +28,48 @@ Selecting an engagement creates:
 - `findings/` and `targets/` containers.
 
 TACMUX deliberately does not create every possible consulting folder. Add `Admin`, `Deliverables`, `Retest`, wireless evidence, or tool-specific scan directories when scope calls for them.
+
+## One engagement, multiple networks
+
+The engagement is the authorization, evidence, and reporting boundary. External
+ranges, internal ranges, and individual hosts stay as flat targets beneath it:
+
+```bash
+tacmux engagement acme
+
+# External discovery and an initial-access system
+tacmux start 203.0.113.0/28
+tacmux start vpn.acme.example
+
+# Internal discovery after an approved route exists
+tacmux start 10.20.0.0/24
+cap -a proxychains nmap -Pn -sT "$TARGET"
+
+# Dedicated sessions for systems that matter to the access path
+tacmux start dc01.corp.acme.example
+tacmux start 10.20.0.25
+tacmux list
+```
+
+Use a range session for broad discovery. Give a host its own session when it
+needs deeper work, becomes part of the access path, or starts producing evidence
+that should remain easy to find. TACMUX does not establish a VPN, SOCKS proxy,
+or Ligolo tunnel; it keeps the resulting commands, pane logs, and target route
+together once that access exists.
+
+The `cap` command in the example comes from the optional NOCAP integration. Run
+Nmap directly when NOCAP is not installed.
+
+Record the boundary and access path in `ENGAGEMENT.md`. TACMUX 1.2 does not add a
+scope level to its paths, so all targets remain under `acme/targets/`. If two
+internal networks reuse an address, create distinct resolvable DNS or
+`/etc/hosts` aliases and use those aliases as the targets. Use separate
+engagements only when authorization, reporting, retention, or an unavoidable
+address collision requires actual separation.
+
+`tacmux rename 10.20.0.25 app01.corp.acme.example` updates the workspace, tmux
+session, and `TARGET` inherited by new panes. The new name must resolve, and
+shells in existing panes keep their old environment until you open a new pane.
 
 ## Start a target
 
