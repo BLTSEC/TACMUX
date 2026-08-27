@@ -122,8 +122,10 @@ def test_no_log_start_uses_canonical_engagement_route(tmp_path):
         [[ "$args" == *"-s op_acme_targets_targets_file_safe"* ]]
         [[ "$args" == *"-e TACMUX_TARGET=acme/targets/targets_file_safe"* ]]
         [[ "$args" == *"-e TACMUX_NO_AUTOLOG=1"* ]]
-        [[ -d "$TACMUX_WORKSPACE/acme/targets/targets_file_safe/recon" ]]
-        [[ -d "$TACMUX_WORKSPACE/acme/targets/targets_file_safe/logs" ]]
+        target_root="$TACMUX_WORKSPACE/acme/targets/targets_file_safe"
+        for phase in recon exploitation loot screenshots reports logs; do
+            [[ -d "$target_root/$phase" ]]
+        done
         """,
         TARGETS_FILE=str(targets),
     )

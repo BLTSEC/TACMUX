@@ -124,7 +124,21 @@ $TACMUX_WORKSPACE/acme-internal/
         └── logs/YYYYMMDD/
 ```
 
-This is intentionally smaller than a full consulting delivery tree. Add client-specific `Admin`, `Deliverables`, `Retest`, or specialist evidence directories only when the engagement requires them.
+The target directories are operational phases:
+
+| Directory | Use |
+|---|---|
+| `recon` | Discovery, enumeration, and read-only validation |
+| `exploitation` | Credential attacks, payloads, relays, coercion, execution, and pivots |
+| `loot` | Credential or data acquisition, dumps, and offline cracking |
+| `screenshots` | Visual evidence |
+| `reports` | Report-ready transformations and exports |
+| `logs` | Continuous TACMUX pane logs |
+
+NOCAP uses the first five routes for selected command captures; TACMUX owns
+`logs`. The tree is intentionally smaller than a full consulting delivery tree.
+Add client-specific `Admin`, `Deliverables`, `Retest`, or specialist evidence
+directories only when the engagement requires them.
 
 ## Configure
 
