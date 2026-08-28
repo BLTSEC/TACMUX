@@ -368,8 +368,11 @@ _tacmux_start() {
         -e "TACMUX_BOOTSTRAP=1"
         -e "TACMUX_NO_AUTOLOG=$no_log"
     )
-    if ! tmux new-session -d -s "$session" -c "$base_dir" \
-        "${session_env[@]}"; then
+    # Keep the concrete landing-pane ID. Addressing it indirectly as
+    # "session:" later can resolve differently across tmux versions/clients.
+    local first_pane
+    if ! first_pane=$(tmux new-session -d -P -F '#{pane_id}' \
+        -s "$session" -c "$base_dir" "${session_env[@]}"); then
         echo "${_tx_red}Error:${_tx_reset} Failed to create tmux session '$session'"
         return 1
     fi
@@ -380,17 +383,26 @@ _tacmux_start() {
     echo "  ${_tx_bold}Session:${_tx_reset}   $session"
     echo "  ${_tx_bold}Directory:${_tx_reset} $base_dir"
 
-    # Release hook suppression only after session routing is complete.
-    tmux set-environment -t "=$session" TACMUX_BOOTSTRAP 0
-
     # ── Logging ──────────────────────────────────────────────────────────────
+    # Start the landing pane while TACMUX_BOOTSTRAP still suppresses the
+    # asynchronous after-new-session hook. Releasing the hook first lets two
+    # logger processes race on the initial pane.
     if [[ $no_log -eq 1 ]]; then
         echo "  ${_tx_bold}Logging:${_tx_reset}   ${_tx_yellow}OFF${_tx_reset} (Ctrl+Space T to enable)"
+    elif [[ "$TACMUX_AUTOLOG" != true ]]; then
+        echo "  ${_tx_bold}Logging:${_tx_reset}   ${_tx_yellow}OFF${_tx_reset} (TACMUX_AUTOLOG=false)"
     else
-        zsh "$TACMUX_HOME/lib/tacmux-logging.sh" start "=$session:" session
-        local log_file=$(tmux show-option -p -t "=$session:" -qv @tacmux_log_file 2>/dev/null)
-        echo "  ${_tx_bold}Log:${_tx_reset}       $log_file"
+        if zsh "$TACMUX_HOME/lib/tacmux-logging.sh" force "$first_pane" session &&
+            [[ "$(tmux display-message -p -t "$first_pane" '#{pane_pipe}' 2>/dev/null)" == 1 ]]; then
+            local log_file=$(tmux show-option -p -t "$first_pane" -qv @tacmux_log_file 2>/dev/null)
+            echo "  ${_tx_bold}Log:${_tx_reset}       $log_file"
+        else
+            echo "  ${_tx_bold}Logging:${_tx_reset}   ${_tx_red}FAILED${_tx_reset} (run: tacmux log start)" >&2
+        fi
     fi
+
+    # New panes/windows may now be handled by the normal tmux hooks.
+    tmux set-environment -t "=$session" TACMUX_BOOTSTRAP 0
 
     # ── AutoRecon launch ─────────────────────────────────────────────────────
     if [[ $use_auto -eq 1 ]]; then
