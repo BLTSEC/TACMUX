@@ -10,21 +10,35 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Install test dependencies
-        run: sudo apt-get update && sudo apt-get install -y tmux zsh fzf python3-pytest ripgrep
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.7"
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y tmux zsh ripgrep
+
+      - name: Sync locked environment
+        run: uv sync --frozen
 
       - name: Check shell syntax
         run: |
-          zsh -n bin/tacmux lib/*.zsh lib/*.sh tests/test_tmux_integration.zsh
-          bash -n install.sh uninstall.sh bin/tacmux-clip bin/logview lib/tacmux-completions.bash tests/bin/tmux scripts/public-audit.sh
+          sh -n bin/tacmux
+          bash -n install.sh uninstall.sh tests/bin/tmux lib/tacmux-pane-guard.sh scripts/public-audit.sh
+          zsh -n tests/test_tmux_integration.zsh
 
       - name: Run unit and installer tests
-        run: python3 -m pytest -q
+        run: uv run pytest -q
 
       - name: Run isolated tmux integration test
         run: tests/test_tmux_integration.zsh

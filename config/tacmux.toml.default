@@ -1,0 +1,15 @@
+# TACMUX v2 configuration. Markdown remains in the engagement workspace and
+# opens through $VISUAL, then $EDITOR, then vi.
+
+[paths]
+workspace = "~/workspace"
+archive_dir = "~/archives"
+log_dir = "~/logs"
+
+[behavior]
+auto_log = true
+startup = "resume_last"
+include_mermaid = true
+
+[nocap]
+enabled = false

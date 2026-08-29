@@ -1,0 +1,150 @@
+{
+  "schema": "tacmux.engagement/v2",
+  "id": "E-0123456789ab",
+  "client": "ACME Lab",
+  "name": "Sanitized External-to-Internal Recap",
+  "assessment_type": "both",
+  "status": "active",
+  "created_at": "2026-08-01T14:00:00Z",
+  "logging_enabled": true,
+  "scope": [
+    {
+      "id": "S0001",
+      "label": "Internet Perimeter",
+      "group": "external",
+      "network": "198.51.100.0/24",
+      "availability": "ready",
+      "via_target_id": ""
+    },
+    {
+      "id": "S0002",
+      "label": "Corporate LAN",
+      "group": "internal",
+      "network": "10.77.10.0/24",
+      "availability": "ready",
+      "via_target_id": "T0001"
+    }
+  ],
+  "targets": [
+    {
+      "id": "T0001",
+      "display_name": "MAIL",
+      "directory": "T0001-MAIL",
+      "addresses": [
+        {"value": "198.51.100.25", "scope_id": "S0001"},
+        {"value": "10.77.10.5", "scope_id": "S0002"}
+      ],
+      "hostnames": ["mail.acme.test"],
+      "primary_endpoint": "mail.acme.test",
+      "created_at": "2026-08-01T14:05:00Z"
+    },
+    {
+      "id": "T0002",
+      "display_name": "SVC",
+      "directory": "T0002-SVC",
+      "addresses": [{"value": "10.77.10.20", "scope_id": "S0002"}],
+      "hostnames": ["svc.acme.test"],
+      "primary_endpoint": "10.77.10.20",
+      "created_at": "2026-08-01T16:00:00Z"
+    },
+    {
+      "id": "T0003",
+      "display_name": "PASSBACK",
+      "directory": "T0003-PASSBACK",
+      "addresses": [{"value": "10.77.10.30", "scope_id": "S0002"}],
+      "hostnames": ["passback.acme.test"],
+      "primary_endpoint": "10.77.10.30",
+      "created_at": "2026-08-01T16:02:00Z"
+    },
+    {
+      "id": "T0004",
+      "display_name": "TPM-DC",
+      "directory": "T0004-TPM-DC",
+      "addresses": [{"value": "10.77.10.10", "scope_id": "S0002"}],
+      "hostnames": ["tpm-dc.acme.test"],
+      "primary_endpoint": "10.77.10.10",
+      "created_at": "2026-08-01T16:03:00Z"
+    }
+  ],
+  "access": [
+    {
+      "id": "AR0001",
+      "principal": "operator",
+      "authority": "ACME",
+      "target_id": "T0001",
+      "method": "confirmed initial access",
+      "level": "user_execution",
+      "observed_at": "2026-08-01T15:10:00Z",
+      "evidence": "targets/T0001-MAIL/exploitation/initial-access.txt"
+    },
+    {
+      "id": "AR0002",
+      "principal": "svc_deploy",
+      "authority": "ACME",
+      "target_id": "T0003",
+      "method": "SMB",
+      "level": "authenticated",
+      "observed_at": "2026-08-01T17:20:00Z",
+      "evidence": "targets/T0003-PASSBACK/recon/smb-auth.txt"
+    }
+  ],
+  "activities": [
+    {
+      "id": "A0001",
+      "summary": "Established the approved route from MAIL to the corporate LAN",
+      "result": "confirmed",
+      "target_id": "T0001",
+      "occurred_at": "2026-08-01T15:30:00Z",
+      "evidence": "targets/T0001-MAIL/exploitation/pivot.txt"
+    },
+    {
+      "id": "A0002",
+      "summary": "LLMNR responder attempt produced no usable authentication",
+      "result": "no_result",
+      "target_id": "T0002",
+      "occurred_at": "2026-08-01T16:30:00Z",
+      "evidence": "targets/T0002-SVC/recon/responder.txt"
+    }
+  ],
+  "findings": [
+    {
+      "id": "F0001",
+      "title": "Initial access control weakness",
+      "severity": "high",
+      "state": "confirmed",
+      "target_ids": ["T0001"],
+      "evidence": ["targets/T0001-MAIL/exploitation/initial-access.txt"],
+      "document": "findings/F0001.md"
+    },
+    {
+      "id": "F0002",
+      "title": "Readable deployment share exposed configuration material",
+      "severity": "medium",
+      "state": "confirmed",
+      "target_ids": ["T0002", "T0003"],
+      "evidence": ["targets/T0002-SVC/recon/open-share.txt"],
+      "document": "findings/F0002.md"
+    }
+  ],
+  "attack_paths": [
+    {
+      "id": "P0001",
+      "name": "External foothold to internal authenticated access",
+      "steps": [
+        {"ref_type": "finding", "ref_id": "F0001", "narrative": "Initial access was validated on MAIL."},
+        {"ref_type": "access", "ref_id": "AR0001", "narrative": "User execution enabled the approved internal route."},
+        {"ref_type": "activity", "ref_id": "A0001", "narrative": "Internal host identification followed the pivot."},
+        {"ref_type": "finding", "ref_id": "F0002", "narrative": "The readable share exposed reusable configuration material."},
+        {"ref_type": "access", "ref_id": "AR0002", "narrative": "Credentials were validated only as authenticated access."}
+      ]
+    }
+  ],
+  "counters": {
+    "scope": 2,
+    "target": 4,
+    "access": 2,
+    "activity": 2,
+    "finding": 2,
+    "attack_path": 1
+  }
+}

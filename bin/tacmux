@@ -1,83 +1,12 @@
-#!/usr/bin/env zsh
+#!/bin/sh
 
-emulate -L zsh
-setopt pipe_fail
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(dirname "$SCRIPT_DIR")
 
-script_dir="${0:A:h}"
-TACMUX_HOME="${TACMUX_HOME:-$HOME/.local/share/tacmux}"
-[[ -f "$TACMUX_HOME/lib/tacmux-core.zsh" ]] || TACMUX_HOME="${script_dir:h}"
-export TACMUX_HOME
+if [ -x "$ROOT/.venv/bin/tacmux" ]; then
+    exec "$ROOT/.venv/bin/tacmux" "$@"
+fi
 
-source "$TACMUX_HOME/lib/tacmux-core.zsh" || exit 1
-
-_tacmux_usage() {
-    cat << EOF
-${_tx_bold}TACMUX${_tx_reset} — tactical engagement workspaces for tmux  v${TACMUX_VERSION}
-
-Usage: tacmux <command> [arguments]
-
-  engagement [name|clear]      Show or select engagement mode
-  start [-n] [-a] <target>     Start a target session
-  stop <target> [archive]      Stop a target session
-  pause|resume|status <target> Manage a target session
-  archive <target>             Archive with a SHA-256 manifest
-  rename <old> <new>           Rename a target workspace
-  list | pick                  Find active target sessions
-  mkop <directory>             Create a target directory tree
-  logs [directory...]          Browse captured logs
-  log <action>                 Control the current pane logger
-  clip                         Copy stdin to the trusted clipboard path
-  health | config | help       Inspect TACMUX
-  version                      Print the version
-
-Run 'tacmux help' for examples and workspace behavior.
-EOF
-}
-
-command_name="${1:-}"
-(( $# )) && shift
-
-case "$command_name" in
-    engagement) _tacmux_engagement_set "${1:-}" ;;
-    start)      _tacmux_start "$@" ;;
-    stop)       _tacmux_stop "$@" ;;
-    pause)      _tacmux_pause "$@" ;;
-    resume)     _tacmux_resume "$@" ;;
-    list|ls)    _tacmux_list ;;
-    status)     _tacmux_status "$@" ;;
-    archive)    _tacmux_archive "$@" ;;
-    rename)     _tacmux_rename "$@" ;;
-    mkop)       _tacmux_mkop "$@" ;;
-    pick)
-        source "$TACMUX_HOME/lib/tacmux-fzf.zsh"
-        _tacmux_fzf_pick
-        ;;
-    logs)
-        exec "$TACMUX_HOME/bin/logview" "$@"
-        ;;
-    log)
-        action="${1:-status}"
-        case "$action" in
-            start|force|stop|toggle|capture|status)
-                exec zsh "$TACMUX_HOME/lib/tacmux-logging.sh" "$action" "${TMUX_PANE:-}"
-                ;;
-            *)
-                print -u2 -- "Usage: tacmux log start|force|stop|toggle|capture|status"
-                exit 2
-                ;;
-        esac
-        ;;
-    clip)
-        exec "$TACMUX_HOME/bin/tacmux-clip"
-        ;;
-    health)     _tacmux_health_check ;;
-    config)     _tacmux_show_config ;;
-    help|-h|--help) _tacmux_help ;;
-    version|-v|--version) echo "tacmux $TACMUX_VERSION" ;;
-    "") _tacmux_usage ;;
-    *)
-        print -u2 -- "Unknown command: $command_name"
-        print -u2 -- "Run 'tacmux help' for usage."
-        exit 2
-        ;;
-esac
+PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec python3 -m tacmux.cli "$@"
