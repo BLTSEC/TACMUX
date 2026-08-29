@@ -10,21 +10,36 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2ea44f"></a>
 </p>
 
-TACMUX is the target-aware execution and evidence layer for terminal-based security assessments. One command creates the target tree, starts tmux, exports routing context, and logs every pane to the correct evidence directory.
+TACMUX is a terminal cockpit for authorized penetration tests and red-team engagements. It keeps declared scope, identified hosts, tmux sessions, curated activity, findings, attack paths, evidence, and a current situation report in one private engagement workspace.
 
-> **Start a target once. Every pane inherits its context, logs to the right place, and is ready to archive.**
+Run `tacmux`, choose the engagement and target, and work from menus. The public CLI intentionally has almost no flag surface.
 
-It uses native tmux features—no plugin manager, database, daemon, cloud account, or runtime plugin dependency.
+> Use TACMUX only where you have explicit authorization. Confirm scope, rules of engagement, logging, evidence handling, and retention before testing.
 
-> Use TACMUX only on systems and engagements you are authorized to assess. Review scope, logging, evidence handling, and retention requirements before testing.
+## v2 design
 
-## Before you install
+- Python 3.11+ and Textual for a responsive terminal UI.
+- One readable JSON manifest per engagement.
+- Human-facing **Client or Lab** and **Engagement Name** fields instead of provider/slug terminology.
+- External and internal scope groups, including IPs, CIDRs, unavailable internal networks, pivot relationships, dual-homed systems, and overlapping addresses qualified by scope.
+- Stable target IDs and directories. Renaming a display name never moves evidence.
+- Detached target, operations, and discovery sessions with engagement-wide stop controls.
+- Fixed host-identification scans using `nmap -sn --reason -oX`, followed by mandatory Add/Merge/Ignore review.
+- Terminal-native topology and confirmed attack-path views. Optional Mermaid source is generated in `SITREP.md`.
+- Markdown preview in the TUI and editing through `$VISUAL`, `$EDITOR`, or `vi`.
+- Optional, read-only NOCAP timeline integration. NOCAP remains a separate tool.
 
-TACMUX is ready to clone and install as an unprivileged user. It requires Linux, Git, tmux 3.2+, zsh, and Python 3. `fzf` and `autorecon` are optional.
+TACMUX does not require fzf, AutoRecon, Obsidian, or shell completions.
 
-The installer writes under `~/.local`, `~/.config/tacmux`, and your shell configuration. If `~/.tmux.conf` already exists, TACMUX adds only its integration block; otherwise it installs the complete default tmux configuration. Existing configuration and workspace data are preserved.
+## Requirements
 
-New workspaces, logs, archives, and manifests are owner-only by default (`umask 077`). Existing data is not recursively re-permissioned. Filesystems that ignore Unix modes—including some VM shared folders, FAT volumes, and network mounts—cannot enforce this protection; keep sensitive assessment evidence on a local encrypted Linux filesystem or an approved protected volume.
+- Linux
+- Python 3.11 or newer
+- tmux 3.2 or newer
+- [uv](https://docs.astral.sh/uv/) for installation
+- An editor (`$VISUAL`, then `$EDITOR`, then `vi`)
+- Optional: Nmap for launching discovery jobs; existing XML and pasted-host import work without it
+- Optional: `cap` when NOCAP integration is enabled
 
 ## Install
 
@@ -33,90 +48,54 @@ git clone https://github.com/BLTSEC/TACMUX.git
 cd TACMUX
 ./install.sh
 exec "$SHELL" -l
+tacmux health
 ```
 
-Confirm the installation with `tacmux health`. No root privileges are required by TACMUX itself.
+The installer uses the committed `uv.lock`, installs under `~/.local/share/tacmux`, and links `tacmux` into `~/.local/bin`. Upgrades preserve configuration and evidence and refuse an unmarked install directory or malformed TACMUX configuration block.
 
-## Start in 60 seconds
-
-Flat mode is the default and fits labs, CTFs, and one-off targets:
+Useful modes:
 
 ```bash
-tacmux start 10.10.10.5
-# workspace/10.10.10.5/{recon,exploitation,loot,screenshots,reports,logs}
+./install.sh --workspace /approved/evidence
+./install.sh --full-tmux
+./install.sh --skip-tmux
 ```
 
-Select one engagement for an authorized operation, even when it crosses more
-than one network boundary:
+If `~/.tmux.conf` exists, the default installer adds only the TACMUX integration fragment. Otherwise it installs the optional complete configuration. Prefix + `E` opens TACMUX in a tmux popup.
+
+## First engagement
 
 ```bash
-tacmux engagement acme
-tacmux start 203.0.113.0/28
-tacmux start vpn.acme.example
-tacmux start 10.20.0.0/24
-# workspace/acme/targets/<target>/...
-
-tacmux engagement clear       # return future commands to flat mode
+tacmux
 ```
 
-Inside each session, `TARGET`, `RPORT`, and `TACMUX_TARGET` identify the host and workspace route. `tacmux start -n <target>` is the explicit opt-out from automatic logging.
+1. Press `n` and enter the client/lab, engagement name, assessment type, and any scope known before testing.
+2. Open **Scope & Discovery** to add or update scope. Internal scope may begin unavailable and later become ready through a selected pivot target.
+3. Press `d` to run detached host identification or import existing Nmap XML/pasted hosts.
+4. Review every result as **Add**, **Merge**, or **Ignore**. Detached target sessions are created by default for accepted hosts.
+5. Select a target and press Enter to attach. Press `a` for target work or to manage structured records.
+6. Use **Situation** for the network topology and separately curated, confirmed attack paths.
+7. Use **Documents** to preview Markdown, ANSI logs, and evidence. Enter opens editable Markdown in your editor; generated documents remain read-only.
 
-## What you get
+The command palette provides fuzzy access to the same actions without an fzf dependency.
 
-- Context-aware pane logs under the active target; ordinary tmux sessions fall back to `~/logs`. Raw logs remain authoritative. The default rendered view is non-compacting and preserves repeated and sparse rendered lines; compact mode explicitly removes prompt redraw, padding, animation, and repeated-output artifacts.
-- Secure remote copy paths through tmux `load-buffer -w`, with Wayland, X11, macOS, and OSC 52 fallbacks.
-- A minimal engagement root for authorization, scope, activity, payloads, attack path, and findings.
-- Target lifecycle commands for pause, resume, status, rename, and archive. Every archive receives a JSON sidecar manifest with context, counts, and SHA-256 hashes for the tarball and each archived file.
-- Optional AutoRecon launch with `-a`, and shared workspace routing when [NOCAP](https://github.com/BLTSEC/NOCAP) is installed.
-
-## Commands
-
-```text
-tacmux engagement [name|clear]      Show or select workspace mode
-tacmux start [-n] [-a] <target>     Create and attach to a target session
-tacmux pause|resume|status <target> Manage a target session
-tacmux stop <target> [archive]      Stop it, optionally archive it
-tacmux archive <target>             Create a tar.gz and SHA-256 manifest
-tacmux rename <old> <new>           Rename workspace and live session
-tacmux list | tacmux pick           Find active target sessions
-tacmux mkop <directory>             Create only the target directory tree
-tacmux logs [directory...]          Browse logs; Alt-k enables compact preview
-tacmux log <action>                 start|force|stop|toggle|capture|status
-tacmux clip                         Copy stdin to the trusted clipboard path
-tacmux health | config | help       Diagnose or inspect TACMUX
-```
-
-## Default keys
-
-Prefix: `Ctrl+Space`
-
-| Key | Action |
-|---|---|
-| `T` | Toggle logging for the current pane |
-| `S` | Capture the full pane scrollback |
-| `L` | Show current logging state and file |
-| `H` | Force a fallback log under `TACMUX_LOG_DIR` |
-| `q` | Stop logging for the current pane |
-| `P` | Pin or unpin the pane title |
-| `x` / `y` | Split below / right |
-| `h j k l` | Move between panes |
-| `W` / `t` | Create / rename a window |
-| `y` in copy mode | Copy through the trusted clipboard path |
-
-See [KEYBINDINGS.md](docs/KEYBINDINGS.md) for the complete map.
-
-## Engagement layout
+## Workspace
 
 ```text
-$TACMUX_WORKSPACE/acme-internal/
+~/workspace/E-<stable-id>-<name>/
+├── .tacmux/
+│   ├── engagement.json
+│   └── jobs/
 ├── ENGAGEMENT.md
+├── SITREP.md
+├── findings/
 ├── notes/
 │   ├── activity.md
 │   ├── attack-path.md
 │   └── payloads.md
-├── findings/
 └── targets/
-    └── 10.10.10.5/
+    └── T0001-<initial-name>/
+        ├── NOTES.md
         ├── recon/
         ├── exploitation/
         ├── loot/
@@ -125,89 +104,58 @@ $TACMUX_WORKSPACE/acme-internal/
         └── logs/YYYYMMDD/
 ```
 
-The target directories are operational phases:
+`ENGAGEMENT.md`, target notes, payload notes, and finding narratives are operator-edited. `SITREP.md`, activity, and attack-path Markdown are regenerated from structured records.
 
-| Directory | Use |
-|---|---|
-| `recon` | Discovery, enumeration, and read-only validation |
-| `exploitation` | Credential attacks, payloads, relays, coercion, execution, and pivots |
-| `loot` | Credential or data acquisition, dumps, and offline cracking |
-| `screenshots` | Visual evidence |
-| `reports` | Report-ready transformations and exports |
-| `logs` | Continuous TACMUX pane logs |
+## Minimal CLI
 
-NOCAP uses the first five routes for selected command captures; TACMUX owns
-`logs`. The tree is intentionally smaller than a full consulting delivery tree.
-Add client-specific `Admin`, `Deliverables`, `Retest`, or specialist evidence
-directories only when the engagement requires them.
-
-### One engagement, multiple networks
-
-Use the engagement as the authorization, evidence, and reporting boundary. Keep
-external ranges, internal ranges, and individual hosts as targets beneath it:
-
-```bash
-tacmux engagement acme
-
-# Directly reachable external range and initial-access host
-tacmux start 203.0.113.0/28
-tacmux start vpn.acme.example
-
-# Internal discovery through an approved route
-tacmux start 10.20.0.0/24
-cap -a proxychains nmap -Pn -sT "$TARGET"
-
-# Give important systems their own sessions as the path develops
-tacmux start dc01.corp.acme.example
-tacmux start 10.20.0.25
-tacmux list
+```text
+tacmux                         Open the cockpit
+tacmux health                  Check configuration and tools
+tacmux archive verify FILE     Verify the archive and every file hash
+tacmux version                 Print the version
 ```
 
-A range session holds broad discovery work. Start a dedicated host session when
-a system becomes part of the access path, needs deeper enumeration, or produces
-evidence worth keeping separate. TACMUX records the target and evidence route;
-your VPN, SOCKS proxy, or Ligolo route still provides network access.
-The `cap` line uses the optional NOCAP integration; run Nmap directly when NOCAP
-is not installed.
+Fast logging, clipboard, and status commands used by tmux live behind a private `_internal` interface; they are not an operator workflow to memorize.
 
-Record each target's boundary and access path in `ENGAGEMENT.md`. TACMUX 1.2 has
-no separate scope hierarchy: every target remains under `acme/targets/`. When
-two networks reuse the same RFC1918 address, use unique DNS or `/etc/hosts`
-aliases that resolve through the correct route. Use separate engagement roots
-only when authorization, reporting, retention, or an unavoidable address
-collision requires a real separation.
+## Configuration
 
-`tacmux rename` changes `TARGET` for panes created after the rename, so rename an
-IP only to a hostname or alias your tools can resolve. Existing pane shells keep
-their original environment; open a new pane before relying on the new value.
+Edit `~/.config/tacmux/config.toml`:
 
-## Configure
+```toml
+[paths]
+workspace = "~/workspace"
+archive_dir = "~/archives"
+log_dir = "~/logs"
 
-Edit `~/.config/tacmux/tacmux.conf`:
+[behavior]
+auto_log = true
+startup = "resume_last"       # or "picker"
+include_mermaid = true
 
-```bash
-TACMUX_WORKSPACE="$HOME/workspace"
-TACMUX_ARCHIVE_DIR="$HOME/archives"
-TACMUX_LOG_DIR="$HOME/logs"
-TACMUX_AUTOLOG="true"
-TACMUX_UMASK="077"
-TACMUX_TARGET_DIRS="recon exploitation loot screenshots reports logs"
+[nocap]
+enabled = false
 ```
 
-Use `TACMUX_UMASK="027"` only when an approved local group must share newly created data. TACMUX does not change permissions on pre-existing workspace content.
+No Markdown is moved or symlinked into another application. Set `$VISUAL` or `$EDITOR` to any terminal editor you prefer.
 
-Useful installer modes:
+## Safety boundaries
+
+- New TACMUX data is owner-only by default (`0700` directories, `0600` files).
+- Archives have a JSON sidecar with the tarball SHA-256 and every regular member hash. Restore is staged and rejects collisions, unsafe paths, unsafe links, invalid engagement manifests, and mismatched metadata.
+- Archiving creates a verified copy; it does not silently delete the live workspace.
+- Permanent target deletion is only for mistaken targets. It requires exact typed confirmation, refuses running sessions, and refuses structured references. The Records workflow can correct or remove mistaken records first.
+- Attack paths accept only confirmed activity, confirmed/closed findings, and recorded access. **Authenticated** is deliberately distinct from command execution or privilege.
+- Host discovery never guesses across ambiguous overlapping scope entries.
+
+See the [operator guide](docs/USAGE.md), [keybindings](docs/KEYBINDINGS.md), and [security policy](SECURITY.md).
+
+## Remove
 
 ```bash
-./install.sh --full-tmux                  # install the opinionated tmux defaults
-./install.sh --skip-tmux                  # install CLI only; do not edit tmux config
-./install.sh --workspace /workspace       # persistent Exegol-style workspace
-./install.sh --unattended --workspace /workspace
+./uninstall.sh
 ```
 
-Upgrade by pulling a trusted release and rerunning `./install.sh`; local config is preserved. Remove the installed program with `./uninstall.sh`; config, archives, and workspace data remain in place.
-
-More detail: [usage guide](docs/USAGE.md) · [field workflow](https://bltsec.com/blog/tacmux/) · [keybindings](docs/KEYBINDINGS.md) · [security policy](SECURITY.md)
+Only the marked installation and its matching command link are removed. Configuration, archives, workspace evidence, unrelated commands, and malformed configuration blocks are preserved.
 
 ## License
 

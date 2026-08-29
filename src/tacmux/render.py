@@ -1,0 +1,322 @@
+"""Deterministic terminal and Markdown situation rendering."""
+
+from __future__ import annotations
+
+from typing import Iterable, Mapping
+
+from .model import (
+    AccessLevel,
+    AttackPathStep,
+    Engagement,
+    FindingState,
+    ScopeGroup,
+    Target,
+)
+
+
+ACCESS_LABELS = {
+    AccessLevel.AUTHENTICATED: "Authenticated",
+    AccessLevel.USER_EXECUTION: "User Execution",
+    AccessLevel.ADMINISTRATIVE_EXECUTION: "Administrative Execution",
+    AccessLevel.PRIVILEGED_EXECUTION: "Privileged Execution",
+}
+
+
+def md_escape(value: object) -> str:
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def mermaid_label(value: object) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+
+
+def md_link_text(value: object) -> str:
+    return md_escape(value).replace("]", "\\]")
+
+
+def target_label(engagement: Engagement, target: Target) -> str:
+    level = engagement.strongest_access(target.id)
+    suffix = f" — {ACCESS_LABELS[level]}" if level else ""
+    return f"{target.display_name} [{target.id}]{suffix}"
+
+
+def topology_text(engagement: Engagement, *, ascii_only: bool = False) -> str:
+    branch = "+-" if ascii_only else "├─"
+    last_branch = "`-" if ascii_only else "└─"
+    continuation = "| " if ascii_only else "│ "
+    lines: list[str] = []
+    for group in (ScopeGroup.EXTERNAL, ScopeGroup.INTERNAL):
+        scopes = [item for item in engagement.scope if item.group == group]
+        lines.append(group.value.upper())
+        if not scopes:
+            lines.append(f"{last_branch} No declared scope")
+            continue
+        for scope_index, scope in enumerate(scopes):
+            scope_branch = last_branch if scope_index == len(scopes) - 1 else branch
+            availability = (
+                "" if scope.availability.value == "ready" else " [unavailable]"
+            )
+            via = ""
+            if scope.via_target_id:
+                try:
+                    via_target = engagement.target_by_id(scope.via_target_id)
+                    via = f" via {via_target.display_name}"
+                except Exception:
+                    via = f" via {scope.via_target_id}"
+            lines.append(
+                f"{scope_branch} {scope.label}: {scope.network}{availability}{via}"
+            )
+            members: list[tuple[Target, list[str]]] = []
+            for target in engagement.targets:
+                addresses = [
+                    item.value for item in target.addresses if item.scope_id == scope.id
+                ]
+                if addresses:
+                    members.append((target, addresses))
+            prefix = "  " if scope_index == len(scopes) - 1 else continuation
+            if not members:
+                lines.append(f"{prefix}{last_branch} No identified hosts")
+            for target_index, (target, addresses) in enumerate(members):
+                target_branch = (
+                    last_branch if target_index == len(members) - 1 else branch
+                )
+                lines.append(
+                    f"{prefix}{target_branch} {target_label(engagement, target)} "
+                    f"({', '.join(addresses)})"
+                )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _reference_label(engagement: Engagement, step: AttackPathStep) -> str:
+    if step.ref_type == "access":
+        for record in engagement.access:
+            if record.id == step.ref_id:
+                target = engagement.target_by_id(record.target_id)
+                authority = f"{record.authority}\\" if record.authority else ""
+                method = f" via {record.method}" if record.method else ""
+                return (
+                    f"{authority}{record.principal} → {target.display_name}: "
+                    f"{ACCESS_LABELS[record.level]}{method}"
+                )
+    elif step.ref_type == "activity":
+        for activity in engagement.activities:
+            if activity.id == step.ref_id:
+                return activity.summary
+    elif step.ref_type == "finding":
+        for finding in engagement.findings:
+            if finding.id == step.ref_id:
+                return f"Finding: {finding.title}"
+    return f"{step.ref_type}:{step.ref_id}"
+
+
+def attack_paths_text(engagement: Engagement) -> str:
+    if not engagement.attack_paths:
+        return "No confirmed attack paths.\n"
+    lines: list[str] = []
+    for path in engagement.attack_paths:
+        lines.append(f"{path.name} [{path.id}]")
+        for index, step in enumerate(path.steps, 1):
+            narrative = f" — {step.narrative}" if step.narrative else ""
+            lines.append(f"  {index}. {_reference_label(engagement, step)}{narrative}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def mermaid_topology(engagement: Engagement) -> str:
+    lines = ["flowchart LR"]
+    for group in (ScopeGroup.EXTERNAL, ScopeGroup.INTERNAL):
+        lines.append(f"  subgraph group_{group.value}[{group.value.title()}]")
+        lines.extend(
+            (f'    scope_{scope.id}["{mermaid_label(scope.label)}\\n{scope.network}"]')
+            for scope in engagement.scope
+            if scope.group == group
+        )
+        lines.append("  end")
+    for target in engagement.targets:
+        label = mermaid_label(target.display_name)
+        level = engagement.strongest_access(target.id)
+        if level:
+            label += f"\\n{ACCESS_LABELS[level]}"
+        lines.append(f'  target_{target.id}["{label}"]')
+        lines.extend(
+            f"  scope_{address.scope_id} --- target_{target.id}"
+            for address in target.addresses
+        )
+    lines.extend(
+        f"  target_{scope.via_target_id} -->|pivot| scope_{scope.id}"
+        for scope in engagement.scope
+        if scope.via_target_id
+    )
+    return "\n".join(lines) + "\n"
+
+
+def render_activity_markdown(engagement: Engagement) -> str:
+    lines = [
+        "# Activity Log",
+        "",
+        "> Generated by TACMUX from curated activity. Edit records through the TUI.",
+        "",
+        "| UTC | Result | Target | Activity | Evidence |",
+        "|---|---|---|---|---|",
+    ]
+    for activity in sorted(engagement.activities, key=lambda item: item.occurred_at):
+        target = ""
+        if activity.target_id:
+            target = engagement.target_by_id(activity.target_id).display_name
+        evidence = f"`{activity.evidence}`" if activity.evidence else ""
+        lines.append(
+            f"| {md_escape(activity.occurred_at)} | {md_escape(activity.result.value)} | "
+            f"{md_escape(target)} | {md_escape(activity.summary)} | {evidence} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def render_attack_path_markdown(engagement: Engagement) -> str:
+    lines = [
+        "# Attack Paths",
+        "",
+        "> Generated by TACMUX. Only confirmed activities, findings, and access records are eligible.",
+        "",
+    ]
+    if not engagement.attack_paths:
+        lines.append("No confirmed attack paths have been recorded.")
+    for path in engagement.attack_paths:
+        lines.extend([f"## {path.name} `{path.id}`", ""])
+        for index, step in enumerate(path.steps, 1):
+            label = _reference_label(engagement, step)
+            narrative = f" — {step.narrative}" if step.narrative else ""
+            lines.append(f"{index}. **{md_escape(label)}**{md_escape(narrative)}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_sitrep(
+    engagement: Engagement,
+    *,
+    live_sessions: Iterable[str] = (),
+    jobs: Iterable[Mapping[str, object]] = (),
+    include_mermaid: bool = True,
+) -> str:
+    live = set(live_sessions)
+    job_list = list(jobs)
+    lines = [
+        f"# SITREP — {engagement.client}: {engagement.name}",
+        "",
+        "> Generated by TACMUX. Do not edit this file directly.",
+        "",
+        f"- **Assessment:** {engagement.assessment_type.value}",
+        f"- **Targets:** {len(engagement.targets)}",
+        f"- **Open findings:** {sum(item.state != FindingState.CLOSED for item in engagement.findings)}",
+        f"- **Live target sessions:** {len(live)}",
+        f"- **Discovery jobs:** {len(job_list)}",
+        "",
+        "## Scope",
+        "",
+        "| Group | Label | Network | Availability | Access path |",
+        "|---|---|---|---|---|",
+    ]
+    for scope in engagement.scope:
+        via = ""
+        if scope.via_target_id:
+            via = engagement.target_by_id(scope.via_target_id).display_name
+        lines.append(
+            f"| {scope.group.value} | {md_escape(scope.label)} | `{scope.network}` | "
+            f"{scope.availability.value} | {md_escape(via)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Targets and Confirmed Access",
+            "",
+            "| ID | Target | Addresses | Strongest confirmed access | Session |",
+            "|---|---|---|---|---|",
+        ]
+    )
+    for target in engagement.targets:
+        level = engagement.strongest_access(target.id)
+        access = ACCESS_LABELS[level] if level else "—"
+        addresses = ", ".join(item.value for item in target.addresses) or "—"
+        session = "running" if target.id in live else "stopped"
+        lines.append(
+            f"| `{target.id}` | {md_escape(target.display_name)} | {md_escape(addresses)} | "
+            f"{access} | {session} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Network Topology",
+            "",
+            "```text",
+            topology_text(engagement).rstrip(),
+            "```",
+        ]
+    )
+    if include_mermaid:
+        lines.extend(
+            [
+                "",
+                "### Mermaid Source",
+                "",
+                "```mermaid",
+                mermaid_topology(engagement).rstrip(),
+                "```",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Confirmed Attack Paths",
+            "",
+            "```text",
+            attack_paths_text(engagement).rstrip(),
+            "```",
+        ]
+    )
+    lines.extend(
+        [
+            "",
+            "## Findings",
+            "",
+            "| ID | Severity | State | Finding | Targets |",
+            "|---|---|---|---|---|",
+        ]
+    )
+    for finding in engagement.findings:
+        targets = ", ".join(
+            engagement.target_by_id(item).display_name for item in finding.target_ids
+        )
+        lines.append(
+            f"| `{finding.id}` | {finding.severity.value} | {finding.state.value} | "
+            f"[{md_link_text(finding.title)}]({finding.document}) | "
+            f"{md_escape(targets)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Recent Curated Activity",
+            "",
+            "| UTC | Result | Activity | Evidence |",
+            "|---|---|---|---|",
+        ]
+    )
+    for activity in sorted(engagement.activities, key=lambda item: item.occurred_at)[
+        -20:
+    ]:
+        evidence = f"`{activity.evidence}`" if activity.evidence else ""
+        lines.append(
+            f"| {activity.occurred_at} | {activity.result.value} | "
+            f"{md_escape(activity.summary)} | {evidence} |"
+        )
+    return "\n".join(lines).rstrip() + "\n"

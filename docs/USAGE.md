@@ -1,193 +1,176 @@
-# TACMUX usage
+# TACMUX operator guide
 
-## Workspace modes
+## Operating model
 
-TACMUX starts in flat mode. Each target is a direct child of `TACMUX_WORKSPACE`:
+An engagement is the authorization, reporting, retention, and evidence boundary. External and internal networks stay in the same engagement when they belong to the same assessment. Create separate engagements for a real client operation, HTB, OffSec, or another academy so their context and evidence cannot be confused.
 
-```bash
-tacmux engagement clear
-tacmux start 10.10.10.5
-# ~/workspace/10.10.10.5/
-```
+TACMUX keeps one `tacmux.engagement/v2` JSON manifest as durable state. The TUI is transient: closing it does not stop detached tmux sessions or discovery jobs.
 
-For an authorized operation, select one engagement before starting targets:
+## Create and front-load scope
 
-```bash
-tacmux engagement acme
-tacmux engagement                 # prints acme
-tacmux start 203.0.113.0/28
-# ~/workspace/acme/targets/203.0.113.0-28/
-```
+Run `tacmux`, press `n`, and supply:
 
-The selection is persisted in `~/.config/tacmux/engagementrc`. It affects future CLI commands, not already-running sessions. Run `tacmux engagement clear` when you want new operations to use flat mode again.
+- **Client or Lab:** a recognizable organization or training platform.
+- **Engagement Name:** a recognizable assessment or course instance.
+- **Assessment Type:** External, Internal, External + Internal, or Single-machine Lab.
+- **External/Internal scope:** optional IPs or CIDRs already known. Use `Label=network` when a friendly label helps.
+- **Internal availability:** ready now or unavailable until access exists.
+- **Pane logging:** per-engagement default.
 
-Selecting an engagement creates:
+Known `/32` hosts and networks can be entered before testing. Scope groups are intentionally limited to **external** and **internal**.
 
-- `ENGAGEMENT.md` for authorization, scope, rules, objectives, and targets.
-- `notes/activity.md`, `notes/attack-path.md`, and `notes/payloads.md`.
-- `findings/` and `targets/` containers.
+## Cockpit workflow
 
-TACMUX deliberately does not create every possible consulting folder. Add `Admin`, `Deliverables`, `Retest`, wireless evidence, or tool-specific scan directories when scope calls for them.
+The four tabs answer different operator questions:
 
-## One engagement, multiple networks
+| Tab | Operator question |
+|---|---|
+| Targets | What host am I working on, is its session live, and what access is confirmed? |
+| Scope & Discovery | What may I touch, what is reachable, and what identification jobs/results need review? |
+| Situation | What does the network look like, and what confirmed chain has been demonstrated? |
+| Documents | Where are the narrative, findings, notes, logs, and evidence? |
 
-The engagement is the authorization, evidence, and reporting boundary. External
-ranges, internal ranges, and individual hosts stay as flat targets beneath it:
+Press `a` for actions relevant to the active tab. Press `Ctrl+P` for Textual's fuzzy command palette. The palette exposes the same actions as the visible workflow and does not require fzf.
 
-```bash
-tacmux engagement acme
+## Scope and pivots
 
-# External discovery and an initial-access system
-tacmux start 203.0.113.0/28
-tacmux start vpn.acme.example
+Each address is stored with a scope-entry ID, not as a globally unique host key. That permits:
 
-# Internal discovery after an approved route exists
-tacmux start 10.20.0.0/24
-cap -a proxychains nmap -Pn -sT "$TARGET"
+- a dual-homed host with one external and one internal address;
+- the same RFC1918 address in two distinct scope entries;
+- multiple networks accessed through one pivot;
+- an internal range that begins unavailable.
 
-# Dedicated sessions for systems that matter to the access path
-tacmux start dc01.corp.acme.example
-tacmux start 10.20.0.25
-tacmux list
-```
+After a foothold creates an approved route:
 
-Use a range session for broad discovery. Give a host its own session when it
-needs deeper work, becomes part of the access path, or starts producing evidence
-that should remain easy to find. TACMUX does not establish a VPN, SOCKS proxy,
-or Ligolo tunnel; it keeps the resulting commands, pane logs, and target route
-together once that access exists.
+1. Open **Scope & Discovery**.
+2. Highlight the internal scope and press Enter or `a`.
+3. Set availability to **Ready** and select the target through which it is reachable.
+4. Refresh the Situation view.
 
-The `cap` command in the example comes from the optional NOCAP integration. Run
-Nmap directly when NOCAP is not installed.
+TACMUX records the route relationship; it does not configure VPNs, SOCKS proxies, Ligolo, SSH forwarding, or firewall rules.
 
-Record the boundary and access path in `ENGAGEMENT.md`. TACMUX 1.2 does not add a
-scope level to its paths, so all targets remain under `acme/targets/`. If two
-internal networks reuse an address, create distinct resolvable DNS or
-`/etc/hosts` aliases and use those aliases as the targets. Use separate
-engagements only when authorization, reporting, retention, or an unavoidable
-address collision requires actual separation.
+## Host identification and reconciliation
 
-`tacmux rename 10.20.0.25 app01.corp.acme.example` updates the workspace, tmux
-session, and `TARGET` inherited by new panes. The new name must resolve, and
-shells in existing panes keep their old environment until you open a new pane.
+Press `d` and choose one of three inputs:
 
-## Start a target
+1. **Run detached Nmap host identification** — launches only:
 
-```bash
-tacmux start 10.10.10.5              # logged target session
-tacmux start -n 10.10.10.5           # no automatic logging
-tacmux start -a 10.10.10.5           # launch AutoRecon
-tacmux start -a 10.10.10.0/24        # CIDR workspace: 10.10.10.0-24
-tacmux start -a targets.txt           # AutoRecon targets file
-tacmux start -a 10.10.10.5:445       # exports RPORT=445
-```
+   ```text
+   nmap -sn --reason -oX <job>/results.xml <selected-ready-scope...>
+   ```
 
-`start` creates the six target directories, creates a detached tmux session, explicitly sets its routing environment, starts the first pane log, then attaches or switches the current client. New windows and panes are logged by tmux hooks.
+2. **Import XML or pasted hosts** — accepts Nmap XML or one `IP [hostname]` per line.
+3. **Review a completed detached scan** — opens a successful job's XML.
 
-Use the normalized workspace name with later commands. For example, manage `10.10.10.0/24` as `10.10.10.0-24`.
+Highlight a job and press Enter to import a successful result or cancel an active scan. Imported jobs remain visible and are marked as imported.
 
-## Manage sessions
+Every candidate must be reviewed:
 
-```bash
-tacmux list
-tacmux pick                         # requires fzf
-tacmux status 10.10.10.5
-tacmux pause 10.10.10.5             # detach; processes keep running
-tacmux resume 10.10.10.5
-tacmux rename 10.10.10.5 dc01
-tacmux stop dc01                    # workspace remains
-tacmux stop dc01 archive            # stop, then create tar.gz
-tacmux archive dc01                 # archive an inactive workspace
-```
+- **Add** creates a stable target and evidence directory.
+- **Merge** adds a scope-qualified address/hostname to an existing host. Press `m` to select the intended target when a second interface was discovered.
+- **Ignore** makes no target change.
 
-`archive` asks before stopping an attached session and again before deleting the source directory. Archives go to `TACMUX_ARCHIVE_DIR` and are created with a JSON sidecar:
+TACMUX defaults accepted results to detached target sessions. Disable that checkbox when sessions would create noise. An address matching more than one selected scope entry is ignored rather than guessed; re-import it with only the intended scope selected or add it explicitly through **Edit target identity**.
 
-```text
-acme_targets_dc01_20260811_150000.tar.gz
-acme_targets_dc01_20260811_150000.tar.gz.manifest.json
-```
+## Target work
 
-The `tacmux.archive-manifest/v1` document is generated from the completed tarball. It records the UTC creation time, TACMUX version, engagement, target, relative workspace route, tmux session, archive size and SHA-256, entry counts, and each regular file's modification time, size, and SHA-256. Links and their timestamps are recorded without following them outside the archive. Usernames, hostnames, and absolute local paths are intentionally omitted.
+Highlight a target and press Enter. TACMUX creates the tmux session if necessary, exports stable engagement/target context, starts context-aware logging when enabled, and attaches or switches the current client.
 
-To verify the tarball against a manifest when `jq` and GNU `sha256sum` are available:
+Target actions include:
 
-```bash
-manifest=/path/to/archive.tar.gz.manifest.json
-jq -r '"\(.archive.sha256)  \(.archive.filename)"' "$manifest" |
-  (cd "$(dirname "$manifest")" && sha256sum -c -)
-```
+- start/attach or stop session;
+- edit display name, scope-qualified addresses, hostnames, and primary endpoint;
+- edit `NOTES.md` through `$VISUAL`, `$EDITOR`, or `vi`;
+- record confirmed access or curated activity;
+- create and edit a finding;
+- edit or delete structured engagement records;
+- view a NOCAP timeline when enabled;
+- create a verified target archive;
+- permanently delete an unreferenced mistaken target.
 
-The manifest proves integrity relative to the sidecar; it is not a digital signature. Store or transmit both files through the engagement's approved evidence channel.
+Display-name changes do not rename the stable target directory or tmux identity. Starting or attaching refreshes session context; panes created afterward inherit the current primary endpoint as `TARGET`.
 
-## Data permissions
+The optional engagement operations session starts in the engagement root. Stop-all cancels active discovery jobs and stops target and operations sessions before archival.
 
-TACMUX applies `umask 077` at install time and whenever its workspace or logging runtime creates data. New directories are therefore normally mode `700`; new logs, notes, archives, manifests, and state files are normally mode `600`.
+## Recording activity, access, and findings
 
-Set `TACMUX_UMASK="027"` in `~/.config/tacmux/tacmux.conf` only for an approved group-shared workflow. Existing files are not recursively changed. Some VM shared folders, network mounts, and non-Unix filesystems ignore or emulate permission bits; use a protected local Linux filesystem for sensitive evidence.
+### Activity
 
-## Logging
+Use activity for concise, curated events—not every command. Select one result:
 
-An operation pane logs to:
+- **Confirmed:** the described outcome was demonstrated.
+- **Failed:** the attempt conclusively failed.
+- **No Result:** the attempt did not establish an outcome.
 
-```text
-$TACMUX_WORKSPACE/<route>/logs/YYYYMMDD/<window>_<title>_p<index>_<time>.log
-```
+Attach a relative evidence path when one exists. Failed and no-result records remain useful in the timeline but cannot become attack-path steps.
 
-A pane outside an `op_*` session logs to `TACMUX_LOG_DIR/YYYYMMDD/`. Each pane has at most one active `pipe-pane` logger.
+### Access
 
-```bash
-tacmux log status
-tacmux log toggle
-tacmux log capture
-tacmux logs                       # fzf browser
-tacmux logs /path/to/logs
-```
+Record a principal, authority/realm, method, target, evidence, and the strongest demonstrated level:
 
-`Ctrl+Space T`, `S`, `L`, `H`, and `q` provide the same common controls. `H` intentionally forces a fallback log rather than target routing.
+1. **Authenticated** — credentials/session accepted; no command execution implied.
+2. **User Execution** — code/command execution in a non-administrative context.
+3. **Administrative Execution** — administrative execution demonstrated.
+4. **Privileged Execution** — the platform's highest relevant execution context demonstrated.
 
-Raw `.log` files are authoritative. The browser resolves terminal control
-sequences without rewriting the file and preserves repeated and sparse rendered
-lines by default. Press `Alt-k` for the explicitly lossy compact preview, which
-removes prompt redraw, padding, animation, and repeated-output artifacts.
+Do not promote authenticated SMB access to execution merely because credentials work.
 
-## Clipboard over SSH
+### Findings
 
-TACMUX configures tmux with `set-clipboard external`; applications cannot write the host clipboard just by emitting terminal escape sequences. Explicit copies use:
+Create a finding only after selecting affected targets. TACMUX records title, severity, state, targets, and evidence, then opens a Markdown narrative with Summary, Evidence, Impact, and Recommendation sections.
 
-```bash
-printf '%s' 'text' | tacmux clip
-```
+Use **Draft** when validation or reporting language remains incomplete, **Confirmed** when evidence supports it, and **Closed** for a resolved/retested record. Draft findings cannot be attack-path steps.
 
-Inside tmux this calls `tmux load-buffer -w -`, allowing tmux to forward an OSC 52 copy through SSH to a compatible local terminal. Outside tmux it tries Wayland, X11, macOS, then OSC 52 when SSH is detected.
+Choose **Manage engagement records** from a contextual action menu to correct or delete access, activity, finding, and attack-path records. A record used by an attack path must be removed from that path first. Scope entries can likewise be fully edited or deleted when no target address uses them.
 
-## Directory helper
+## Building an attack path
 
-Create just the per-target tree in any path:
+Network topology and attack path are separate views:
 
-```bash
-tacmux mkop ./evidence/host-a
-```
+- topology maps external/internal scope, hosts, interfaces, access level, and pivots;
+- an attack path is a curated sequence of demonstrated findings, access records, and confirmed activities.
 
-This does not select an engagement or start tmux.
+Open **Situation**, press `a`, and choose **Build confirmed attack path**. Press Enter on eligible records to add them. In the chosen list, Delete removes a step and `Ctrl+Up` / `Ctrl+Down` changes order. Optional one-line step notes explain how each fact advances the chain.
+
+Each step may only reference structured confirmed state. The generated `notes/attack-path.md` and `SITREP.md` therefore cannot accidentally promote a failed responder attempt into a demonstrated compromise.
+
+## Documents and evidence
+
+The Documents tab previews:
+
+- editable Markdown;
+- generated Markdown;
+- UTF-8/ANSI evidence and logs, with terminal color sequences rendered;
+- binary metadata and a SHA-256 for binary files up to 2 MiB.
+
+Text previews stop at 256 KiB. Evidence indexing stops at 500 files or a bounded directory-scan budget; use ordinary filesystem tools for larger collections. Generated Markdown is changed through its structured TACMUX record, not edited directly.
+
+## Archives, restore, and mistaken-target deletion
+
+Target and engagement archives are private `.tar.gz` files with adjacent `.manifest.json` documents. Creation verifies the completed archive immediately. `tacmux archive verify FILE` checks archive size, SHA-256, member hashes, paths, links, and root structure.
+
+Restore refuses an existing destination and extracts through a private staging directory. Engagement restores validate the embedded manifest and identity; target restores validate archived metadata against the current engagement.
+
+Permanent target deletion is deliberately stricter than archive:
+
+- the tmux target session must be stopped;
+- no scope pivot, access, activity, or finding may reference the target;
+- the exact displayed confirmation must be typed;
+- the target directory is staged, the manifest is saved, and only then are files removed.
+
+## v1 import
+
+From the engagement picker press `i`. Import is copy-only: v1 target evidence is copied into stable v2 target directories and original notes/findings are retained under `legacy-import/`. The source is never converted in place.
+
+Review imported targets, add scope-qualified addresses, and curate structured access/activity/findings manually. Import does not guess security facts from free-form notes.
 
 ## NOCAP
 
-When NOCAP integration is enabled, TACMUX exports `NOCAP_WORKSPACE` and supplies each session’s relative target route so `cap` output lands in the same tree:
+NOCAP remains optional and separate. With `[nocap] enabled = true`, target sessions receive the workspace/route environment and the target menu can read:
 
-```bash
-cap -a nmap -sC -sV "$TARGET"
-cap -a whatweb "http://$TARGET"
-cap timeline --format md
+```text
+cap timeline --format json
 ```
 
-Disable it with `TACMUX_NOCAP_INTEGRATION="false"`.
-
-## Diagnose
-
-```bash
-tacmux config
-tacmux health
-tacmux version
-```
-
-The health check treats tmux, zsh, and Python 3 as required; fzf and AutoRecon are optional.
+TACMUX does not write NOCAP state. Operator judgment remains the trust boundary.

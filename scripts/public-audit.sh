@@ -10,7 +10,7 @@ pass() { printf '[ok] %s\n' "$*"; }
 fail() { printf '[FAIL] %s\n' "$*" >&2; failures=$((failures + 1)); }
 
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    mapfile -d '' files < <(git ls-files -z)
+    mapfile -d '' files < <(git ls-files -co --exclude-standard -z)
 else
     mapfile -d '' files < <(
         find . -type f \
