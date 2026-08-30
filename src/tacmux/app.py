@@ -2,25 +2,24 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from contextlib import suppress
-from dataclasses import asdict, fields
-import hashlib
-import ipaddress
-import os
+from dataclasses import asdict
 from pathlib import Path
 import shutil
 import subprocess
 from typing import ClassVar
 
-from rich.markdown import Markdown as RichMarkdown
-from rich.text import Text
 from textual import events, on
-from textual.app import App, ComposeResult, get_system_commands_provider
+from textual.app import (
+    App,
+    ComposeResult,
+    SuspendNotSupported,
+    get_system_commands_provider,
+)
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits, Provider
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.screen import Screen
+from textual.theme import Theme
 from textual.widgets import (
     DataTable,
     Footer,
@@ -32,7 +31,12 @@ from textual.widgets import (
     TabPane,
 )
 
-from .archive import create_archive, restore_archive, verify_archive
+from .archive import (
+    create_archive,
+    restore_engagement_archive,
+    restore_target_archive,
+    verify_archive,
+)
 from .config import Settings
 from .dialogs import (
     AccessForm,
@@ -65,7 +69,6 @@ from .model import (
     AccessRecord,
     Activity,
     AttackPath,
-    AttackPathStep,
     Engagement,
     Finding,
     ScopeAvailability,
@@ -74,36 +77,11 @@ from .model import (
     TargetAddress,
 )
 from .nocap import NocapReader
-from .render import ACCESS_LABELS, attack_paths_text, topology_text
+from .panes import DocumentsPane, ScopeDiscoveryPane, SituationPane, TargetsPane
 from .store import EngagementRecord, Workspace
+from .themes import BLTSEC_THEME, CURATED_THEME_NAMES, DEFAULT_THEME
+from .terminal_output import iter_rendered
 from .tmux import LaunchIntent, TmuxService
-
-
-def bounded_files(
-    root: Path, limit: int, scan_budget: int = 2_000
-) -> tuple[list[Path], bool]:
-    files: list[Path] = []
-    pending = [root]
-    scanned = 0
-    while pending and len(files) < limit and scanned < scan_budget:
-        directory = pending.pop()
-        try:
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    scanned += 1
-                    if scanned > scan_budget:
-                        break
-                    if entry.is_symlink():
-                        continue
-                    if entry.is_dir(follow_symlinks=False):
-                        pending.append(Path(entry.path))
-                    elif entry.is_file(follow_symlinks=False):
-                        files.append(Path(entry.path))
-                        if len(files) >= limit:
-                            break
-        except OSError:
-            continue
-    return files, bool(pending) or scanned >= scan_budget or len(files) >= limit
 
 
 class OperatorCommands(Provider):
@@ -377,12 +355,16 @@ class MainScreen(Screen):
     def __init__(self, record: EngagementRecord):
         super().__init__()
         self.record = record
-        self.document_paths: dict[str, tuple[Path, bool, str]] = {}
         self.pending_job_id = ""
+        self.live_target_ids: set[str] = set()
 
     @property
     def engagement(self) -> Engagement:
         return self.record.engagement
+
+    @property
+    def document_paths(self) -> dict[str, tuple[Path, bool, str]]:
+        return self.query_one(DocumentsPane).document_paths
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -392,26 +374,14 @@ class MainScreen(Screen):
         )
         yield Input(placeholder="Filter targets", id="target-filter")
         with TabbedContent(initial="targets", id="workspace-tabs"):
-            with TabPane("Targets", id="targets"), Horizontal(id="target-layout"):
-                yield DataTable(
-                    id="target-table", cursor_type="row", zebra_stripes=True
-                )
-                yield Static("No target selected", id="target-detail")
+            with TabPane("Targets", id="targets"):
+                yield TargetsPane(id="target-layout")
             with TabPane("Scope & Discovery", id="scope"):
-                yield Label("Declared Scope", classes="section-title")
-                yield DataTable(id="scope-table", cursor_type="row", zebra_stripes=True)
-                yield Label("Detached Discovery Jobs", classes="section-title")
-                yield DataTable(id="jobs-table", cursor_type="row", zebra_stripes=True)
+                yield ScopeDiscoveryPane()
             with TabPane("Situation", id="situation"):
-                yield Static(id="situation-view")
-            with (
-                TabPane("Documents", id="documents"),
-                Horizontal(id="documents-layout"),
-            ):
-                yield DataTable(
-                    id="documents-table", cursor_type="row", zebra_stripes=True
-                )
-                yield Static(id="document-preview")
+                yield SituationPane(id="situation-view")
+            with TabPane("Documents", id="documents"):
+                yield DocumentsPane(id="documents-layout")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -435,13 +405,8 @@ class MainScreen(Screen):
             self.query_one(focus_target).focus()
 
     def selected_target(self, *, required: bool = True) -> Target | None:
-        table = self.query_one("#target-table", DataTable)
-        if table.row_count == 0:
-            if required:
-                raise ValidationError("no target is selected")
-            return None
-        row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-        return self.engagement.target_by_id(str(row_key.value))
+        target_id = self.query_one(TargetsPane).selected_target_id(required=required)
+        return self.engagement.target_by_id(target_id) if target_id else None
 
     def refresh_all(self) -> bool:
         try:
@@ -449,287 +414,23 @@ class MainScreen(Screen):
                 self.record.root, self.app.workspace.load(self.record.root)
             )
             live = self.app.tmux.live_target_ids(self.engagement)
+            self.live_target_ids = live
             jobs = self.app.jobs.list(self.record.root)
             self.app.workspace.refresh_sitrep(
                 self.record.root, self.engagement, live_target_ids=live, jobs=jobs
             )
-            self.refresh_targets(self.query_one("#target-filter", Input).value)
-            self.refresh_scope()
-            self.refresh_situation()
-            self.refresh_documents()
+            self.query_one(TargetsPane).populate(
+                self.engagement,
+                live,
+                self.query_one("#target-filter", Input).value,
+            )
+            self.query_one(ScopeDiscoveryPane).populate(self.engagement, jobs)
+            self.query_one(SituationPane).populate(self.engagement)
+            self.query_one(DocumentsPane).populate(self.record)
             return True
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
             return False
-
-    def refresh_targets(self, query: str = "") -> None:
-        table = self.query_one("#target-table", DataTable)
-        if not table.columns:
-            table.add_columns("State", "Group", "Target", "Addresses", "Access")
-        table.clear()
-        live = self.app.tmux.live_target_ids(self.engagement)
-        query = query.casefold().strip()
-        for target in self.engagement.targets:
-            addresses = ", ".join(item.value for item in target.addresses)
-            haystack = f"{target.display_name} {addresses} {' '.join(target.hostnames)}".casefold()
-            if query and query not in haystack:
-                continue
-            groups = sorted(
-                {
-                    self.engagement.scope_by_id(item.scope_id).group.value
-                    for item in target.addresses
-                }
-            )
-            access = self.engagement.strongest_access(target.id)
-            table.add_row(
-                "RUN" if target.id in live else "—",
-                "/".join(groups) or "—",
-                target.display_name,
-                addresses or "—",
-                ACCESS_LABELS[access] if access else "—",
-                key=target.id,
-            )
-        self.update_target_detail(self.selected_target(required=False))
-
-    def update_target_detail(self, target: Target | None) -> None:
-        detail = self.query_one("#target-detail", Static)
-        if target is None:
-            detail.update(
-                "No target selected\n\nPress n to create one or d to import discovery."
-            )
-            return
-        access = [
-            item for item in self.engagement.access if item.target_id == target.id
-        ]
-        recent = [
-            item for item in self.engagement.activities if item.target_id == target.id
-        ][-5:]
-        lines = [
-            f"{target.display_name}  {target.id}",
-            "",
-            f"Directory: {target.directory}",
-            f"Primary: {target.primary_endpoint or '—'}",
-            f"Addresses: {', '.join(item.value for item in target.addresses) or '—'}",
-            f"Hostnames: {', '.join(target.hostnames) or '—'}",
-            "",
-            "Confirmed access",
-        ]
-        if access:
-            lines.extend(
-                f"• {item.authority + chr(92) if item.authority else ''}{item.principal}: {ACCESS_LABELS[item.level]} via {item.method or 'unspecified'}"
-                for item in access
-            )
-        else:
-            lines.append("• None")
-        lines.extend(["", "Recent curated activity"])
-        lines.extend(
-            (f"• {item.result.value}: {item.summary}" for item in recent),
-        )
-        if not recent:
-            lines.append("• None")
-        detail.update(Text("\n".join(lines)))
-
-    def refresh_scope(self) -> None:
-        table = self.query_one("#scope-table", DataTable)
-        if not table.columns:
-            table.add_columns("Group", "Label", "Network", "Availability", "Via")
-        table.clear()
-        for item in self.engagement.scope:
-            via = (
-                self.engagement.target_by_id(item.via_target_id).display_name
-                if item.via_target_id
-                else "—"
-            )
-            table.add_row(
-                item.group.value,
-                item.label,
-                item.network,
-                item.availability.value,
-                via,
-                key=item.id,
-            )
-        jobs_table = self.query_one("#jobs-table", DataTable)
-        if not jobs_table.columns:
-            jobs_table.add_columns("Job", "State", "Scope", "Started", "Result")
-        jobs_table.clear()
-        for job in self.app.jobs.list(self.record.root):
-            state = str(job.get("state", ""))
-            if job.get("imported_at"):
-                state += " / imported"
-            jobs_table.add_row(
-                str(job.get("id", "")),
-                state,
-                ", ".join(job.get("scope_ids", [])),
-                str(job.get("started_at") or "—")[:19],
-                str(job.get("xml_path", "")),
-                key=str(job.get("id", "")),
-            )
-
-    def refresh_situation(self) -> None:
-        topology = topology_text(self.engagement).rstrip()
-        paths = attack_paths_text(self.engagement).rstrip()
-        self.query_one("#situation-view", Static).update(
-            RichMarkdown(
-                f"# Network Topology\n\n```text\n{topology}\n```\n\n"
-                f"# Confirmed Attack Paths\n\n```text\n{paths}\n```\n"
-            )
-        )
-
-    def _document_entries(self) -> list[tuple[str, Path, bool, str]]:
-        entries = [
-            (
-                "Engagement narrative",
-                self.record.root / "ENGAGEMENT.md",
-                True,
-                "markdown",
-            ),
-            ("Generated SITREP", self.record.root / "SITREP.md", False, "generated"),
-            (
-                "Generated activity",
-                self.record.root / "notes/activity.md",
-                False,
-                "generated",
-            ),
-            (
-                "Generated attack paths",
-                self.record.root / "notes/attack-path.md",
-                False,
-                "generated",
-            ),
-            ("Payload log", self.record.root / "notes/payloads.md", True, "markdown"),
-        ]
-        entries.extend(
-            (
-                f"Finding {item.id}: {item.title}",
-                self.record.root / item.document,
-                True,
-                "markdown",
-            )
-            for item in self.engagement.findings
-        )
-        entries.extend(
-            (
-                f"Target {item.id}: {item.display_name}",
-                self.record.root / "targets" / item.directory / "NOTES.md",
-                True,
-                "markdown",
-            )
-            for item in self.engagement.targets
-        )
-        return entries
-
-    def _evidence_entries(self) -> tuple[list[tuple[str, Path, bool, str]], bool]:
-        entries: list[tuple[str, Path, bool, str]] = []
-        evidence_count = 0
-        limit_reached = False
-        for target in self.engagement.targets:
-            target_root = self.record.root / "targets" / target.directory
-            for phase in (
-                "recon",
-                "exploitation",
-                "loot",
-                "screenshots",
-                "reports",
-                "logs",
-            ):
-                phase_root = target_root / phase
-                if not phase_root.is_dir():
-                    continue
-                paths, truncated = bounded_files(phase_root, 500 - evidence_count)
-                for path in paths:
-                    relative = path.relative_to(target_root)
-                    editable = path.suffix.casefold() in {".md", ".markdown"}
-                    entries.append(
-                        (
-                            f"{target.display_name} / {relative}",
-                            path,
-                            editable,
-                            "markdown" if editable else "evidence",
-                        )
-                    )
-                    evidence_count += 1
-                if truncated:
-                    limit_reached = True
-                if limit_reached:
-                    break
-            if limit_reached:
-                break
-        return entries, limit_reached
-
-    def refresh_documents(self) -> None:
-        entries = self._document_entries()
-        evidence, limit_reached = self._evidence_entries()
-        entries.extend(evidence)
-        table = self.query_one("#documents-table", DataTable)
-        if not table.columns:
-            table.add_columns("Document / Evidence", "Mode")
-        table.clear()
-        self.document_paths.clear()
-        for index, (label, path, editable, kind) in enumerate(entries):
-            key = f"D{index:04d}"
-            self.document_paths[key] = (path, editable, kind)
-            table.add_row(label, "editable" if editable else kind, key=key)
-        if limit_reached:
-            self.app.notify(
-                "Evidence list is limited to the first 500 files", severity="warning"
-            )
-        self.preview_selected_document()
-
-    def selected_document(self) -> tuple[Path, bool, str] | None:
-        table = self.query_one("#documents-table", DataTable)
-        if table.row_count == 0:
-            return None
-        row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-        return self.document_paths.get(str(row_key.value))
-
-    def preview_selected_document(self) -> None:
-        selected = self.selected_document()
-        if selected is None:
-            self.query_one("#document-preview", Static).update("No document selected.")
-            return
-        path, _, kind = selected
-        try:
-            preview = self.query_one("#document-preview", Static)
-            size = path.stat().st_size
-            with path.open("rb") as stream:
-                sample = stream.read(256 * 1024)
-            truncated = size > 256 * 1024
-            if b"\0" in sample:
-                digest = "not computed for files over 2 MiB"
-                if size <= 2 * 1024 * 1024:
-                    with path.open("rb") as stream:
-                        digest = hashlib.file_digest(stream, "sha256").hexdigest()
-                preview.update(
-                    Text(
-                        f"Binary evidence\n\nPath: {path.relative_to(self.record.root)}\n"
-                        f"Size: {size:,} bytes\nSHA-256: {digest}"
-                    )
-                )
-                return
-            content = sample.decode("utf-8", errors="replace")
-            if truncated:
-                content += (
-                    f"\n\n[preview truncated at 256 KiB; file size is {size:,} bytes]"
-                )
-            preview.update(
-                RichMarkdown(content)
-                if kind in {"markdown", "generated"}
-                else Text.from_ansi(content)
-            )
-        except OSError as exc:
-            self.query_one("#document-preview", Static).update(
-                f"Unable to read `{path}`: {exc}"
-            )
-
-    @on(DataTable.RowHighlighted)
-    def row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if event.data_table.id == "target-table":
-            with suppress(TacmuxError):
-                self.update_target_detail(
-                    self.engagement.target_by_id(str(event.row_key.value))
-                )
-        elif event.data_table.id == "documents-table":
-            self.preview_selected_document()
 
     @on(DataTable.RowSelected)
     def row_selected(self, event: DataTable.RowSelected) -> None:
@@ -740,7 +441,7 @@ class MainScreen(Screen):
         elif event.data_table.id == "jobs-table":
             self.job_actions()
         elif event.data_table.id == "documents-table":
-            self.edit_selected_document()
+            self.open_selected_document()
 
     def action_default_action(self) -> None:
         active = self.query_one("#workspace-tabs", TabbedContent).active
@@ -753,7 +454,7 @@ class MainScreen(Screen):
             else:
                 self.edit_scope()
         elif active == "documents":
-            self.edit_selected_document()
+            self.open_selected_document()
 
     def action_filter(self) -> None:
         field = self.query_one("#target-filter", Input)
@@ -763,7 +464,11 @@ class MainScreen(Screen):
 
     @on(Input.Changed, "#target-filter")
     def filter_changed(self, event: Input.Changed) -> None:
-        self.refresh_targets(event.value)
+        self.query_one(TargetsPane).populate(
+            self.engagement,
+            self.live_target_ids,
+            event.value,
+        )
 
     @on(Input.Submitted, "#target-filter")
     def filter_submitted(self) -> None:
@@ -808,24 +513,16 @@ class MainScreen(Screen):
     def _add_scope(self, value: dict | None) -> None:
         if value is None:
             return
-        scope = None
         try:
-            scope = self.engagement.add_scope(**value)
-            self.app.save_engagement(self.record)
+            self.app.workspace.add_scope(
+                self.record.root, self.engagement, **value
+            )
             self.refresh_all()
         except (TacmuxError, OSError, ValueError) as exc:
-            if scope is not None:
-                self.engagement.scope = [
-                    item for item in self.engagement.scope if item.id != scope.id
-                ]
             self.app.show_error(str(exc))
 
     def selected_scope_id(self) -> str:
-        table = self.query_one("#scope-table", DataTable)
-        if table.row_count == 0:
-            raise ValidationError("no scope entry is selected")
-        row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-        return str(row_key.value)
+        return self.query_one(ScopeDiscoveryPane).selected_scope_id()
 
     def scope_actions(self) -> None:
         actions = [
@@ -863,28 +560,12 @@ class MainScreen(Screen):
     def _edit_scope(self, scope_id: str, value: dict | None) -> None:
         if value is None:
             return
-        scope = self.engagement.scope_by_id(scope_id)
-        previous = deepcopy(scope)
         try:
-            scope.label = value["label"]
-            scope.group = value["group"]
-            scope.network = str(ipaddress.ip_network(value["network"], strict=False))
-            scope.availability = value["availability"]
-            scope.via_target_id = value["via_target_id"]
-            if any(
-                item.id != scope.id
-                and item.group == scope.group
-                and item.network == scope.network
-                for item in self.engagement.scope
-            ):
-                raise ValidationError(
-                    f"scope already exists in {scope.group.value}: {scope.network}"
-                )
-            self.app.save_engagement(self.record)
+            self.app.workspace.update_scope(
+                self.record.root, self.engagement, scope_id, **value
+            )
             self.refresh_all()
         except (TacmuxError, OSError, ValueError) as exc:
-            for item in fields(scope):
-                setattr(scope, item.name, getattr(previous, item.name))
             self.app.show_error(str(exc))
 
     def delete_scope(self) -> None:
@@ -949,7 +630,7 @@ class MainScreen(Screen):
         if active == "scope":
             self.scope_actions()
         elif active == "documents":
-            self.edit_selected_document()
+            self.document_actions()
         elif active == "situation":
             self.app.push_screen(
                 ActionMenu(
@@ -1046,17 +727,17 @@ class MainScreen(Screen):
     def _add_target_address(self, target_id: str, value: dict | None) -> None:
         if value is None:
             return
-        target = self.engagement.target_by_id(target_id)
-        previous_primary = target.primary_endpoint
-        target.addresses.append(TargetAddress(value["address"], value["scope_id"]))
-        if value["primary"] or not target.primary_endpoint:
-            target.primary_endpoint = value["address"]
         try:
-            self.app.save_engagement(self.record)
+            self.app.workspace.add_target_address(
+                self.record.root,
+                self.engagement,
+                target_id,
+                value["address"],
+                value["scope_id"],
+                primary=value["primary"],
+            )
             self.refresh_all()
         except (TacmuxError, OSError, ValueError) as exc:
-            target.addresses.pop()
-            target.primary_endpoint = previous_primary
             self.app.show_error(str(exc))
 
     def remove_target_address(self) -> None:
@@ -1078,21 +759,12 @@ class MainScreen(Screen):
     def _remove_target_address(self, target_id: str, index: str | None) -> None:
         if index is None:
             return
-        target = self.engagement.target_by_id(target_id)
-        removed = target.addresses.pop(int(index))
-        previous_primary = target.primary_endpoint
-        if target.primary_endpoint == removed.value:
-            target.primary_endpoint = (
-                target.hostnames[0]
-                if target.hostnames
-                else (target.addresses[0].value if target.addresses else "")
-            )
         try:
-            self.app.save_engagement(self.record)
+            self.app.workspace.remove_target_address(
+                self.record.root, self.engagement, target_id, int(index)
+            )
             self.refresh_all()
         except (TacmuxError, OSError, ValueError) as exc:
-            target.addresses.insert(int(index), removed)
-            target.primary_endpoint = previous_primary
             self.app.show_error(str(exc))
 
     def edit_target_hostnames(self) -> None:
@@ -1109,27 +781,12 @@ class MainScreen(Screen):
     def _edit_target_hostnames(self, target_id: str, value: str | None) -> None:
         if value is None:
             return
-        target = self.engagement.target_by_id(target_id)
-        previous = target.hostnames
-        previous_primary = target.primary_endpoint
-        target.hostnames = sorted(
-            {item.strip() for item in value.split(",") if item.strip()}
-        )
-        if (
-            target.primary_endpoint in previous
-            and target.primary_endpoint not in target.hostnames
-        ):
-            target.primary_endpoint = (
-                target.hostnames[0]
-                if target.hostnames
-                else (target.addresses[0].value if target.addresses else "")
-            )
         try:
-            self.app.save_engagement(self.record)
+            self.app.workspace.replace_target_hostnames(
+                self.record.root, self.engagement, target_id, value.split(",")
+            )
             self.refresh_all()
         except (TacmuxError, OSError, ValueError) as exc:
-            target.hostnames = previous
-            target.primary_endpoint = previous_primary
             self.app.show_error(str(exc))
 
     def choose_primary_endpoint(self) -> None:
@@ -1152,14 +809,12 @@ class MainScreen(Screen):
     def _set_primary_endpoint(self, target_id: str, endpoint: str | None) -> None:
         if not endpoint:
             return
-        target = self.engagement.target_by_id(target_id)
-        previous = target.primary_endpoint
-        target.primary_endpoint = endpoint
         try:
-            self.app.save_engagement(self.record)
+            self.app.workspace.set_primary_endpoint(
+                self.record.root, self.engagement, target_id, endpoint
+            )
             self.refresh_all()
         except (TacmuxError, OSError, ValueError) as exc:
-            target.primary_endpoint = previous
             self.app.show_error(str(exc))
 
     def stop_target(self) -> None:
@@ -1191,7 +846,7 @@ class MainScreen(Screen):
     def edit_target_notes(self) -> None:
         target = self.selected_target()
         self.app.edit_file(self.record.root / "targets" / target.directory / "NOTES.md")
-        self.refresh_documents()
+        self.query_one(DocumentsPane).populate(self.record)
 
     def record_access(self) -> None:
         target = self.selected_target()
@@ -1203,19 +858,12 @@ class MainScreen(Screen):
     def _record_access(self, target_id: str, value: dict | None) -> None:
         if value is None:
             return
-        record = AccessRecord(
-            id=self.engagement.next_id("access", "AR"),
-            target_id=target_id,
-            **value,
-        )
-        self.engagement.access.append(record)
         try:
-            self.app.save_engagement(self.record)
+            self.app.workspace.create_access(
+                self.record.root, self.engagement, target_id, **value
+            )
             self.refresh_all()
         except (TacmuxError, OSError, ValueError) as exc:
-            self.engagement.access = [
-                item for item in self.engagement.access if item.id != record.id
-            ]
             self.app.show_error(str(exc))
 
     def action_activity(self) -> None:
@@ -1228,15 +876,12 @@ class MainScreen(Screen):
     def _record_activity(self, value: dict | None) -> None:
         if value is None:
             return
-        activity = Activity(id=self.engagement.next_id("activity", "A"), **value)
-        self.engagement.activities.append(activity)
         try:
-            self.app.save_engagement(self.record)
+            self.app.workspace.create_activity(
+                self.record.root, self.engagement, **value
+            )
             self.refresh_all()
         except (TacmuxError, OSError, ValueError) as exc:
-            self.engagement.activities = [
-                item for item in self.engagement.activities if item.id != activity.id
-            ]
             self.app.show_error(str(exc))
 
     def create_finding(self) -> None:
@@ -1264,23 +909,16 @@ class MainScreen(Screen):
     def _create_attack_path(self, value: dict | None) -> None:
         if value is None:
             return
-        path = AttackPath(
-            id=self.engagement.next_id("attack_path", "P"),
-            name=value["name"],
-            steps=[
-                AttackPathStep(ref_type=item[0], ref_id=item[1], narrative=item[2])
-                for item in value["steps"]
-            ],
-        )
-        self.engagement.attack_paths.append(path)
         try:
-            self.app.save_engagement(self.record)
+            self.app.workspace.create_attack_path(
+                self.record.root,
+                self.engagement,
+                value["name"],
+                value["steps"],
+            )
             self.refresh_all()
             self.action_tab("situation")
         except (TacmuxError, OSError, ValueError) as exc:
-            self.engagement.attack_paths = [
-                item for item in self.engagement.attack_paths if item.id != path.id
-            ]
             self.app.show_error(str(exc))
 
     def action_records(self) -> None:
@@ -1354,26 +992,6 @@ class MainScreen(Screen):
             raise ValidationError(f"unknown {kind} record: {record_id}")
         return record
 
-    @staticmethod
-    def _apply_record_update(
-        record: AccessRecord | Activity | Finding | AttackPath,
-        kind: str,
-        value: dict,
-    ) -> None:
-        names = {
-            "access": ("principal", "authority", "method", "level", "evidence"),
-            "activity": ("summary", "result", "target_id", "evidence"),
-            "finding": ("title", "severity", "state", "target_ids", "evidence"),
-        }
-        if kind == "attack_path":
-            record.name = value["name"]
-            record.steps = [
-                AttackPathStep(item[0], item[1], item[2]) for item in value["steps"]
-            ]
-            return
-        for name in names[kind]:
-            setattr(record, name, value[name])
-
     def _edit_record(self, kind: str, record_id: str) -> None:
         try:
             record = self._record(kind, record_id)
@@ -1395,14 +1013,11 @@ class MainScreen(Screen):
     def _save_record(self, kind: str, record_id: str, value: dict | None) -> None:
         if value is None:
             return
-        record = self._record(kind, record_id)
-        previous = deepcopy(record)
         try:
-            self._apply_record_update(record, kind, value)
-            self.app.save_engagement(self.record)
+            record = self.app.workspace.update_record(
+                self.record.root, self.engagement, kind, record_id, value
+            )
         except (TacmuxError, OSError, ValueError) as exc:
-            for item in fields(record):
-                setattr(record, item.name, deepcopy(getattr(previous, item.name)))
             self.app.show_error(str(exc))
             return
         if kind == "finding":
@@ -1510,7 +1125,9 @@ class MainScreen(Screen):
             job = self.app.jobs.create(self.record.root, self.engagement, scope_ids)
             self.app.notify(f"Discovery {job['id']} started in detached mode")
             self.action_tab("scope")
-            self.refresh_scope()
+            self.query_one(ScopeDiscoveryPane).populate(
+                self.engagement, self.app.jobs.list(self.record.root)
+            )
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
@@ -1537,12 +1154,11 @@ class MainScreen(Screen):
         )
 
     def import_selected_job(self) -> None:
-        table = self.query_one("#jobs-table", DataTable)
-        if table.row_count == 0:
-            self.app.show_error("No discovery job is selected")
+        try:
+            job_id = self.query_one(ScopeDiscoveryPane).selected_job_id()
+        except ValidationError as exc:
+            self.app.show_error(str(exc))
             return
-        row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-        job_id = str(row_key.value)
         jobs = self.app.jobs.list(self.record.root)
         job = next((item for item in jobs if str(item.get("id")) == job_id), None)
         if job is None or job.get("state") != "succeeded":
@@ -1551,12 +1167,11 @@ class MainScreen(Screen):
         self._open_job_import([job], job_id)
 
     def job_actions(self) -> None:
-        table = self.query_one("#jobs-table", DataTable)
-        if table.row_count == 0:
-            self.app.show_error("No discovery job is selected")
+        try:
+            job_id = self.query_one(ScopeDiscoveryPane).selected_job_id()
+        except ValidationError as exc:
+            self.app.show_error(str(exc))
             return
-        row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
-        job_id = str(row_key.value)
         job = next(
             (
                 item
@@ -1596,7 +1211,11 @@ class MainScreen(Screen):
     def _open_job_import(self, jobs: list[dict], job_id: str | None) -> None:
         if not job_id:
             return
-        job = next(item for item in jobs if item["id"] == job_id)
+        self.pending_job_id = ""
+        job = next((item for item in jobs if item.get("id") == job_id), None)
+        if job is None:
+            self.app.show_error("The selected discovery job no longer exists")
+            return
         self.pending_job_id = job_id
         self.app.push_screen(
             ImportDiscoveryForm(
@@ -1627,18 +1246,27 @@ class MainScreen(Screen):
                 for target in self.engagement.targets
             ]
             self.app.push_screen(
-                DiscoveryReview(decisions, merge_targets), self._commit_import
+                DiscoveryReview(
+                    decisions,
+                    merge_targets,
+                    allowed_scope_ids=value["scope_ids"],
+                ),
+                self._commit_import,
             )
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
-    def _commit_import(self, value: tuple[list, bool] | None) -> None:
+    def _commit_import(self, value: tuple[list, bool, set[str]] | None) -> None:
         if value is None:
             return
-        decisions, create_sessions = value
+        decisions, create_sessions, allowed_scope_ids = value
         try:
             targets = apply_reconciliation(
-                self.app.workspace, self.record.root, self.engagement, decisions
+                self.app.workspace,
+                self.record.root,
+                self.engagement,
+                decisions,
+                allowed_scope_ids=allowed_scope_ids,
             )
             if self.pending_job_id:
                 self.app.jobs.mark_imported(self.record.root, self.pending_job_id)
@@ -1654,7 +1282,8 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
 
     def edit_selected_document(self) -> None:
-        selected = self.selected_document()
+        documents = self.query_one(DocumentsPane)
+        selected = documents.selected_document()
         if selected is None:
             return
         path, editable, _ = selected
@@ -1664,7 +1293,39 @@ class MainScreen(Screen):
             )
             return
         self.app.edit_file(path)
-        self.preview_selected_document()
+        documents.preview_selected()
+
+    def open_selected_document(self) -> None:
+        selected = self.query_one(DocumentsPane).selected_document()
+        if selected is None:
+            return
+        path, editable, kind = selected
+        if editable:
+            self.edit_selected_document()
+        else:
+            self.app.page_file(path, terminal_output=kind == "evidence")
+
+    def document_actions(self) -> None:
+        selected = self.query_one(DocumentsPane).selected_document()
+        if selected is None:
+            self.app.show_error("No document or evidence file is selected")
+            return
+        path, editable, _ = selected
+        actions = [("view", "View full file in pager")]
+        if editable:
+            actions.append(("edit", "Edit with $VISUAL or $EDITOR"))
+        self.app.push_screen(
+            ActionMenu(path.name, actions), self._document_action
+        )
+
+    def _document_action(self, action: str | None) -> None:
+        if action == "edit":
+            self.edit_selected_document()
+        elif action == "view":
+            selected = self.query_one(DocumentsPane).selected_document()
+            if selected is not None:
+                path, _, kind = selected
+                self.app.page_file(path, terminal_output=kind == "evidence")
 
     def action_archive_engagement(self) -> None:
         live = self.app.tmux.live_target_ids(self.engagement)
@@ -1706,85 +1367,35 @@ class MainScreen(Screen):
             document = verify_archive(archive)
             context = document["context"]
             if context["kind"] == "engagements":
-                self._restore_engagement(archive, context)
+                restored = restore_engagement_archive(
+                    archive, self.app.workspace, context
+                )
+                self.app.push_screen(
+                    MessageModal("Engagement Restored", str(restored))
+                )
             elif context["kind"] == "targets":
-                self._restore_target(archive, context)
+                restored = restore_target_archive(
+                    archive,
+                    self.app.workspace,
+                    self.record.root,
+                    self.engagement,
+                    context,
+                )
+                self.app.push_screen(
+                    MessageModal("Target Files Restored", str(restored))
+                )
+                self.refresh_all()
             else:
                 raise ValidationError(f"unsupported archive kind: {context['kind']}")
         except (TacmuxError, OSError, KeyError) as exc:
             self.app.show_error(str(exc))
-
-    def _restore_engagement(self, archive: Path, context: dict) -> None:
-        restored = restore_archive(archive, self.app.settings.workspace)
-        try:
-            engagement = self.app.workspace.load(restored)
-            if (
-                engagement.id != context["engagement_id"]
-                or engagement.id != context["object_id"]
-                or not restored.name.startswith(f"{engagement.id}-")
-            ):
-                raise ValidationError(
-                    "restored engagement manifest does not match archive context"
-                )
-        except BaseException:
-            shutil.rmtree(restored, ignore_errors=True)
-            raise
-        self.app.push_screen(MessageModal("Engagement Restored", str(restored)))
-
-    def _restore_target(self, archive: Path, context: dict) -> None:
-        if context["engagement_id"] != self.engagement.id:
-            raise ValidationError("target archive belongs to a different engagement")
-        metadata = context.get("object_metadata")
-        if not isinstance(metadata, dict):
-            raise ValidationError(
-                "target archive does not contain restorable target metadata"
-            )
-        archived_target = Target.from_dict(metadata)
-        if (
-            archived_target.id != context["object_id"]
-            or archived_target.directory != context["source_name"]
-        ):
-            raise ValidationError(
-                "target archive metadata does not match archive context"
-            )
-        existing_target = next(
-            (item for item in self.engagement.targets if item.id == archived_target.id),
-            None,
-        )
-        restored_target = None
-        if existing_target is not None:
-            if asdict(existing_target) != asdict(archived_target):
-                raise ValidationError(
-                    "target archive metadata does not match the existing target"
-                )
-        else:
-            restored_target = archived_target
-            self.engagement.targets.append(restored_target)
-            try:
-                self.engagement.validate()
-            finally:
-                self.engagement.targets.pop()
-        restored = restore_archive(archive, self.record.root / "targets")
-        if restored_target is not None:
-            self.engagement.targets.append(restored_target)
-            try:
-                self.app.save_engagement(self.record)
-            except BaseException:
-                self.engagement.targets = [
-                    item
-                    for item in self.engagement.targets
-                    if item.id != restored_target.id
-                ]
-                shutil.rmtree(restored, ignore_errors=True)
-                raise
-        self.app.push_screen(MessageModal("Target Files Restored", str(restored)))
-        self.refresh_all()
 
     def run_operator_command(self, action: str) -> None:
         getattr(self, f"action_{action}")()
 
 
 class TacmuxApp(App[LaunchIntent | None]):
+    BINDINGS: ClassVar[list[Binding]] = [Binding("t", "change_theme", "Theme")]
     CSS = """
     Screen { background: $background; }
     #picker-body { padding: 1 2; }
@@ -1794,10 +1405,11 @@ class TacmuxApp(App[LaunchIntent | None]):
     #target-layout, #documents-layout { height: 1fr; }
     #target-table { width: 62%; }
     #target-detail { width: 38%; padding: 1 2; border-left: solid $panel; overflow-y: auto; }
+    ScopeDiscoveryPane { height: 1fr; }
     #scope-table { height: 44%; }
     #jobs-table { height: 36%; }
     .section-title { height: 2; padding-left: 1; text-style: bold; }
-    #situation-view { padding: 1 2; }
+    #situation-view { height: 1fr; padding: 1 2; overflow-y: auto; }
     #documents-table { width: 38%; }
     #document-preview { width: 62%; padding: 1 2; border-left: solid $panel; }
     MainScreen.narrow #target-layout, MainScreen.narrow #documents-layout { layout: vertical; }
@@ -1815,12 +1427,45 @@ class TacmuxApp(App[LaunchIntent | None]):
         self.settings = settings
         self.workspace = Workspace(settings)
         self.tmux = TmuxService(settings)
-        self.jobs = DiscoveryJobs(settings, self.tmux)
+        self.jobs = DiscoveryJobs(settings, self.tmux, self.workspace)
         self.nocap = NocapReader(settings)
+        self.register_theme(BLTSEC_THEME)
+        saved_theme = self.workspace.get_theme()
+        self._invalid_saved_theme = (
+            saved_theme if saved_theme and saved_theme not in CURATED_THEME_NAMES else ""
+        )
+        self._startup_theme = (
+            saved_theme if saved_theme in CURATED_THEME_NAMES else DEFAULT_THEME
+        )
+        for theme_name in tuple(self.available_themes):
+            if theme_name not in CURATED_THEME_NAMES:
+                self.unregister_theme(theme_name)
 
     def on_mount(self) -> None:
         self.workspace.initialize()
+        self.theme = self._startup_theme
+        self.theme_changed_signal.subscribe(self, self._persist_theme)
+        if self._invalid_saved_theme:
+            self.notify(
+                f"Saved theme {self._invalid_saved_theme!r} is unavailable; using {DEFAULT_THEME}",
+                title="TACMUX Theme",
+                severity="warning",
+            )
+            self._save_theme(DEFAULT_THEME)
         self.call_after_refresh(self.bootstrap)
+
+    def _persist_theme(self, theme: Theme) -> None:
+        self._save_theme(theme.name)
+
+    def _save_theme(self, theme_name: str) -> None:
+        try:
+            self.workspace.set_theme(theme_name)
+        except (OSError, TacmuxError) as exc:
+            self.notify(
+                f"Theme changed for this run but could not be saved: {exc}",
+                title="TACMUX Theme",
+                severity="warning",
+            )
 
     def bootstrap(self) -> None:
         records = self.workspace.list_engagements()
@@ -1840,21 +1485,6 @@ class TacmuxApp(App[LaunchIntent | None]):
         self.workspace.set_last_engagement(record.engagement.id)
         self.switch_screen(MainScreen(record))
 
-    def save_engagement(self, record: EngagementRecord) -> None:
-        self.workspace.save(record.root, record.engagement)
-        try:
-            self.workspace.refresh_sitrep(
-                record.root,
-                record.engagement,
-                live_target_ids=self.tmux.live_target_ids(record.engagement),
-                jobs=self.jobs.list(record.root),
-            )
-        except (TacmuxError, OSError) as exc:
-            self.notify(
-                f"Saved engagement, but live SITREP refresh failed: {exc}",
-                severity="warning",
-            )
-
     def show_error(self, message: str) -> None:
         self.notify(message, title="TACMUX", severity="error", timeout=8)
 
@@ -1869,4 +1499,47 @@ class TacmuxApp(App[LaunchIntent | None]):
             if result.returncode:
                 self.show_error(f"editor exited with status {result.returncode}")
         except (OSError, ValueError, TacmuxError) as exc:
+            self.show_error(str(exc))
+
+    def page_file(self, path: Path, *, terminal_output: bool = False) -> None:
+        try:
+            path = path.resolve(strict=True)
+            path.relative_to(self.settings.workspace.resolve(strict=True))
+            with path.open("rb") as stream:
+                if b"\0" in stream.read(64 * 1024):
+                    raise ValidationError(
+                        "binary evidence cannot be displayed in the terminal pager"
+                    )
+            candidates = [self.settings.pager_argv, ["less", "-SR"], ["more"]]
+            pager = next(
+                (argv for argv in candidates if shutil.which(argv[0]) is not None),
+                None,
+            )
+            if pager is None:
+                raise ValidationError(
+                    "no terminal pager is available; set $PAGER or install less"
+                )
+            with self.suspend():
+                if terminal_output:
+                    process = subprocess.Popen(pager, stdin=subprocess.PIPE)
+                    assert process.stdin is not None
+                    try:
+                        with path.open("rb") as stream:
+                            for line in iter_rendered(stream):
+                                process.stdin.write((line + "\n").encode())
+                    except BrokenPipeError:
+                        pass
+                    finally:
+                        try:
+                            process.stdin.close()
+                        except BrokenPipeError:
+                            pass
+                        return_code = process.wait()
+                else:
+                    return_code = subprocess.run(
+                        [*pager, str(path)], check=False
+                    ).returncode
+            if return_code:
+                self.show_error(f"pager exited with status {return_code}")
+        except (OSError, ValueError, TacmuxError, SuspendNotSupported) as exc:
             self.show_error(str(exc))

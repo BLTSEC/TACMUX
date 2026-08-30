@@ -84,6 +84,8 @@ TmuxService(settings).start_target(record.root, record.engagement, record.engage
     fail "target ID was not exported" || exit 1
 [[ "$(tmux show-environment -t "$session" TARGET)" == 'TARGET=10.20.0.20' ]] || \
     fail "primary endpoint was not exported" || exit 1
+[[ "$(tmux show-environment -t "$session" NOCAP_WORKSPACE)" == '-NOCAP_WORKSPACE' ]] || \
+    fail "disabled NOCAP workspace was not removed" || exit 1
 [[ "$(tmux show-option -t "$session" -qv @tacmux_engagement_id)" == "$engagement_id" ]] || \
     fail "engagement option missing" || exit 1
 wait_for '[[ "$(tmux display-message -t "$session:0.0" -p "#{pane_pipe}")" == 1 ]]' || \

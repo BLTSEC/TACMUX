@@ -3,11 +3,18 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
+from textual.command import CommandPalette
+from textual.widgets import Checkbox, OptionList, SelectionList, Static
 
 from tacmux.app import EngagementPickerScreen, MainScreen, TacmuxApp
-from textual.widgets import Checkbox, OptionList
-
-from tacmux.dialogs import ActionMenu, AttackPathForm, EngagementForm
+from tacmux.dialogs import (
+    ActionMenu,
+    AttackPathForm,
+    DiscoveryReview,
+    EngagementForm,
+    ScanForm,
+)
+from tacmux.discovery import DiscoveryCandidate, Reconciliation
 from tacmux.model import (
     AccessLevel,
     AccessRecord,
@@ -17,6 +24,7 @@ from tacmux.model import (
     ScopeGroup,
     TargetAddress,
 )
+from tacmux.themes import CURATED_THEME_NAMES, DEFAULT_THEME
 
 
 @pytest.mark.asyncio
@@ -26,6 +34,111 @@ async def test_picker_is_usable_at_minimum_terminal_size(settings, workspace, re
         await pilot.pause()
         assert isinstance(app.screen, EngagementPickerScreen)
         assert app.screen.query_one("#engagements").row_count == 1
+        assert app.theme == DEFAULT_THEME
+        assert set(app.available_themes) == CURATED_THEME_NAMES
+        await pilot.press("t")
+        await pilot.pause()
+        assert isinstance(app.screen, CommandPalette)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("theme_name", sorted(CURATED_THEME_NAMES))
+async def test_curated_theme_renders_picker_at_minimum_size(
+    settings, workspace, theme_name
+):
+    workspace.set_theme(theme_name)
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, EngagementPickerScreen)
+        assert app.theme == theme_name
+        assert app.current_theme.dark
+
+
+@pytest.mark.asyncio
+async def test_theme_selection_persists_across_launches(settings, workspace):
+    first = TacmuxApp(settings)
+    async with first.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        first.theme = "nord"
+        await pilot.pause()
+        assert workspace.get_theme() == "nord"
+
+    second = TacmuxApp(settings)
+    async with second.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        assert second.theme == "nord"
+
+
+@pytest.mark.asyncio
+async def test_unknown_saved_theme_falls_back_and_repairs_state(settings, workspace):
+    workspace.set_theme("removed-theme")
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        assert app.theme == DEFAULT_THEME
+        assert workspace.get_theme() == DEFAULT_THEME
+
+
+@pytest.mark.asyncio
+async def test_theme_remains_active_when_persistence_fails(
+    settings, workspace, monkeypatch
+):
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+
+        def fail_save(_theme_name: str) -> None:
+            raise OSError("read-only state")
+
+        monkeypatch.setattr(app.workspace, "set_theme", fail_save)
+        app.theme = "dracula"
+        await pilot.pause()
+        assert app.theme == "dracula"
+
+
+@pytest.mark.asyncio
+async def test_blocked_discovery_result_cannot_cycle_or_merge(settings, workspace):
+    decision = Reconciliation(
+        DiscoveryCandidate(["203.0.113.10"], ["outside.example.test"]),
+        [],
+        "ignore",
+        note="out of scope",
+    )
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.push_screen(
+            DiscoveryReview(decisions=[decision], merge_targets=[("T0001", "host")])
+        )
+        await pilot.pause()
+        await pilot.press("space")
+        await pilot.pause()
+        assert decision.action == "ignore"
+        assert isinstance(app.screen, DiscoveryReview)
+
+        await pilot.press("m")
+        await pilot.pause()
+        assert decision.action == "ignore"
+        assert isinstance(app.screen, DiscoveryReview)
+
+
+@pytest.mark.asyncio
+async def test_scan_form_lists_only_ready_scope(settings, workspace, record):
+    record.engagement.add_scope("Ready", ScopeGroup.EXTERNAL, "198.51.100.0/24")
+    record.engagement.add_scope(
+        "Unavailable",
+        ScopeGroup.INTERNAL,
+        "10.10.0.0/24",
+        ScopeAvailability.UNAVAILABLE,
+    )
+    workspace.save(record.root, record.engagement)
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.push_screen(ScanForm(record.engagement))
+        await pilot.pause()
+        assert app.screen.query_one(SelectionList).option_count == 1
 
 
 @pytest.mark.asyncio
@@ -67,12 +180,49 @@ async def test_main_cockpit_is_responsive_and_lists_evidence(
         await pilot.pause()
         assert app.focused is not None
         assert app.focused.id == "target-table"
+        await pilot.press("4")
+        await pilot.press("a")
+        await pilot.pause()
+        assert isinstance(app.screen, ActionMenu)
+        assert app.screen.query_one(OptionList).option_count == 2
+        await pilot.press("escape")
+        await pilot.pause()
         await pilot.press("d")
         await pilot.pause()
         assert isinstance(app.screen, ActionMenu)
         await pilot.press("escape")
         await pilot.pause()
         assert isinstance(app.screen, MainScreen)
+
+
+@pytest.mark.asyncio
+async def test_unresolved_target_is_explicit_in_cockpit(
+    settings, workspace, record
+):
+    workspace.create_target(record.root, record.engagement, "identity pending")
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, MainScreen)
+        detail = app.screen.query_one("#target-detail", Static)
+        assert "Identity: unresolved" in str(detail.render())
+
+
+@pytest.mark.asyncio
+async def test_disappearing_discovery_job_surfaces_error(
+    settings, workspace, record, monkeypatch
+):
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    errors: list[str] = []
+    monkeypatch.setattr(app, "show_error", errors.append)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        main._open_job_import([], "J0001")
+        assert errors == ["The selected discovery job no longer exists"]
 
 
 @pytest.mark.asyncio

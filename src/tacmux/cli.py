@@ -98,7 +98,7 @@ def _internal(args: Sequence[str]) -> int:
     if command == "run-job":
         if len(rest) != 1:
             raise TacmuxError("run-job requires one job file")
-        return run_job(Path(rest[0]))
+        return run_job(settings, Path(rest[0]))
     if command == "clip":
         return clipboard_copy(tmux, sys.stdin.buffer.read())
     if command == "status-segment":

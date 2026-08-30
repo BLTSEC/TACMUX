@@ -68,10 +68,20 @@ def test_tmux_target_and_ops_sessions_have_stable_context(workspace, record, set
     assert f"TACMUX_TARGET_ID={target.id}" in create
     assert "TARGET=198.51.100.25" in create
     assert "TACMUX_NO_AUTOLOG=1" in create
+    assert "NOCAP_WORKSPACE=" in create
+    assert [
+        "set-environment",
+        "-r",
+        "-t",
+        f"={intent.session_name}:",
+        "NOCAP_WORKSPACE",
+    ] in tmux.calls
     assert tmux.start_target(record.root, record.engagement, target) == intent
 
     ops = tmux.start_ops(record.root, record.engagement)
     assert ops.session_name == f"tacmux-{record.engagement.id}-ops"
+    ops_create = [call for call in tmux.calls if call[0] == "new-session"][-1]
+    assert "TACMUX_TARGET_NAME=" in ops_create
     assert tmux.stop_engagement_sessions(record.engagement) == 2
     with pytest.raises(ConflictError, match="not running"):
         tmux.stop_ops(record.engagement)
@@ -125,6 +135,26 @@ def test_existing_tmux_session_context_is_refreshed(workspace, record, settings)
         "TARGET",
         "10.60.0.11",
     ] in tmux.calls
+
+
+def test_nocap_workspace_is_exported_only_when_enabled(workspace, record, settings):
+    scope = record.engagement.add_scope("LAN", ScopeGroup.INTERNAL, "10.61.0.0/24")
+    target = workspace.create_target(
+        record.root,
+        record.engagement,
+        "host",
+        addresses=[TargetAddress("10.61.0.10", scope.id)],
+        primary_endpoint="10.61.0.10",
+    )
+    tmux = FakeTmux(replace(settings, nocap_enabled=True, auto_log=False))
+    tmux.start_target(record.root, record.engagement, target)
+    create = next(call for call in tmux.calls if call[0] == "new-session")
+    assert f"NOCAP_WORKSPACE={settings.workspace}" in create
+    assert not any(
+        call[:2] == ["set-environment", "-r"]
+        and call[-1] == "NOCAP_WORKSPACE"
+        for call in tmux.calls
+    )
 
 
 def test_nocap_adapter_is_opt_in_read_only_json(tmp_path, settings, monkeypatch):

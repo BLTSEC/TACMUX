@@ -8,17 +8,23 @@ Press the tmux prefix, release it, then press `E`. The complete TACMUX tmux conf
 
 | Key | Action |
 |---|---|
-| `Enter` | Open/attach a target, edit Markdown, edit scope, or manage a discovery job |
+| `Enter` | Open/attach a target, edit Markdown, page read-only text, edit scope, or manage a discovery job |
 | `a` | Contextual actions for the active tab |
 | `n` | Add a target |
 | `d` | Host discovery actions |
 | `g` | Return to the engagement picker |
 | `/` | Filter targets or engagements |
 | `r` | Refresh sessions, jobs, topology, and SITREP |
+| `t` | Open the fuzzy theme selector |
 | `1`–`4` | Targets, Scope & Discovery, Situation, Documents |
 | `Ctrl+P` | Fuzzy command palette |
 | `Escape` | Close a modal/cancel an entry |
 | `q` | Quit the cockpit; detached sessions continue |
+
+Theme choices apply only to the TACMUX cockpit and persist across launches. The
+curated dark catalog contains BLTSEC, Textual Dark, Nord, Dracula, Catppuccin
+Mocha, Tokyo Night, Gruvbox, Rose Pine Moon, and Solarized Dark. BLTSEC is the
+default.
 
 Discovery review:
 
@@ -27,6 +33,10 @@ Discovery review:
 | `Space` | Cycle Add / Merge / Ignore where valid |
 | `m` | Choose the existing target for a merge |
 | `Ctrl+S` | Commit reviewed decisions |
+
+On the Documents tab, `a` offers **View full file in pager** and, for editable
+Markdown, **Edit with `$VISUAL` or `$EDITOR`**. TACMUX uses `$PAGER`, then
+`less -SR`, then `more` without adding an application dependency.
 
 Attack-path builder:
 

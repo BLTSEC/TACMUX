@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -58,6 +59,16 @@ def test_nmap_xml_and_pasted_hosts_are_strictly_parsed():
         parse_host_lines("not-an-ip host")
 
 
+def test_malformed_nmap_address_is_a_validation_error(tmp_path):
+    xml = tmp_path / "malformed.xml"
+    xml.write_text(
+        '<nmaprun><host><status state="up" reason="echo-reply"/>'
+        '<address addr="not-an-ip" addrtype="ipv4"/></host></nmaprun>'
+    )
+    with pytest.raises(ValidationError, match="host 1.*invalid IP address"):
+        parse_nmap_xml(xml)
+
+
 def test_reconciliation_requires_review_and_supports_second_interface_merge(
     workspace, record
 ):
@@ -82,7 +93,13 @@ def test_reconciliation_requires_review_and_supports_second_interface_merge(
     assert decisions[0].merge_target_id == host.id
     assert "operator must choose" in decisions[0].note
     decisions[0].action = "merge"
-    changed = apply_reconciliation(workspace, record.root, record.engagement, decisions)
+    changed = apply_reconciliation(
+        workspace,
+        record.root,
+        record.engagement,
+        decisions,
+        allowed_scope_ids={internal.id},
+    )
     assert changed == [host]
     assert {(item.scope_id, item.value) for item in host.addresses} == {
         (external.id, "198.51.100.25"),
@@ -102,6 +119,132 @@ def test_overlapping_selected_scope_is_ignored_instead_of_guessed(record):
     )[0]
     assert decision.action == "ignore"
     assert "more than one" in decision.note
+
+
+def test_out_of_scope_discovery_cannot_be_promoted_to_addressless_target(
+    workspace, record
+):
+    scope = record.engagement.add_scope(
+        "DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24"
+    )
+    workspace.save(record.root, record.engagement)
+    decision = reconcile_candidates(
+        record.engagement,
+        [
+            DiscoveryCandidate(
+                ["203.0.113.10"], ["outside.example.test"], "echo-reply"
+            )
+        ],
+        allowed_scope_ids={scope.id},
+    )[0]
+    assert decision.allowed_actions == ("ignore",)
+    assert not decision.fully_scope_qualified
+
+    before = record.engagement.to_dict()
+    before_directories = {item.name for item in (record.root / "targets").iterdir()}
+    decision.action = "add"
+    with pytest.raises(ValidationError, match="not allowed"):
+        apply_reconciliation(
+            workspace,
+            record.root,
+            record.engagement,
+            [decision],
+            allowed_scope_ids={scope.id},
+        )
+    assert record.engagement.to_dict() == before
+    assert {
+        item.name for item in (record.root / "targets").iterdir()
+    } == before_directories
+
+
+def test_partially_mapped_discovery_candidate_is_ignore_only(record):
+    scope = record.engagement.add_scope(
+        "LAN", ScopeGroup.INTERNAL, "10.20.0.0/24"
+    )
+    decision = reconcile_candidates(
+        record.engagement,
+        [DiscoveryCandidate(["10.20.0.10", "192.0.2.10"], ["dual.example.test"])],
+        allowed_scope_ids={scope.id},
+    )[0]
+    assert [item.value for item in decision.addresses] == ["10.20.0.10"]
+    assert decision.allowed_actions == ("ignore",)
+    assert not decision.fully_scope_qualified
+    assert "outside selected scope: 192.0.2.10" in decision.note
+
+
+def test_apply_reconciliation_rederives_scope_and_ignores_forged_addresses(
+    workspace, record
+):
+    scope = record.engagement.add_scope(
+        "DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24"
+    )
+    workspace.save(record.root, record.engagement)
+    forged = Reconciliation(
+        DiscoveryCandidate(["203.0.113.99"], ["outside.example.test"]),
+        [TargetAddress("198.51.100.25", scope.id)],
+        "add",
+    )
+    before = record.engagement.to_dict()
+    with pytest.raises(ValidationError, match="not allowed"):
+        apply_reconciliation(
+            workspace,
+            record.root,
+            record.engagement,
+            [forged],
+            allowed_scope_ids={scope.id},
+        )
+    assert record.engagement.to_dict() == before
+
+
+def test_discovery_uses_scope_qualified_ip_as_primary_endpoint(workspace, record):
+    scope = record.engagement.add_scope(
+        "DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24"
+    )
+    workspace.save(record.root, record.engagement)
+    decisions = reconcile_candidates(
+        record.engagement,
+        [DiscoveryCandidate(["198.51.100.25"], ["untrusted.ptr.invalid"])],
+        allowed_scope_ids={scope.id},
+    )
+    target = apply_reconciliation(
+        workspace,
+        record.root,
+        record.engagement,
+        decisions,
+        allowed_scope_ids={scope.id},
+    )[0]
+    assert target.primary_endpoint == "198.51.100.25"
+    assert target.hostnames == ["untrusted.ptr.invalid"]
+
+
+def test_exact_address_match_allows_merge_or_ignore_but_not_add(workspace, record):
+    scope = record.engagement.add_scope(
+        "LAN", ScopeGroup.INTERNAL, "10.21.0.0/24"
+    )
+    target = workspace.create_target(
+        record.root,
+        record.engagement,
+        "host",
+        addresses=[TargetAddress("10.21.0.10", scope.id)],
+        primary_endpoint="10.21.0.10",
+    )
+    decision = reconcile_candidates(
+        record.engagement,
+        [DiscoveryCandidate(["10.21.0.10"], ["host.example.test"])],
+        allowed_scope_ids={scope.id},
+    )[0]
+    assert decision.action == "merge"
+    assert decision.merge_target_id == target.id
+    assert decision.allowed_actions == ("merge", "ignore")
+    decision.action = "add"
+    with pytest.raises(ValidationError, match="not allowed"):
+        apply_reconciliation(
+            workspace,
+            record.root,
+            record.engagement,
+            [decision],
+            allowed_scope_ids={scope.id},
+        )
 
 
 def test_discovery_job_uses_only_fixed_host_identification_profile(
@@ -134,30 +277,114 @@ def test_discovery_job_uses_only_fixed_host_identification_profile(
         jobs.create(record.root, record.engagement, [blocked.id])
 
 
-def test_run_job_records_success_and_failure(tmp_path):
-    executable = tmp_path / "fake-nmap"
-    executable.write_text("#!/bin/sh\nprintf '<nmaprun></nmaprun>' > \"$2\"\n")
-    executable.chmod(0o700)
-    job_root = tmp_path / "job"
-    job_root.mkdir()
-    job = {
-        "schema": "tacmux.discovery-job/v1",
-        "id": "J0001",
-        "argv": [str(executable), "-oX", str(job_root / "results.xml")],
-        "log_path": str(job_root / "nmap.log"),
-        "state": "queued",
-    }
+def test_run_job_rebuilds_command_and_output_paths(
+    monkeypatch, tmp_path, workspace, record, settings
+):
+    scope = record.engagement.add_scope("DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24")
+    workspace.save(record.root, record.engagement)
+    jobs = DiscoveryJobs(settings, RecordingTmux(), workspace)
+    monkeypatch.setattr("tacmux.discovery.shutil.which", lambda name: "/usr/bin/nmap")
+    job = jobs.create(record.root, record.engagement, [scope.id])
+    job_root = record.root / ".tacmux/jobs" / job["id"]
     job_file = job_root / "job.json"
-    job_file.write_text(json.dumps(job))
-    assert run_job(job_file) == 0
+    value = json.loads(job_file.read_text())
+    outside = tmp_path / "must-not-change"
+    outside.write_text("preserved")
+    value["argv"] = ["sh", "-c", "exit 99"]
+    value["xml_path"] = str(outside)
+    value["log_path"] = str(outside)
+    job_file.write_text(json.dumps(value))
+    calls = []
+
+    def fake_run(argv, *, stdout, stderr, check):
+        calls.append(list(argv))
+        Path(argv[4]).write_text("<nmaprun></nmaprun>")
+        stdout.write(b"scan complete\n")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr("tacmux.discovery.subprocess.run", fake_run)
+    assert run_job(settings, job_file) == 0
+    assert calls == [
+        [
+            "/usr/bin/nmap",
+            "-sn",
+            "--reason",
+            "-oX",
+            str(job_root / "results.xml"),
+            "198.51.100.0/24",
+        ]
+    ]
+    assert outside.read_text() == "preserved"
     status = json.loads((job_root / "status.json").read_text())
     assert status["state"] == "succeeded" and status["exit_code"] == 0
+    assert status["log_path"] == str(job_root / "nmap.log")
+    with pytest.raises(ConflictError, match="not queued"):
+        run_job(settings, job_file)
+    assert len(calls) == 1
 
-    job["argv"] = [str(tmp_path / "missing-command")]
-    job_file.write_text(json.dumps(job))
-    assert run_job(job_file) == 127
+
+def test_run_job_rejects_tampered_identity_and_records_failure(
+    monkeypatch, workspace, record, settings
+):
+    scope = record.engagement.add_scope("DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24")
+    workspace.save(record.root, record.engagement)
+    jobs = DiscoveryJobs(settings, RecordingTmux(), workspace)
+    monkeypatch.setattr("tacmux.discovery.shutil.which", lambda name: "/usr/bin/nmap")
+    job = jobs.create(record.root, record.engagement, [scope.id])
+    job_root = record.root / ".tacmux/jobs" / job["id"]
+    job_file = job_root / "job.json"
+    value = json.loads(job_file.read_text())
+    value["engagement_id"] = "E-000000000000"
+    job_file.write_text(json.dumps(value))
+
+    with pytest.raises(ValidationError, match="different engagement"):
+        run_job(settings, job_file)
     status = json.loads((job_root / "status.json").read_text())
-    assert status["state"] == "failed"
+    assert status["state"] == "failed" and status["exit_code"] == 127
+
+
+def test_run_job_records_execution_failure(monkeypatch, workspace, record, settings):
+    scope = record.engagement.add_scope("DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24")
+    workspace.save(record.root, record.engagement)
+    jobs = DiscoveryJobs(settings, RecordingTmux(), workspace)
+    monkeypatch.setattr("tacmux.discovery.shutil.which", lambda name: "/usr/bin/nmap")
+    job = jobs.create(record.root, record.engagement, [scope.id])
+    job_root = record.root / ".tacmux/jobs" / job["id"]
+
+    def fail_run(*_args, **_kwargs):
+        raise OSError("cannot execute")
+
+    monkeypatch.setattr("tacmux.discovery.subprocess.run", fail_run)
+    assert run_job(settings, job_root / "job.json") == 127
+    status = json.loads((job_root / "status.json").read_text())
+    assert status["state"] == "failed" and status["exit_code"] == 127
+
+
+def test_run_job_rejects_files_outside_workspace(tmp_path, settings):
+    job_file = tmp_path / "job.json"
+    job_file.write_text("{}")
+    with pytest.raises(ValidationError, match="configured workspace"):
+        run_job(settings, job_file)
+
+
+def test_cancelled_job_does_not_start_if_runner_arrives_late(
+    monkeypatch, workspace, record, settings
+):
+    scope = record.engagement.add_scope("DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24")
+    workspace.save(record.root, record.engagement)
+    tmux = RecordingTmux()
+    jobs = DiscoveryJobs(settings, tmux, workspace)
+    monkeypatch.setattr("tacmux.discovery.shutil.which", lambda name: "/usr/bin/nmap")
+    job = jobs.create(record.root, record.engagement, [scope.id])
+    assert jobs.cancel(record.root, record.engagement, job["id"])
+
+    def must_not_run(*_args, **_kwargs):
+        raise AssertionError("cancelled discovery executed")
+
+    monkeypatch.setattr("tacmux.discovery.subprocess.run", must_not_run)
+    job_file = record.root / ".tacmux/jobs" / job["id"] / "job.json"
+    assert run_job(settings, job_file) == 130
+    assert jobs.list(record.root)[0]["state"] == "cancelled"
 
 
 def test_reconciliation_rolls_back_all_targets_when_commit_fails(
@@ -185,6 +412,7 @@ def test_reconciliation_rolls_back_all_targets_when_commit_fails(
         ),
     ]
     before_manifest = (record.root / ".tacmux/engagement.json").read_text()
+    before_engagement = record.engagement.to_dict()
     before_directories = {item.name for item in (record.root / "targets").iterdir()}
 
     def fail_save(*_):
@@ -192,8 +420,15 @@ def test_reconciliation_rolls_back_all_targets_when_commit_fails(
 
     monkeypatch.setattr(workspace, "save", fail_save)
     with pytest.raises(OSError, match="disk full"):
-        apply_reconciliation(workspace, record.root, record.engagement, decisions)
+        apply_reconciliation(
+            workspace,
+            record.root,
+            record.engagement,
+            decisions,
+            allowed_scope_ids={scope.id},
+        )
     assert (record.root / ".tacmux/engagement.json").read_text() == before_manifest
+    assert record.engagement.to_dict() == before_engagement
     assert {
         item.name for item in (record.root / "targets").iterdir()
     } == before_directories
@@ -221,3 +456,23 @@ def test_discovery_jobs_can_be_cancelled_and_marked_imported(
     status_path.write_text(json.dumps(value))
     jobs.mark_imported(record.root, job["id"])
     assert jobs.list(record.root)[0]["imported_at"]
+
+
+def test_discovery_job_ids_are_allocated_under_lock(
+    monkeypatch, workspace, record, settings
+):
+    scope = record.engagement.add_scope("LAN", ScopeGroup.INTERNAL, "10.60.0.0/24")
+    workspace.save(record.root, record.engagement)
+    jobs = DiscoveryJobs(settings, RecordingTmux(), workspace)
+    monkeypatch.setattr("tacmux.discovery.shutil.which", lambda name: "/usr/bin/nmap")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        identifiers = {
+            future.result()["id"]
+            for future in [
+                executor.submit(
+                    jobs.create, record.root, record.engagement, [scope.id]
+                )
+                for _ in range(2)
+            ]
+        }
+    assert identifiers == {"J0001", "J0002"}

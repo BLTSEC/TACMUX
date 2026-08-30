@@ -73,6 +73,16 @@ Every candidate must be reviewed:
 
 TACMUX defaults accepted results to detached target sessions. Disable that checkbox when sessions would create noise. An address matching more than one selected scope entry is ignored rather than guessed; re-import it with only the intended scope selected or add it explicitly through **Edit target identity**.
 
+Out-of-scope, partially matched, and overlapping-scope discovery results are
+locked to **Ignore**. Discovery never creates an addressless target. Manual and
+legacy-imported targets may be intentionally unresolved while their identity is
+still being established; add a scope-qualified address or hostname later through
+**Edit target identity**.
+
+Discovered hostnames are retained as aliases, but the accepted scope-qualified
+IP is always the initial primary endpoint exported as `TARGET`. Choosing a
+hostname as primary is an explicit operator action.
+
 ## Target work
 
 Highlight a target and press Enter. TACMUX creates the tmux session if necessary, exports stable engagement/target context, starts context-aware logging when enabled, and attaches or switches the current client.
@@ -128,7 +138,8 @@ Choose **Manage engagement records** from a contextual action menu to correct or
 
 Network topology and attack path are separate views:
 
-- topology maps external/internal scope, hosts, interfaces, access level, and pivots;
+- topology maps external/internal scope, hosts, interfaces, access level, pivots,
+  and unresolved or hostname-only targets not yet assigned to an address;
 - an attack path is a curated sequence of demonstrated findings, access records, and confirmed activities.
 
 Open **Situation**, press `a`, and choose **Build confirmed attack path**. Press Enter on eligible records to add them. In the chosen list, Delete removes a step and `Ctrl+Up` / `Ctrl+Down` changes order. Optional one-line step notes explain how each fact advances the chain.
@@ -141,10 +152,16 @@ The Documents tab previews:
 
 - editable Markdown;
 - generated Markdown;
-- UTF-8/ANSI evidence and logs, with terminal color sequences rendered;
+- UTF-8 terminal evidence and logs, with control sequences cleaned;
 - binary metadata and a SHA-256 for binary files up to 2 MiB.
 
-Text previews stop at 256 KiB. Evidence indexing stops at 500 files or a bounded directory-scan budget; use ordinary filesystem tools for larger collections. Generated Markdown is changed through its structured TACMUX record, not edited directly.
+Text previews stop at 256 KiB. Press Enter on read-only text or choose **View
+full file in pager** from `a` to open the complete file through `$PAGER`,
+`less -SR`, or `more`. Captured terminal output is cleaned for carriage returns,
+backspaces, and common cursor redraws. Evidence indexing stops at 500 files or a
+bounded directory-scan budget; use ordinary filesystem tools for larger
+collections. Generated Markdown is changed through its structured TACMUX record,
+not edited directly.
 
 ## Archives, restore, and mistaken-target deletion
 

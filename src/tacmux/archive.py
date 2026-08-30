@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -14,7 +15,14 @@ from typing import Any
 
 from . import __version__
 from .errors import ConflictError, SafetyError, ValidationError
-from .store import _private_directory, harden_private_tree, write_private_json
+from .model import Engagement, Target
+from .store import (
+    Workspace,
+    _private_directory,
+    harden_private_tree,
+    restore_engagement_state,
+    write_private_json,
+)
 
 
 ARCHIVE_SCHEMA = "tacmux.archive/v2"
@@ -250,6 +258,74 @@ def verify_archive(archive: Path, manifest: Path | None = None) -> dict[str, Any
     except (tarfile.TarError, EOFError, OSError) as exc:
         raise ValidationError(f"cannot validate archive members: {exc}") from exc
     return document
+
+
+def restore_engagement_archive(
+    archive: Path, workspace: Workspace, context: dict[str, Any]
+) -> Path:
+    restored = restore_archive(archive, workspace.settings.workspace)
+    try:
+        engagement = workspace.load(restored)
+        if (
+            engagement.id != context["engagement_id"]
+            or engagement.id != context["object_id"]
+            or not restored.name.startswith(f"{engagement.id}-")
+        ):
+            raise ValidationError(
+                "restored engagement manifest does not match archive context"
+            )
+    except BaseException:
+        shutil.rmtree(restored, ignore_errors=True)
+        raise
+    return restored
+
+
+def restore_target_archive(
+    archive: Path,
+    workspace: Workspace,
+    engagement_root: Path,
+    engagement: Engagement,
+    context: dict[str, Any],
+) -> Path:
+    if context["engagement_id"] != engagement.id:
+        raise ValidationError("target archive belongs to a different engagement")
+    metadata = context.get("object_metadata")
+    if not isinstance(metadata, dict):
+        raise ValidationError(
+            "target archive does not contain restorable target metadata"
+        )
+    archived_target = Target.from_dict(metadata)
+    if (
+        archived_target.id != context["object_id"]
+        or archived_target.directory != context["source_name"]
+    ):
+        raise ValidationError("target archive metadata does not match archive context")
+    existing_target = next(
+        (item for item in engagement.targets if item.id == archived_target.id), None
+    )
+    if existing_target is not None and existing_target != archived_target:
+        raise ValidationError(
+            "target archive metadata does not match the existing target"
+        )
+    if existing_target is None:
+        snapshot = deepcopy(engagement)
+        engagement.targets.append(archived_target)
+        try:
+            engagement.validate()
+        finally:
+            restore_engagement_state(engagement, snapshot)
+
+    restored = restore_archive(archive, engagement_root / "targets")
+    if existing_target is None:
+        snapshot = deepcopy(engagement)
+        engagement.targets.append(archived_target)
+        try:
+            workspace.save(engagement_root, engagement)
+        except BaseException:
+            restore_engagement_state(engagement, snapshot)
+            shutil.rmtree(restored, ignore_errors=True)
+            raise
+    return restored
 
 
 def _validate_member(member: tarfile.TarInfo, destination: Path) -> None:
