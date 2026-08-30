@@ -19,6 +19,7 @@ Run `tacmux`, choose the engagement and target, and work from menus. The public 
 ## v2 design
 
 - Python 3.11+ and Textual for a responsive terminal UI.
+- An image-derived BLTSEC dark theme plus a persistent, curated fuzzy theme selector.
 - One readable JSON manifest per engagement.
 - Human-facing **Client or Lab** and **Engagement Name** fields instead of provider/slug terminology.
 - External and internal scope groups, including IPs, CIDRs, unavailable internal networks, pivot relationships, dual-homed systems, and overlapping addresses qualified by scope.
@@ -26,7 +27,8 @@ Run `tacmux`, choose the engagement and target, and work from menus. The public 
 - Detached target, operations, and discovery sessions with engagement-wide stop controls.
 - Fixed host-identification scans using `nmap -sn --reason -oX`, followed by mandatory Add/Merge/Ignore review.
 - Terminal-native topology and confirmed attack-path views. Optional Mermaid source is generated in `SITREP.md`.
-- Markdown preview in the TUI and editing through `$VISUAL`, `$EDITOR`, or `vi`.
+- Markdown and cleaned terminal-log previews, full-file paging through `$PAGER`,
+  and editing through `$VISUAL`, `$EDITOR`, or `vi`.
 - Optional, read-only NOCAP timeline integration. NOCAP remains a separate tool.
 
 TACMUX does not require fzf, AutoRecon, Obsidian, or shell completions.
@@ -75,9 +77,14 @@ tacmux
 4. Review every result as **Add**, **Merge**, or **Ignore**. Detached target sessions are created by default for accepted hosts.
 5. Select a target and press Enter to attach. Press `a` for target work or to manage structured records.
 6. Use **Situation** for the network topology and separately curated, confirmed attack paths.
-7. Use **Documents** to preview Markdown, ANSI logs, and evidence. Enter opens editable Markdown in your editor; generated documents remain read-only.
+7. Use **Documents** to preview Markdown, terminal logs, and evidence. Enter edits
+   editable Markdown or pages a read-only text file; `a` offers explicit View/Edit
+   actions. Generated documents remain read-only.
 
 The command palette provides fuzzy access to the same actions without an fzf dependency.
+Press `t` from the cockpit or engagement picker to choose BLTSEC, Textual Dark,
+Nord, Dracula, Catppuccin Mocha, Tokyo Night, Gruvbox, Rose Pine Moon, or
+Solarized Dark. The choice applies only to TACMUX and is remembered across launches.
 
 ## Workspace
 

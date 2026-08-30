@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 from tacmux.archive import create_archive
@@ -45,6 +47,25 @@ def test_repository_wrapper_reports_v2():
     )
     assert result.returncode == 0
     assert result.stdout.strip() == "tacmux 2.0.0"
+
+
+def test_cli_import_does_not_load_textual():
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT / "src")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, tacmux.cli; "
+            "print(any(name == 'textual' or name.startswith('textual.') "
+            "for name in sys.modules))",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "False"
 
 
 def test_health_reports_invalid_engagement_manifests(tmp_path, capsys, monkeypatch):

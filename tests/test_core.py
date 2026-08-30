@@ -114,6 +114,32 @@ def test_private_front_loaded_workspace_and_stable_target_identity(workspace, re
     assert manifest["client"] == "ACME"
 
 
+def test_unresolved_and_hostname_only_targets_are_valid(workspace, record):
+    unresolved = workspace.create_target(
+        record.root, record.engagement, "Identity pending"
+    )
+    hostname_only = workspace.create_target(
+        record.root,
+        record.engagement,
+        "Web application",
+        hostnames=["portal.acme.test"],
+        primary_endpoint="portal.acme.test",
+    )
+
+    loaded = workspace.load(record.root)
+    assert not unresolved.addresses and not unresolved.hostnames
+    assert unresolved.identity_state == "unresolved"
+    assert hostname_only.identity_state == "hostname-only"
+    assert loaded.target_by_id(unresolved.id).primary_endpoint == ""
+    assert loaded.target_by_id(hostname_only.id).hostnames == ["portal.acme.test"]
+    topology = topology_text(loaded)
+    assert "UNASSIGNED" in topology
+    assert "Identity pending" in topology and "unresolved" in topology
+    assert "Web application" in topology and "hostname only" in topology
+    sitrep = (record.root / "SITREP.md").read_text()
+    assert "| Identity | Addresses |" in sitrep
+
+
 def test_scope_qualified_addresses_allow_overlap_but_reject_duplicates(
     workspace, record
 ):
@@ -353,6 +379,229 @@ def test_ipv6_addresses_are_normalized_before_primary_validation(workspace, reco
     )
     assert target.addresses[0].value == "2001:db8::1"
     assert target.primary_endpoint == "2001:db8::1"
+
+
+def test_ui_state_updates_preserve_engagement_and_theme(workspace, record):
+    workspace.set_theme("nord")
+    assert workspace.get_theme() == "nord"
+    assert workspace.get_last_engagement() == record.engagement.id
+
+    workspace.set_last_engagement("E-0123456789ab")
+    state = json.loads(workspace.settings.state_file.read_text())
+    assert state == {
+        "last_engagement_id": "E-0123456789ab",
+        "schema": "tacmux.state/v1",
+        "selected_theme": "nord",
+    }
+    assert mode(workspace.settings.state_file) == 0o600
+    assert mode(workspace.settings.state_file.with_suffix(".lock")) == 0o600
+
+
+def test_ui_state_recovers_from_malformed_values(workspace):
+    workspace.settings.state_file.write_text("not json")
+    workspace.set_theme("dracula")
+    assert workspace.get_theme() == "dracula"
+    assert workspace.get_last_engagement() == ""
+
+    workspace.settings.state_file.write_text(
+        json.dumps({"schema": "tacmux.state/v1", "selected_theme": ["nord"]})
+    )
+    assert workspace.get_theme() == ""
+
+    with pytest.raises(ValidationError, match="theme name"):
+        workspace.set_theme("   ")
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "add_scope",
+        "update_scope",
+        "add_address",
+        "remove_address",
+        "replace_hostnames",
+        "set_primary",
+        "create_access",
+        "create_activity",
+        "create_attack_path",
+        "update_record",
+    ],
+)
+def test_manifest_mutations_restore_complete_state_after_save_failure(
+    workspace, record, monkeypatch, operation
+):
+    scope = workspace.add_scope(
+        record.root,
+        record.engagement,
+        "LAN",
+        ScopeGroup.INTERNAL,
+        "10.90.0.0/24",
+    )
+    target = workspace.create_target(
+        record.root,
+        record.engagement,
+        "host",
+        addresses=[TargetAddress("10.90.0.10", scope.id)],
+        hostnames=["host.acme.test"],
+        primary_endpoint="10.90.0.10",
+    )
+    access = workspace.create_access(
+        record.root,
+        record.engagement,
+        target.id,
+        principal="operator",
+        authority="ACME",
+        method="SSH",
+        level=AccessLevel.USER_EXECUTION,
+        evidence="",
+    )
+    activity = workspace.create_activity(
+        record.root,
+        record.engagement,
+        summary="Confirmed route",
+        result=ActivityResult.CONFIRMED,
+        target_id=target.id,
+        evidence="",
+    )
+    operations = {
+        "add_scope": lambda: workspace.add_scope(
+            record.root,
+            record.engagement,
+            "DMZ",
+            ScopeGroup.EXTERNAL,
+            "198.51.100.0/24",
+        ),
+        "update_scope": lambda: workspace.update_scope(
+            record.root,
+            record.engagement,
+            scope.id,
+            label="Renamed LAN",
+            group=ScopeGroup.INTERNAL,
+            network="10.90.0.0/24",
+            availability=ScopeAvailability.READY,
+            via_target_id="",
+        ),
+        "add_address": lambda: workspace.add_target_address(
+            record.root,
+            record.engagement,
+            target.id,
+            "10.90.0.11",
+            scope.id,
+        ),
+        "remove_address": lambda: workspace.remove_target_address(
+            record.root, record.engagement, target.id, 0
+        ),
+        "replace_hostnames": lambda: workspace.replace_target_hostnames(
+            record.root, record.engagement, target.id, ["new.acme.test"]
+        ),
+        "set_primary": lambda: workspace.set_primary_endpoint(
+            record.root, record.engagement, target.id, "host.acme.test"
+        ),
+        "create_access": lambda: workspace.create_access(
+            record.root,
+            record.engagement,
+            target.id,
+            principal="admin",
+            authority="ACME",
+            method="WinRM",
+            level=AccessLevel.ADMINISTRATIVE_EXECUTION,
+            evidence="",
+        ),
+        "create_activity": lambda: workspace.create_activity(
+            record.root,
+            record.engagement,
+            summary="New activity",
+            result=ActivityResult.CONFIRMED,
+            target_id=target.id,
+            evidence="",
+        ),
+        "create_attack_path": lambda: workspace.create_attack_path(
+            record.root,
+            record.engagement,
+            "Validated access",
+            [("access", access.id, "Obtained execution")],
+        ),
+        "update_record": lambda: workspace.update_record(
+            record.root,
+            record.engagement,
+            "activity",
+            activity.id,
+            {
+                "summary": "Changed",
+                "result": ActivityResult.CONFIRMED,
+                "target_id": target.id,
+                "evidence": "",
+            },
+        ),
+    }
+    before = record.engagement.to_dict()
+
+    def fail_save(*_):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(workspace, "save", fail_save)
+    with pytest.raises(OSError, match="disk full"):
+        operations[operation]()
+    assert record.engagement.to_dict() == before
+
+
+def test_target_creation_restores_counter_and_directory_after_save_failure(
+    workspace, record, monkeypatch
+):
+    before = record.engagement.to_dict()
+
+    def fail_save(*_):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(workspace, "save", fail_save)
+    with pytest.raises(OSError, match="disk full"):
+        workspace.create_target(record.root, record.engagement, "mistake")
+    assert record.engagement.to_dict() == before
+    assert not list((record.root / "targets").iterdir())
+
+
+def test_target_staging_failure_restores_counter_and_directory(workspace, record):
+    scope = workspace.add_scope(
+        record.root,
+        record.engagement,
+        "LAN",
+        ScopeGroup.INTERNAL,
+        "10.91.0.0/24",
+    )
+    before = record.engagement.to_dict()
+    with pytest.raises(ValidationError, match="outside scope"):
+        workspace.create_target(
+            record.root,
+            record.engagement,
+            "invalid",
+            addresses=[TargetAddress("192.0.2.10", scope.id)],
+            primary_endpoint="192.0.2.10",
+        )
+    assert record.engagement.to_dict() == before
+    assert not list((record.root / "targets").iterdir())
+
+
+def test_finding_creation_restores_counter_and_document_after_save_failure(
+    workspace, record, monkeypatch
+):
+    target = workspace.create_target(record.root, record.engagement, "host")
+    before = record.engagement.to_dict()
+
+    def fail_save(*_):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(workspace, "save", fail_save)
+    with pytest.raises(OSError, match="disk full"):
+        workspace.create_finding(
+            record.root,
+            record.engagement,
+            title="Temporary finding",
+            severity=Severity.LOW,
+            state=FindingState.CONFIRMED,
+            target_ids=[target.id],
+        )
+    assert record.engagement.to_dict() == before
+    assert not (record.root / "findings/F0001.md").exists()
 
 
 def test_structured_records_can_be_removed_before_target_deletion(workspace, record):

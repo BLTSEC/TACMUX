@@ -96,6 +96,17 @@ def topology_text(engagement: Engagement, *, ascii_only: bool = False) -> str:
                     f"{prefix}{target_branch} {target_label(engagement, target)} "
                     f"({', '.join(addresses)})"
                 )
+    unassigned = [target for target in engagement.targets if not target.addresses]
+    if unassigned:
+        lines.append("UNASSIGNED")
+        for target_index, target in enumerate(unassigned):
+            target_branch = (
+                last_branch if target_index == len(unassigned) - 1 else branch
+            )
+            identity = target.identity_state.replace("-", " ")
+            lines.append(
+                f"{target_branch} {target_label(engagement, target)} ({identity})"
+            )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -144,6 +155,15 @@ def mermaid_topology(engagement: Engagement) -> str:
             if scope.group == group
         )
         lines.append("  end")
+    unassigned = [target for target in engagement.targets if not target.addresses]
+    if unassigned:
+        lines.extend(
+            [
+                "  subgraph group_unassigned[No scope-qualified address]",
+                '    unassigned_anchor["Unassigned"]',
+                "  end",
+            ]
+        )
     for target in engagement.targets:
         label = mermaid_label(target.display_name)
         level = engagement.strongest_access(target.id)
@@ -154,6 +174,8 @@ def mermaid_topology(engagement: Engagement) -> str:
             f"  scope_{address.scope_id} --- target_{target.id}"
             for address in target.addresses
         )
+        if not target.addresses:
+            lines.append(f"  unassigned_anchor -.- target_{target.id}")
     lines.extend(
         f"  target_{scope.via_target_id} -->|pivot| scope_{scope.id}"
         for scope in engagement.scope
@@ -240,8 +262,8 @@ def render_sitrep(
             "",
             "## Targets and Confirmed Access",
             "",
-            "| ID | Target | Addresses | Strongest confirmed access | Session |",
-            "|---|---|---|---|---|",
+            "| ID | Target | Identity | Addresses | Strongest confirmed access | Session |",
+            "|---|---|---|---|---|---|",
         ]
     )
     for target in engagement.targets:
@@ -250,7 +272,8 @@ def render_sitrep(
         addresses = ", ".join(item.value for item in target.addresses) or "—"
         session = "running" if target.id in live else "stopped"
         lines.append(
-            f"| `{target.id}` | {md_escape(target.display_name)} | {md_escape(addresses)} | "
+            f"| `{target.id}` | {md_escape(target.display_name)} | "
+            f"{target.identity_state.replace('-', ' ')} | {md_escape(addresses)} | "
             f"{access} | {session} |"
         )
     lines.extend(

@@ -2,24 +2,33 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 import fcntl
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import tempfile
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator, TypeVar
 
 from .config import Settings
 from .errors import ConflictError, SafetyError, ValidationError
 from .model import (
+    AccessLevel,
+    AccessRecord,
+    Activity,
+    ActivityResult,
     AssessmentType,
+    AttackPath,
+    AttackPathStep,
     Engagement,
     Finding,
     FindingState,
+    ScopeEntry,
     ScopeAvailability,
     ScopeGroup,
     Severity,
@@ -31,6 +40,13 @@ from .render import render_activity_markdown, render_attack_path_markdown, rende
 
 TARGET_PHASES = ("recon", "exploitation", "loot", "screenshots", "reports", "logs")
 MANIFEST_RELATIVE = Path(".tacmux/engagement.json")
+STATE_SCHEMA = "tacmux.state/v1"
+MutationResult = TypeVar("MutationResult")
+
+
+def restore_engagement_state(engagement: Engagement, snapshot: Engagement) -> None:
+    for item in fields(Engagement):
+        setattr(engagement, item.name, deepcopy(getattr(snapshot, item.name)))
 
 
 def safe_filename(value: str, fallback: str = "item", limit: int = 48) -> str:
@@ -41,6 +57,14 @@ def safe_filename(value: str, fallback: str = "item", limit: int = 48) -> str:
 def _private_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path, 0o700)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def harden_private_tree(root: Path) -> None:
@@ -73,6 +97,7 @@ def write_private_text(path: Path, text: str) -> None:
             os.fsync(stream.fileno())
         os.replace(temporary, path)
         os.chmod(path, 0o600)
+        _fsync_directory(path.parent)
     except BaseException:
         with suppress(OSError):
             os.close(descriptor)
@@ -289,6 +314,262 @@ Created: {engagement.created_at}
                 engagement.revision = previous_revision
                 raise
 
+    def _mutate_manifest(
+        self,
+        root: Path,
+        engagement: Engagement,
+        mutation: Callable[[], MutationResult],
+    ) -> MutationResult:
+        snapshot = deepcopy(engagement)
+        try:
+            result = mutation()
+            self.save(root, engagement)
+            return result
+        except BaseException:
+            restore_engagement_state(engagement, snapshot)
+            raise
+
+    def add_scope(
+        self,
+        root: Path,
+        engagement: Engagement,
+        label: str,
+        group: ScopeGroup,
+        network: str,
+        availability: ScopeAvailability = ScopeAvailability.READY,
+        via_target_id: str = "",
+    ) -> ScopeEntry:
+        return self._mutate_manifest(
+            root,
+            engagement,
+            lambda: engagement.add_scope(
+                label, group, network, availability, via_target_id
+            ),
+        )
+
+    def update_scope(
+        self,
+        root: Path,
+        engagement: Engagement,
+        scope_id: str,
+        *,
+        label: str,
+        group: ScopeGroup,
+        network: str,
+        availability: ScopeAvailability,
+        via_target_id: str,
+    ) -> ScopeEntry:
+        def mutate() -> ScopeEntry:
+            scope = engagement.scope_by_id(scope_id)
+            scope.label = label
+            scope.group = group
+            scope.network = str(ipaddress.ip_network(network, strict=False))
+            scope.availability = availability
+            scope.via_target_id = via_target_id
+            if any(
+                item.id != scope.id
+                and item.group == scope.group
+                and item.network == scope.network
+                for item in engagement.scope
+            ):
+                raise ValidationError(
+                    f"scope already exists in {scope.group.value}: {scope.network}"
+                )
+            return scope
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def add_target_address(
+        self,
+        root: Path,
+        engagement: Engagement,
+        target_id: str,
+        address: str,
+        scope_id: str,
+        *,
+        primary: bool = False,
+    ) -> Target:
+        def mutate() -> Target:
+            target = engagement.target_by_id(target_id)
+            target.addresses.append(TargetAddress(address, scope_id))
+            if primary or not target.primary_endpoint:
+                target.primary_endpoint = address
+            return target
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def remove_target_address(
+        self,
+        root: Path,
+        engagement: Engagement,
+        target_id: str,
+        index: int,
+    ) -> Target:
+        def mutate() -> Target:
+            target = engagement.target_by_id(target_id)
+            if index < 0:
+                raise ValidationError("target address selection is no longer valid")
+            try:
+                removed = target.addresses.pop(index)
+            except IndexError as exc:
+                raise ValidationError(
+                    "target address selection is no longer valid"
+                ) from exc
+            if target.primary_endpoint == removed.value:
+                target.primary_endpoint = (
+                    target.hostnames[0]
+                    if target.hostnames
+                    else (target.addresses[0].value if target.addresses else "")
+                )
+            return target
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def replace_target_hostnames(
+        self,
+        root: Path,
+        engagement: Engagement,
+        target_id: str,
+        hostnames: Iterable[str],
+    ) -> Target:
+        def mutate() -> Target:
+            target = engagement.target_by_id(target_id)
+            previous = set(target.hostnames)
+            target.hostnames = sorted(
+                {item.strip() for item in hostnames if item.strip()}
+            )
+            if (
+                target.primary_endpoint in previous
+                and target.primary_endpoint not in target.hostnames
+            ):
+                target.primary_endpoint = (
+                    target.hostnames[0]
+                    if target.hostnames
+                    else (target.addresses[0].value if target.addresses else "")
+                )
+            return target
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def set_primary_endpoint(
+        self,
+        root: Path,
+        engagement: Engagement,
+        target_id: str,
+        endpoint: str,
+    ) -> Target:
+        def mutate() -> Target:
+            target = engagement.target_by_id(target_id)
+            target.primary_endpoint = endpoint
+            return target
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def create_access(
+        self,
+        root: Path,
+        engagement: Engagement,
+        target_id: str,
+        *,
+        principal: str,
+        authority: str,
+        method: str,
+        level: AccessLevel,
+        evidence: str,
+    ) -> AccessRecord:
+        def mutate() -> AccessRecord:
+            record = AccessRecord(
+                id=engagement.next_id("access", "AR"),
+                principal=principal,
+                authority=authority,
+                target_id=target_id,
+                method=method,
+                level=level,
+                evidence=evidence,
+            )
+            engagement.access.append(record)
+            return record
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def create_activity(
+        self,
+        root: Path,
+        engagement: Engagement,
+        *,
+        summary: str,
+        result: ActivityResult,
+        target_id: str,
+        evidence: str,
+    ) -> Activity:
+        def mutate() -> Activity:
+            activity = Activity(
+                id=engagement.next_id("activity", "A"),
+                summary=summary,
+                result=result,
+                target_id=target_id,
+                evidence=evidence,
+            )
+            engagement.activities.append(activity)
+            return activity
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def create_attack_path(
+        self,
+        root: Path,
+        engagement: Engagement,
+        name: str,
+        steps: Iterable[tuple[str, str, str]],
+    ) -> AttackPath:
+        def mutate() -> AttackPath:
+            path = AttackPath(
+                id=engagement.next_id("attack_path", "P"),
+                name=name,
+                steps=[AttackPathStep(*item) for item in steps],
+            )
+            engagement.attack_paths.append(path)
+            return path
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def update_record(
+        self,
+        root: Path,
+        engagement: Engagement,
+        kind: str,
+        record_id: str,
+        value: dict,
+    ) -> AccessRecord | Activity | Finding | AttackPath:
+        collections = {
+            "access": engagement.access,
+            "activity": engagement.activities,
+            "finding": engagement.findings,
+            "attack_path": engagement.attack_paths,
+        }
+
+        def mutate() -> AccessRecord | Activity | Finding | AttackPath:
+            record = next(
+                (item for item in collections.get(kind, []) if item.id == record_id),
+                None,
+            )
+            if record is None:
+                raise ValidationError(f"unknown {kind} record: {record_id}")
+            names = {
+                "access": ("principal", "authority", "method", "level", "evidence"),
+                "activity": ("summary", "result", "target_id", "evidence"),
+                "finding": ("title", "severity", "state", "target_ids", "evidence"),
+            }
+            if kind == "attack_path":
+                record.name = value["name"]
+                record.steps = [AttackPathStep(*item) for item in value["steps"]]
+            else:
+                for name in names[kind]:
+                    setattr(record, name, value[name])
+            return record
+
+        return self._mutate_manifest(root, engagement, mutate)
+
     def refresh_sitrep(
         self,
         root: Path,
@@ -322,23 +603,24 @@ Created: {engagement.created_at}
         hostnames: list[str] | None = None,
         primary_endpoint: str = "",
     ) -> Target:
-        target = self.stage_target(
-            root,
-            engagement,
-            display_name,
-            addresses=addresses,
-            hostnames=hostnames,
-            primary_endpoint=primary_endpoint,
-        )
-        target_root = root / "targets" / target.directory
+        snapshot = deepcopy(engagement)
+        target: Target | None = None
         try:
+            target = self.stage_target(
+                root,
+                engagement,
+                display_name,
+                addresses=addresses,
+                hostnames=hostnames,
+                primary_endpoint=primary_endpoint,
+            )
             self.save(root, engagement)
         except BaseException:
-            engagement.targets = [
-                item for item in engagement.targets if item.id != target.id
-            ]
-            shutil.rmtree(target_root, ignore_errors=True)
+            restore_engagement_state(engagement, snapshot)
+            if target is not None:
+                shutil.rmtree(root / "targets" / target.directory, ignore_errors=True)
             raise
+        assert target is not None
         return target
 
     def stage_target(
@@ -391,14 +673,13 @@ Created: {engagement.created_at}
     ) -> None:
         if not name.strip():
             raise ValidationError("target display name is required")
-        target = engagement.target_by_id(target_id)
-        previous = target.display_name
-        target.display_name = name.strip()
-        try:
-            self.save(root, engagement)
-        except BaseException:
-            target.display_name = previous
-            raise
+
+        def mutate() -> Target:
+            target = engagement.target_by_id(target_id)
+            target.display_name = name.strip()
+            return target
+
+        target = self._mutate_manifest(root, engagement, mutate)
         notes = root / "targets" / target.directory / "NOTES.md"
         try:
             content = notes.read_text(encoding="utf-8")
@@ -420,6 +701,7 @@ Created: {engagement.created_at}
         target_ids: list[str],
         evidence: list[str] | None = None,
     ) -> Finding:
+        snapshot = deepcopy(engagement)
         finding_id = engagement.next_id("finding", "F")
         document = f"findings/{finding_id}.md"
         finding = Finding(
@@ -448,9 +730,7 @@ Created: {engagement.created_at}
             )
             self.save(root, engagement)
         except BaseException:
-            engagement.findings = [
-                item for item in engagement.findings if item.id != finding_id
-            ]
+            restore_engagement_state(engagement, snapshot)
             finding_path.unlink(missing_ok=True)
             raise
         return finding
@@ -513,13 +793,13 @@ Created: {engagement.created_at}
         ]
         if references:
             raise ConflictError("scope is used by target " + ", ".join(references))
-        original = engagement.scope
-        engagement.scope = [item for item in engagement.scope if item.id != scope.id]
-        try:
-            self.save(root, engagement)
-        except BaseException:
-            engagement.scope = original
-            raise
+
+        def mutate() -> None:
+            engagement.scope = [
+                item for item in engagement.scope if item.id != scope.id
+            ]
+
+        self._mutate_manifest(root, engagement, mutate)
 
     def delete_record(
         self, root: Path, engagement: Engagement, kind: str, record_id: str
@@ -578,19 +858,48 @@ Created: {engagement.created_at}
         document.rename(staging)
         return document, staging
 
-    def set_last_engagement(self, engagement_id: str) -> None:
+    @contextmanager
+    def _state_lock(self) -> Iterator[None]:
         _private_directory(self.settings.state_file.parent)
-        write_private_json(
-            self.settings.state_file,
-            {"schema": "tacmux.state/v1", "last_engagement_id": engagement_id},
-        )
+        lock_path = self.settings.state_file.with_suffix(".lock")
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
-    def get_last_engagement(self) -> str:
+    def _read_state(self) -> dict[str, object]:
         try:
             with self.settings.state_file.open(encoding="utf-8") as stream:
                 value = json.load(stream)
         except (OSError, json.JSONDecodeError):
-            return ""
-        if not isinstance(value, dict) or value.get("schema") != "tacmux.state/v1":
-            return ""
+            return {}
+        if not isinstance(value, dict) or value.get("schema") != STATE_SCHEMA:
+            return {}
+        return value
+
+    def _update_state(self, **changes: object) -> None:
+        with self._state_lock():
+            value = self._read_state()
+            value.update(changes)
+            value["schema"] = STATE_SCHEMA
+            write_private_json(self.settings.state_file, value)
+
+    def set_last_engagement(self, engagement_id: str) -> None:
+        self._update_state(last_engagement_id=engagement_id)
+
+    def get_last_engagement(self) -> str:
+        value = self._read_state()
         return str(value.get("last_engagement_id", ""))
+
+    def set_theme(self, theme_name: str) -> None:
+        if not theme_name.strip():
+            raise ValidationError("theme name is required")
+        self._update_state(selected_theme=theme_name.strip())
+
+    def get_theme(self) -> str:
+        value = self._read_state().get("selected_theme", "")
+        return value if isinstance(value, str) else ""

@@ -58,6 +58,17 @@ class Settings:
             raise ValidationError("VISUAL or EDITOR resolved to an empty command")
         return argv
 
+    @property
+    def pager_argv(self) -> list[str]:
+        value = os.environ.get("PAGER") or "less -SR"
+        try:
+            argv = shlex.split(value)
+        except ValueError as exc:
+            raise ValidationError(f"invalid pager command: {exc}") from exc
+        if not argv:
+            raise ValidationError("PAGER resolved to an empty command")
+        return argv
+
 
 def _read_toml(path: Path) -> dict:
     if not path.is_file():

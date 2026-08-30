@@ -150,6 +150,14 @@ class Target:
     primary_endpoint: str = ""
     created_at: str = field(default_factory=utc_now)
 
+    @property
+    def identity_state(self) -> str:
+        if self.addresses:
+            return "scope-qualified"
+        if self.hostnames:
+            return "hostname-only"
+        return "unresolved"
+
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Target":
         value = _object(value, "target")

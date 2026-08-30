@@ -24,6 +24,7 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from .discovery import Reconciliation
+from .errors import ValidationError
 from .model import (
     AccessRecord,
     AccessLevel,
@@ -445,6 +446,10 @@ class TargetForm(BaseModal):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Label("Add Target", classes="title")
+            yield Static(
+                "An IP address or hostname is optional. Leave both blank to create "
+                "an unresolved target workspace."
+            )
             yield Label("Display Name", classes="field-label")
             yield Input(placeholder="mail01", id="name")
             yield Label("IP address (optional)", classes="field-label")
@@ -909,19 +914,28 @@ class ScanForm(BaseModal):
         self.engagement = engagement
 
     def compose(self) -> ComposeResult:
+        ready_scope = [
+            item
+            for item in self.engagement.scope
+            if item.availability == ScopeAvailability.READY
+        ]
         selections = [
             (
-                f"{item.group.value}: {item.label} — {item.network} [{item.availability.value}]",
+                f"{item.group.value}: {item.label} — {item.network}",
                 item.id,
                 False,
             )
-            for item in self.engagement.scope
+            for item in ready_scope
         ]
         with Vertical():
             yield Label("Run Detached Host Discovery", classes="title")
             yield Static("Command profile: nmap -sn --reason -oX <job>/results.xml")
             yield Label("Select declared, ready scope entries", classes="field-label")
             yield SelectionList(*selections, id="scope")
+            if not ready_scope:
+                yield Static(
+                    "No scope entries are ready for scanning. Mark an entry ready first."
+                )
             yield Static("", classes="error")
             with Horizontal(classes="buttons"):
                 yield Button("Cancel", id="cancel")
@@ -1015,10 +1029,12 @@ class DiscoveryReview(BaseModal):
         self,
         decisions: list[Reconciliation],
         merge_targets: Iterable[tuple[str, str]] = (),
+        allowed_scope_ids: Iterable[str] = (),
     ):
         super().__init__()
         self.decisions = decisions
         self.merge_targets = list(merge_targets)
+        self.allowed_scope_ids = frozenset(allowed_scope_ids)
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -1059,12 +1075,20 @@ class DiscoveryReview(BaseModal):
         row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
         index = int(str(row_key.value))
         decision = self.decisions[index]
-        allowed = (
-            ["add", "ignore"]
-            if not decision.merge_target_id
-            else ["merge", "add", "ignore"]
+        allowed = [
+            action
+            for action in ("add", "merge", "ignore")
+            if action in decision.allowed_actions
+            and (action != "merge" or decision.merge_target_id)
+        ]
+        if len(allowed) == 1:
+            self.error(decision.note or "This discovery result can only be ignored")
+            return
+        decision.action = (
+            allowed[0]
+            if decision.action not in allowed
+            else allowed[(allowed.index(decision.action) + 1) % len(allowed)]
         )
-        decision.action = allowed[(allowed.index(decision.action) + 1) % len(allowed)]
         table.update_cell(row_key, self.action_column, decision.action.upper())
 
     def action_choose_merge(self) -> None:
@@ -1074,6 +1098,12 @@ class DiscoveryReview(BaseModal):
             return
         row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
         index = int(str(row_key.value))
+        if "merge" not in self.decisions[index].allowed_actions:
+            self.error(
+                self.decisions[index].note
+                or "This discovery result cannot be merged"
+            )
+            return
         self.app.push_screen(
             ActionMenu("Merge Discovered Host Into", self.merge_targets),
             lambda target_id: self._set_merge(index, target_id),
@@ -1093,7 +1123,19 @@ class DiscoveryReview(BaseModal):
         table.update_cell(row_key, self.reason_column, decision.note)
 
     def action_commit(self) -> None:
-        self.dismiss((self.decisions, self.query_one("#sessions", Checkbox).value))
+        try:
+            for decision in self.decisions:
+                decision.validate_action()
+        except ValidationError as exc:
+            self.error(str(exc))
+            return
+        self.dismiss(
+            (
+                self.decisions,
+                self.query_one("#sessions", Checkbox).value,
+                set(self.allowed_scope_ids),
+            )
+        )
 
     @on(Button.Pressed)
     def pressed(self, event: Button.Pressed) -> None:

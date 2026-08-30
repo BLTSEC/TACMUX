@@ -148,23 +148,9 @@ class TmuxService:
             "TARGET": primary,
             "TACMUX_BOOTSTRAP": "1",
             "TACMUX_NO_AUTOLOG": "0" if logging_enabled else "1",
-            "NOCAP_WORKSPACE": str(self.settings.workspace)
-            if self.settings.nocap_enabled
-            else "",
         }
-        args = [
-            "new-session",
-            "-d",
-            "-P",
-            "-F",
-            "#{pane_id}",
-            "-s",
-            session,
-            "-c",
-            str(target_root),
-        ]
-        for key, value in environment.items():
-            args.extend(["-e", f"{key}={value}"])
+        if self.settings.nocap_enabled:
+            environment["NOCAP_WORKSPACE"] = str(self.settings.workspace)
         options = {
             "@tacmux_engagement_id": engagement.id,
             "@tacmux_target_id": target.id,
@@ -172,29 +158,16 @@ class TmuxService:
             "@tacmux_target_dir": str(target_root),
             "@tacmux_log_dir": str(target_root / "logs"),
         }
-        created = False
-        pane_id = ""
-        try:
-            if not self.has_session(session):
-                result = self.run(args)
-                pane_id = result.stdout.strip()
-                created = True
-            for key, value in environment.items():
-                self.run(["set-environment", "-t", f"={session}:", key, value])
-            for name, value in options.items():
-                self.run(["set-option", "-t", f"={session}:", name, value])
-            if logging_enabled and pane_id:
-                from .hooks import LogController
-
-                LogController(self.settings, self).start(
-                    pane_id, force=True, kind="session"
-                )
-            self.run(["set-environment", "-t", f"={session}:", "TACMUX_BOOTSTRAP", "0"])
-        except BaseException:
-            if created:
-                self.run(["kill-session", "-t", f"={session}:"], check=False)
-            raise
-        return LaunchIntent(session)
+        return self._start_session(
+            session,
+            target_root,
+            environment,
+            options,
+            logging_enabled=logging_enabled,
+            removed_environment=()
+            if self.settings.nocap_enabled
+            else ("NOCAP_WORKSPACE",),
+        )
 
     def start_targets_detached(
         self,
@@ -208,19 +181,49 @@ class TmuxService:
         ]
 
     def start_ops(self, engagement_root: Path, engagement: Engagement) -> LaunchIntent:
+        if not self.available():
+            raise ExternalToolError("tmux is not installed")
         session = self.session_name(engagement)
         logging_enabled = self.settings.auto_log and engagement.logging_enabled
         environment = {
             "TACMUX_ENGAGEMENT_ID": engagement.id,
             "TACMUX_ENGAGEMENT": engagement.name,
             "TACMUX_TARGET_ID": "",
+            "TACMUX_TARGET_NAME": "",
             "TACMUX_TARGET": "",
             "TACMUX_BOOTSTRAP": "1",
             "TACMUX_NO_AUTOLOG": "0" if logging_enabled else "1",
-            "NOCAP_WORKSPACE": str(self.settings.workspace)
-            if self.settings.nocap_enabled
-            else "",
         }
+        if self.settings.nocap_enabled:
+            environment["NOCAP_WORKSPACE"] = str(self.settings.workspace)
+        options = {
+            "@tacmux_engagement_id": engagement.id,
+            "@tacmux_target_id": "",
+            "@tacmux_target_name": "",
+            "@tacmux_target_dir": str(engagement_root),
+            "@tacmux_log_dir": str(engagement_root / "logs"),
+        }
+        return self._start_session(
+            session,
+            engagement_root,
+            environment,
+            options,
+            logging_enabled=logging_enabled,
+            removed_environment=()
+            if self.settings.nocap_enabled
+            else ("NOCAP_WORKSPACE",),
+        )
+
+    def _start_session(
+        self,
+        session: str,
+        working_directory: Path,
+        environment: Mapping[str, str],
+        options: Mapping[str, str],
+        *,
+        logging_enabled: bool,
+        removed_environment: Sequence[str] = (),
+    ) -> LaunchIntent:
         args = [
             "new-session",
             "-d",
@@ -230,28 +233,14 @@ class TmuxService:
             "-s",
             session,
             "-c",
-            str(engagement_root),
-            "-e",
-            f"TACMUX_ENGAGEMENT_ID={engagement.id}",
-            "-e",
-            f"TACMUX_ENGAGEMENT={engagement.name}",
-            "-e",
-            "TACMUX_TARGET_ID=",
-            "-e",
-            "TACMUX_TARGET=",
-            "-e",
-            "TACMUX_BOOTSTRAP=1",
-            "-e",
-            f"TACMUX_NO_AUTOLOG={'0' if logging_enabled else '1'}",
-            "-e",
-            f"NOCAP_WORKSPACE={self.settings.workspace if self.settings.nocap_enabled else ''}",
+            str(working_directory),
         ]
-        options = {
-            "@tacmux_engagement_id": engagement.id,
-            "@tacmux_target_id": "",
-            "@tacmux_target_dir": str(engagement_root),
-            "@tacmux_log_dir": str(engagement_root / "logs"),
-        }
+        for key, value in environment.items():
+            args.extend(["-e", f"{key}={value}"])
+        # Neutralize inherited values in the initial pane. The removed marker set
+        # below keeps the variable absent from every pane created afterward.
+        for key in removed_environment:
+            args.extend(["-e", f"{key}="])
         created = False
         pane_id = ""
         try:
@@ -261,6 +250,8 @@ class TmuxService:
                 created = True
             for key, value in environment.items():
                 self.run(["set-environment", "-t", f"={session}:", key, value])
+            for key in removed_environment:
+                self.run(["set-environment", "-r", "-t", f"={session}:", key])
             for name, value in options.items():
                 self.run(["set-option", "-t", f"={session}:", name, value])
             if logging_enabled and pane_id:

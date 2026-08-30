@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 import json
 import stat
 
 import pytest
 
-from tacmux.archive import create_archive, restore_archive, verify_archive
+from tacmux.archive import (
+    create_archive,
+    restore_archive,
+    restore_target_archive,
+    verify_archive,
+)
 from tacmux.errors import ConflictError, SafetyError, ValidationError
+from tacmux.model import ScopeGroup, TargetAddress
 
 
 def test_archive_hashes_members_verifies_and_restores(tmp_path):
@@ -115,3 +122,63 @@ def test_archive_manifest_requires_structured_sections(tmp_path):
     manifest.write_text("[]")
     with pytest.raises(ValidationError, match="JSON object"):
         verify_archive(archive)
+
+
+def test_target_archive_restore_commits_manifest_and_files(workspace, record):
+    scope = record.engagement.add_scope(
+        "LAN", ScopeGroup.INTERNAL, "10.44.0.0/24"
+    )
+    target = workspace.create_target(
+        record.root,
+        record.engagement,
+        "host",
+        addresses=[TargetAddress("10.44.0.10", scope.id)],
+        primary_endpoint="10.44.0.10",
+    )
+    target_root = record.root / "targets" / target.directory
+    (target_root / "recon/scan.txt").write_text("evidence")
+    archive, _ = create_archive(
+        target_root,
+        workspace.settings.archive_dir,
+        kind="targets",
+        engagement_id=record.engagement.id,
+        object_id=target.id,
+        object_metadata=asdict(target),
+    )
+    workspace.delete_target(record.root, record.engagement, target.id)
+    context = verify_archive(archive)["context"]
+
+    restored = restore_target_archive(
+        archive, workspace, record.root, record.engagement, context
+    )
+    assert (restored / "recon/scan.txt").read_text() == "evidence"
+    assert workspace.load(record.root).target_by_id(target.id) == target
+
+
+def test_target_archive_restore_rolls_back_files_when_save_fails(
+    workspace, record, monkeypatch
+):
+    target = workspace.create_target(record.root, record.engagement, "unresolved")
+    target_root = record.root / "targets" / target.directory
+    archive, _ = create_archive(
+        target_root,
+        workspace.settings.archive_dir,
+        kind="targets",
+        engagement_id=record.engagement.id,
+        object_id=target.id,
+        object_metadata=asdict(target),
+    )
+    workspace.delete_target(record.root, record.engagement, target.id)
+    context = verify_archive(archive)["context"]
+    before = record.engagement.to_dict()
+
+    def fail_save(*_):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(workspace, "save", fail_save)
+    with pytest.raises(OSError, match="disk full"):
+        restore_target_archive(
+            archive, workspace, record.root, record.engagement, context
+        )
+    assert record.engagement.to_dict() == before
+    assert not target_root.exists()
