@@ -185,10 +185,16 @@ class EngagementForm(BaseModal):
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("Create Engagement", classes="title")
-            yield Label("Client or Lab", classes="field-label")
-            yield Input(placeholder="ACME or HTB Academy", id="client")
+            yield Label("Client, Lab, or Platform", classes="field-label")
+            yield Input(placeholder="Who this work belongs to", id="client")
+            yield Static(
+                "Use a customer, organization, private lab, certification "
+                "environment, or training platform."
+            )
             yield Label("Engagement Name", classes="field-label")
-            yield Input(placeholder="2026 External and Internal Assessment", id="name")
+            yield Input(
+                placeholder="Assessment name, project code, or lab name", id="name"
+            )
             yield Label("Assessment Type", classes="field-label")
             yield Select(
                 [
@@ -210,21 +216,37 @@ class EngagementForm(BaseModal):
                 "External scope now (optional, one IP/CIDR per line)",
                 classes="field-label",
             )
-            yield TextArea(id="external")
+            yield TextArea(
+                placeholder=(
+                    "198.51.100.25/32\n"
+                    "External DMZ = 198.51.100.0/24"
+                ),
+                id="external",
+            )
+            yield Static("Optional format: Label = IP/CIDR")
             yield Label(
                 "Internal scope now (optional, one IP/CIDR per line)",
                 classes="field-label",
             )
-            yield TextArea(id="internal")
+            yield TextArea(
+                placeholder="10.20.0.0/24\nDomain Controller = 10.20.0.10/32",
+                id="internal",
+            )
+            yield Static("Optional format: Label = IP/CIDR")
+            yield Label("Internal scope reachability", classes="field-label")
             yield Select(
                 [
-                    ("Ready / directly reachable", "ready"),
-                    ("Unavailable until access", "unavailable"),
+                    ("Reachable now (direct, on-site, or VPN)", "ready"),
+                    (
+                        "Not reachable yet (requires access or pivot)",
+                        "unavailable",
+                    ),
                 ],
                 value="unavailable",
                 allow_blank=False,
                 id="internal-availability",
             )
+            yield Static("Applies only to the internal scope entered above.")
             yield Static("", classes="error")
             with Horizontal(classes="buttons"):
                 yield Button("Cancel", id="cancel")
@@ -238,7 +260,7 @@ class EngagementForm(BaseModal):
         client = self.query_one("#client", Input).value.strip()
         name = self.query_one("#name", Input).value.strip()
         if not client or not name:
-            self.error("Client or Lab and Engagement Name are required")
+            self.error("Enter who the work belongs to and an Engagement Name")
             return
         self.dismiss(
             {
@@ -264,11 +286,13 @@ class LegacyImportForm(BaseModal):
             yield Label(
                 "Existing engagement or flat workspace directory", classes="field-label"
             )
-            yield Input(id="source")
-            yield Label("Client or Lab", classes="field-label")
-            yield Input(id="client")
+            yield Input(placeholder="~/legacy-engagement", id="source")
+            yield Label("Client, Lab, or Platform", classes="field-label")
+            yield Input(placeholder="Who this work belongs to", id="client")
             yield Label("New Engagement Name", classes="field-label")
-            yield Input(id="name")
+            yield Input(
+                placeholder="Assessment name, project code, or lab name", id="name"
+            )
             yield Label("Assessment Type", classes="field-label")
             yield Select(
                 [
@@ -293,7 +317,9 @@ class LegacyImportForm(BaseModal):
         client = self.query_one("#client", Input).value.strip()
         name = self.query_one("#name", Input).value.strip()
         if not source or not client or not name:
-            self.error("Source, Client or Lab, and Engagement Name are required")
+            self.error(
+                "Source, who the work belongs to, and Engagement Name are required"
+            )
             return
         self.dismiss(
             {
@@ -343,7 +369,10 @@ class ScopeForm(BaseModal):
             )
             yield Label("Availability", classes="field-label")
             yield Select(
-                [("Ready", "ready"), ("Unavailable", "unavailable")],
+                [
+                    ("Reachable now", "ready"),
+                    ("Not reachable yet", "unavailable"),
+                ],
                 value=self.scope.availability.value if self.scope else "ready",
                 allow_blank=False,
                 id="availability",
@@ -460,12 +489,14 @@ class TargetForm(BaseModal):
                     (f"{item.group.value}: {item.label} ({item.network})", item.id)
                     for item in self.engagement.scope
                 ],
-                prompt="Select scope",
+                prompt="Select scope when entering an IP",
                 allow_blank=True,
                 id="scope",
             )
             yield Label("Hostnames (optional, comma-separated)", classes="field-label")
-            yield Input(id="hostnames")
+            yield Input(
+                placeholder="mail01.acme.test, smtp.acme.test", id="hostnames"
+            )
             yield Static("", classes="error")
             with Horizontal(classes="buttons"):
                 yield Button("Cancel", id="cancel")
@@ -626,7 +657,9 @@ class ActivityForm(BaseModal):
             )
             yield Label("Relative evidence reference (optional)", classes="field-label")
             yield Input(
-                value=self.activity.evidence if self.activity else "", id="evidence"
+                value=self.activity.evidence if self.activity else "",
+                placeholder="targets/T0001-mail/recon/initial-access.txt",
+                id="evidence",
             )
             yield Static("", classes="error")
             with Horizontal(classes="buttons"):
@@ -685,7 +718,11 @@ class FindingForm(BaseModal):
                 "Edit Finding" if self.finding else "Create Finding", classes="title"
             )
             yield Label("Title", classes="field-label")
-            yield Input(value=self.finding.title if self.finding else "", id="title")
+            yield Input(
+                value=self.finding.title if self.finding else "",
+                placeholder="Open SMB share exposes sensitive data",
+                id="title",
+            )
             yield Label("Severity", classes="field-label")
             yield Select(
                 [(item.value.title(), item.value) for item in Severity],
@@ -711,6 +748,10 @@ class FindingForm(BaseModal):
             )
             yield TextArea(
                 "\n".join(self.finding.evidence) if self.finding else "",
+                placeholder=(
+                    "targets/T0002-filesrv/recon/smb-share.txt\n"
+                    "targets/T0002-filesrv/screenshots/share.png"
+                ),
                 id="evidence",
             )
             yield Static("", classes="error")
@@ -973,9 +1014,19 @@ class ImportDiscoveryForm(BaseModal):
             yield Label(
                 "Nmap XML path (leave blank when pasting hosts)", classes="field-label"
             )
-            yield Input(value=self.xml_path, id="xml")
+            yield Input(
+                value=self.xml_path,
+                placeholder="~/scans/host-discovery.xml",
+                id="xml",
+            )
             yield Label("Or paste one `IP [hostname]` per line", classes="field-label")
-            yield TextArea(id="paste")
+            yield TextArea(
+                placeholder=(
+                    "198.51.100.25 web01.acme.test\n"
+                    "10.20.0.15 filesrv.acme.test"
+                ),
+                id="paste",
+            )
             yield Label(
                 "Scope entries permitted for this import", classes="field-label"
             )

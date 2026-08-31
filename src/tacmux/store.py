@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import tempfile
 from typing import Callable, Iterable, Iterator, TypeVar
@@ -180,6 +181,77 @@ class Workspace:
             if record.engagement.id == engagement_id:
                 return record
         raise ValidationError(f"engagement not found: {engagement_id}")
+
+    def delete_engagement(self, engagement_id: str) -> None:
+        """Permanently remove one validated engagement from the live workspace."""
+
+        workspace_root = self.settings.workspace.resolve(strict=True)
+        staging: Path | None = None
+        with self.lock():
+            record = self.find(engagement_id)
+            root = record.root
+            if root.is_symlink():
+                raise SafetyError(f"refusing to delete symlinked engagement: {root}")
+            try:
+                resolved_root = root.resolve(strict=True)
+                resolved_parent = root.parent.resolve(strict=True)
+            except OSError as exc:
+                raise SafetyError(
+                    f"cannot validate engagement path {root}: {exc}"
+                ) from exc
+            if (
+                resolved_parent != workspace_root
+                or resolved_root.parent != workspace_root
+            ):
+                raise SafetyError(
+                    "engagement is not a direct child of the configured workspace: "
+                    f"{root}"
+                )
+            if not root.name.startswith(f"{engagement_id}-"):
+                raise SafetyError(
+                    f"engagement directory does not match {engagement_id}: {root}"
+                )
+            if record.engagement.id != engagement_id:
+                raise SafetyError(
+                    f"engagement manifest identity does not match {engagement_id}"
+                )
+
+            deleting_root = workspace_root / ".tacmux" / "deleting"
+            _private_directory(deleting_root)
+            staging = deleting_root / (
+                f"{engagement_id}-{os.getpid()}-{secrets.token_hex(4)}"
+            )
+            if staging.exists():
+                raise ConflictError(f"delete staging path already exists: {staging}")
+            root.rename(staging)
+            try:
+                _fsync_directory(workspace_root)
+                if self.get_last_engagement() == engagement_id:
+                    self.set_last_engagement("")
+            except BaseException:
+                try:
+                    staging.rename(root)
+                    _fsync_directory(workspace_root)
+                except OSError as rollback_error:
+                    raise SafetyError(
+                        "engagement deletion could not be rolled back; data remains at "
+                        f"{staging}"
+                    ) from rollback_error
+                raise
+
+        assert staging is not None
+        try:
+            shutil.rmtree(staging)
+            _fsync_directory(staging.parent)
+        except OSError as exc:
+            if staging.exists():
+                raise SafetyError(
+                    "engagement was removed from the picker, but filesystem cleanup "
+                    f"is incomplete at {staging}: {exc}"
+                ) from exc
+            raise SafetyError(
+                f"engagement was deleted, but final directory sync failed: {exc}"
+            ) from exc
 
     def load(self, engagement_root: Path) -> Engagement:
         manifest = engagement_root / MANIFEST_RELATIVE

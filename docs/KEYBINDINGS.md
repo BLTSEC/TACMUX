@@ -9,7 +9,7 @@ Press the tmux prefix, release it, then press `E`. The complete TACMUX tmux conf
 | Key | Action |
 |---|---|
 | `Enter` | Open/attach a target, edit Markdown, page read-only text, edit scope, or manage a discovery job |
-| `a` | Contextual actions for the active tab |
+| `a` | Actions for the selected engagement or active cockpit tab |
 | `n` | Add a target |
 | `d` | Host discovery actions |
 | `g` | Return to the engagement picker |
@@ -17,7 +17,7 @@ Press the tmux prefix, release it, then press `E`. The complete TACMUX tmux conf
 | `r` | Refresh sessions, jobs, topology, and SITREP |
 | `t` | Open the fuzzy theme selector |
 | `1`–`4` | Targets, Scope & Discovery, Situation, Documents |
-| `Ctrl+P` | Fuzzy command palette |
+| `Ctrl+P` | Command Palette (fuzzy command search) |
 | `Escape` | Close a modal/cancel an entry |
 | `q` | Quit the cockpit; detached sessions continue |
 
@@ -25,6 +25,11 @@ Theme choices apply only to the TACMUX cockpit and persist across launches. The
 curated dark catalog contains BLTSEC, Textual Dark, Nord, Dracula, Catppuccin
 Mocha, Tokyo Night, Gruvbox, Rose Pine Moon, and Solarized Dark. BLTSEC is the
 default.
+
+From the engagement picker, `a` opens a short Actions menu for opening,
+archiving, or permanently deleting the selected engagement. The Command Palette
+is the global searchable command launcher; it does not replace contextual
+Actions menus.
 
 Discovery review:
 

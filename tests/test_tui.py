@@ -4,17 +4,29 @@ from dataclasses import replace
 
 import pytest
 from textual.command import CommandPalette
-from textual.widgets import Checkbox, OptionList, SelectionList, Static
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Input,
+    Label,
+    OptionList,
+    Select,
+    SelectionList,
+    Static,
+    TextArea,
+)
 
 from tacmux.app import EngagementPickerScreen, MainScreen, TacmuxApp
 from tacmux.dialogs import (
     ActionMenu,
     AttackPathForm,
+    ConfirmModal,
     DiscoveryReview,
     EngagementForm,
     ScanForm,
 )
 from tacmux.discovery import DiscoveryCandidate, Reconciliation
+from tacmux.errors import ConflictError
 from tacmux.model import (
     AccessLevel,
     AccessRecord,
@@ -39,6 +51,121 @@ async def test_picker_is_usable_at_minimum_terminal_size(settings, workspace, re
         await pilot.press("t")
         await pilot.pause()
         assert isinstance(app.screen, CommandPalette)
+
+
+@pytest.mark.asyncio
+async def test_picker_actions_permanently_delete_selected_engagement(
+    settings, workspace, record, monkeypatch
+):
+    app = TacmuxApp(settings)
+    monkeypatch.setattr(app.tmux, "available", lambda: False)
+    monkeypatch.setattr(app.tmux, "live_target_ids", lambda _engagement: set())
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, EngagementPickerScreen)
+
+        await pilot.press("a")
+        await pilot.pause()
+        assert isinstance(app.screen, ActionMenu)
+        actions = app.screen.query_one(OptionList)
+        assert actions.option_count == 3
+        actions.highlighted = 2
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ConfirmModal)
+        confirmation = app.screen.query_one("#confirmation", Input)
+        required = f"DELETE {record.engagement.id}"
+        assert app.screen.required_text == required
+        assert str(record.root) in app.screen.message
+
+        confirmation.value = "DELETE wrong-engagement"
+        app.screen.query_one("#confirm", Button).press()
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        assert "does not match" in str(app.screen.query_one(".error", Static).render())
+        assert record.root.is_dir()
+
+        confirmation.value = required
+        app.screen.query_one("#confirm", Button).press()
+        await pilot.pause()
+        assert isinstance(app.screen, EngagementPickerScreen)
+        assert app.screen.query_one("#engagements").row_count == 0
+        assert not record.root.exists()
+
+
+def test_engagement_lifecycle_reports_all_active_work(
+    settings, workspace, record, monkeypatch
+):
+    app = TacmuxApp(settings)
+    ops_session = app.tmux.session_name(record.engagement)
+    monkeypatch.setattr(app.tmux, "available", lambda: True)
+    monkeypatch.setattr(
+        app.tmux, "live_target_ids", lambda _engagement: {"T0001"}
+    )
+    monkeypatch.setattr(
+        app.tmux, "has_session", lambda session: session == ops_session
+    )
+    monkeypatch.setattr(
+        app.jobs,
+        "list",
+        lambda _root: [{"id": "J0001", "state": "running"}],
+    )
+
+    with pytest.raises(ConflictError) as raised:
+        app.require_idle_engagement(record.engagement.id, "deleting the engagement")
+    message = str(raised.value)
+    assert "1 target session(s)" in message
+    assert "operations session" in message
+    assert "1 discovery job(s)" in message
+
+
+def test_completed_discovery_job_does_not_block_engagement_lifecycle(
+    settings, workspace, record, monkeypatch
+):
+    app = TacmuxApp(settings)
+    monkeypatch.setattr(app.tmux, "available", lambda: False)
+    monkeypatch.setattr(app.tmux, "live_target_ids", lambda _engagement: set())
+    monkeypatch.setattr(
+        app.jobs,
+        "list",
+        lambda _root: [{"id": "J0001", "state": "completed"}],
+    )
+
+    idle = app.require_idle_engagement(
+        record.engagement.id, "archiving the engagement"
+    )
+    assert idle.engagement.id == record.engagement.id
+
+
+@pytest.mark.asyncio
+async def test_new_engagement_copy_explains_grouping_and_internal_reachability(
+    settings, workspace
+):
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        app.push_screen(EngagementForm())
+        await pilot.pause()
+
+        client = app.screen.query_one("#client", Input)
+        name = app.screen.query_one("#name", Input)
+        external = app.screen.query_one("#external", TextArea)
+        internal = app.screen.query_one("#internal", TextArea)
+        reachability = app.screen.query_one("#internal-availability", Select)
+        labels = {str(label.render()) for label in app.screen.query(Label)}
+
+        assert client.placeholder == "Who this work belongs to"
+        assert name.placeholder == "Assessment name, project code, or lab name"
+        assert "External DMZ = 198.51.100.0/24" in str(external.placeholder)
+        assert "Domain Controller = 10.20.0.10/32" in str(internal.placeholder)
+        assert "Internal scope reachability" in labels
+        assert reachability._options == [
+            ("Reachable now (direct, on-site, or VPN)", "ready"),
+            ("Not reachable yet (requires access or pivot)", "unavailable"),
+        ]
+        assert reachability.value == "unavailable"
 
 
 @pytest.mark.asyncio
