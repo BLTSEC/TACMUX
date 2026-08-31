@@ -68,7 +68,8 @@ def test_tmux_target_and_ops_sessions_have_stable_context(workspace, record, set
     assert f"TACMUX_TARGET_ID={target.id}" in create
     assert "TARGET=198.51.100.25" in create
     assert "TACMUX_NO_AUTOLOG=1" in create
-    assert "NOCAP_WORKSPACE=" in create
+    assert not any(str(item).startswith("NOCAP_WORKSPACE=") for item in create)
+    assert "env -u NOCAP_WORKSPACE" in create[-1]
     assert [
         "set-environment",
         "-r",

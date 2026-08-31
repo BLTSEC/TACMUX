@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 from typing import Mapping, Sequence
 
@@ -79,8 +80,11 @@ class TmuxService:
         return self.has_session(self.session_name(engagement, target))
 
     def live_target_ids(self, engagement: Engagement) -> set[str]:
+        return self.live_target_ids_by_engagement().get(engagement.id, set())
+
+    def live_target_ids_by_engagement(self) -> dict[str, set[str]]:
         if not self.available():
-            return set()
+            return {}
         result = self.run(
             [
                 "list-sessions",
@@ -90,12 +94,12 @@ class TmuxService:
             check=False,
         )
         if result.returncode:
-            return set()
-        target_ids: set[str] = set()
+            return {}
+        target_ids: dict[str, set[str]] = {}
         for line in result.stdout.splitlines():
             engagement_id, separator, target_id = line.partition("\t")
-            if separator and engagement_id == engagement.id and target_id:
-                target_ids.add(target_id)
+            if separator and engagement_id and target_id:
+                target_ids.setdefault(engagement_id, set()).add(target_id)
         return target_ids
 
     def current_context(self) -> tuple[str, str]:
@@ -237,10 +241,10 @@ class TmuxService:
         ]
         for key, value in environment.items():
             args.extend(["-e", f"{key}={value}"])
-        # Neutralize inherited values in the initial pane. The removed marker set
-        # below keeps the variable absent from every pane created afterward.
-        for key in removed_environment:
-            args.extend(["-e", f"{key}="])
+        if removed_environment:
+            unset = " ".join(f"-u {shlex.quote(key)}" for key in removed_environment)
+            shell = shlex.quote(os.environ.get("SHELL") or "/bin/sh")
+            args.append(f"exec env {unset} {shell}")
         created = False
         pane_id = ""
         try:

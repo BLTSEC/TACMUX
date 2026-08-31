@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import ipaddress
+from itertools import combinations
 import json
 import os
 from pathlib import Path
@@ -18,11 +19,23 @@ import xml.etree.ElementTree as ET
 
 from .config import Settings
 from .errors import ConflictError, ExternalToolError, ValidationError
-from .model import Engagement, ScopeAvailability, Target, TargetAddress
+from .model import (
+    Engagement,
+    ScopeEntry,
+    ScopeAvailability,
+    ScopeKind,
+    Service,
+    Target,
+    TargetAddress,
+    hostname_matches,
+    merge_services,
+    normalize_hostname,
+)
 from .store import (
     Workspace,
     _private_directory,
     restore_engagement_state,
+    write_private_bytes,
     write_private_json,
 )
 from .tmux import TmuxService
@@ -31,11 +44,52 @@ from .tmux import TmuxService
 JOB_SCHEMA = "tacmux.discovery-job/v1"
 
 
+def _validated_scan_scopes(
+    engagement: Engagement, scope_ids: Sequence[str]
+) -> list[ScopeEntry]:
+    if len(scope_ids) != len(set(scope_ids)):
+        raise ValidationError("select each scope entry only once")
+    selected = [engagement.scope_by_id(item) for item in scope_ids]
+    if not selected:
+        raise ValidationError("select at least one scope entry")
+    domains = [item.label for item in selected if item.kind != ScopeKind.NETWORK]
+    if domains:
+        raise ValidationError(
+            "domain scope entries cannot be scanned by TACMUX; import a host list instead"
+        )
+    unavailable = [
+        item.label
+        for item in selected
+        if item.availability != ScopeAvailability.READY
+    ]
+    if unavailable:
+        raise ConflictError("scope is unavailable: " + ", ".join(unavailable))
+    for left, right in combinations(selected, 2):
+        if ipaddress.ip_network(left.network).overlaps(ipaddress.ip_network(right.network)):
+            raise ValidationError(
+                "overlapping scope entries must be discovered in separate jobs: "
+                f"{left.label}, {right.label}"
+            )
+    return selected
+
+
+def _scan_argv(
+    nmap: str, xml_path: Path, scopes: Sequence[ScopeEntry]
+) -> list[str]:
+    exclusions = sorted({item for scope in scopes for item in scope.exclusions})
+    argv = [nmap, "-sn", "--reason"]
+    if exclusions:
+        argv.extend(["--exclude", ",".join(exclusions)])
+    argv.extend(["-oX", str(xml_path), *[item.network for item in scopes]])
+    return argv
+
+
 @dataclass(slots=True)
 class DiscoveryCandidate:
     addresses: list[str]
     hostnames: list[str] = field(default_factory=list)
     reason: str = ""
+    services: list[Service] = field(default_factory=list)
 
     @property
     def display_name(self) -> str:
@@ -54,6 +108,7 @@ class Reconciliation:
     merge_target_id: str = ""
     note: str = ""
     allowed_actions: tuple[str, ...] = ()
+    hostname_scope_id: str = ""
 
     def __post_init__(self) -> None:
         if self.allowed_actions:
@@ -67,9 +122,10 @@ class Reconciliation:
 
     @property
     def fully_scope_qualified(self) -> bool:
-        return bool(self.addresses) and len(self.addresses) == len(
-            self.candidate.addresses
-        )
+        return (
+            bool(self.addresses)
+            and len(self.addresses) == len(self.candidate.addresses)
+        ) or (not self.candidate.addresses and bool(self.hostname_scope_id))
 
     def validate_action(self) -> None:
         if self.action not in self.allowed_actions:
@@ -88,10 +144,10 @@ class Reconciliation:
             raise ValidationError("choose an existing target before merging")
 
 
-def parse_nmap_xml(path: Path) -> list[DiscoveryCandidate]:
+def parse_nmap_xml(path: Path, *, source: str = "") -> list[DiscoveryCandidate]:
     try:
         root = ET.parse(path).getroot()
-    except (OSError, ET.ParseError) as exc:
+    except (OSError, ET.ParseError, LookupError, UnicodeError) as exc:
         raise ValidationError(f"cannot parse Nmap XML {path}: {exc}") from exc
     candidates: list[DiscoveryCandidate] = []
     for host_index, host in enumerate(root.findall("host"), 1):
@@ -110,17 +166,63 @@ def parse_nmap_xml(path: Path) -> list[DiscoveryCandidate]:
                     f"Nmap XML host {host_index} contains an invalid IP address: "
                     f"{raw_address}"
                 ) from exc
-        hostnames = [
-            item.get("name", "")
-            for item in host.findall("hostnames/hostname")
-            if item.get("name")
-        ]
+        hostnames: list[str] = []
+        for item in host.findall("hostnames/hostname"):
+            raw_hostname = item.get("name", "")
+            if not raw_hostname:
+                continue
+            try:
+                hostnames.append(normalize_hostname(raw_hostname))
+            except ValidationError:
+                continue
+        services: list[Service] = []
+        for port in host.findall("ports/port"):
+            protocol = port.get("protocol", "")
+            raw_port = port.get("portid", "")
+            try:
+                port_number = int(raw_port)
+            except ValueError as exc:
+                raise ValidationError(
+                    f"Nmap XML host {host_index} contains an invalid port: {raw_port}"
+                ) from exc
+            if not 1 <= port_number <= 65535 or protocol not in {
+                "tcp",
+                "udp",
+                "sctp",
+            }:
+                raise ValidationError(
+                    f"Nmap XML host {host_index} contains an invalid service endpoint: "
+                    f"{raw_port}/{protocol or 'unknown'}"
+                )
+            state_element = port.find("state")
+            state = state_element.get("state", "") if state_element is not None else ""
+            if protocol == "udp":
+                keep = state in {"open", "open|filtered"}
+            else:
+                keep = state == "open"
+            if not keep:
+                continue
+            service = port.find("service")
+            services.append(
+                Service(
+                    port=port_number,
+                    protocol=protocol,
+                    name=service.get("name", "") if service is not None else "",
+                    product=service.get("product", "") if service is not None else "",
+                    version=service.get("version", "") if service is not None else "",
+                    extra=service.get("extrainfo", "") if service is not None else "",
+                    tunnel=service.get("tunnel", "") if service is not None else "",
+                    state=state,
+                    source=source,
+                )
+            )
         if addresses:
             candidates.append(
                 DiscoveryCandidate(
                     addresses=addresses,
                     hostnames=sorted(set(hostnames)),
                     reason=status.get("reason", ""),
+                    services=merge_services([], services),
                 )
             )
     return candidates
@@ -128,23 +230,53 @@ def parse_nmap_xml(path: Path) -> list[DiscoveryCandidate]:
 
 def parse_host_lines(text: str) -> list[DiscoveryCandidate]:
     candidates: list[DiscoveryCandidate] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for number, raw_line in enumerate(text.splitlines(), 1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         fields = line.split()
+        if len(fields) > 2:
+            raise ValidationError(
+                f"line {number}: expected IP [hostname] or hostname"
+            )
         try:
             address = str(ipaddress.ip_address(fields[0]))
-        except ValueError as exc:
-            raise ValidationError(f"line {number}: expected IP [hostname]") from exc
-        if address in seen:
+        except ValueError:
+            if len(fields) != 1:
+                raise ValidationError(
+                    f"line {number}: expected IP [hostname] or hostname"
+                )
+            try:
+                hostname = normalize_hostname(fields[0])
+            except ValidationError as exc:
+                raise ValidationError(
+                    f"line {number}: expected IP [hostname] or hostname"
+                ) from exc
+            key = ("hostname", hostname)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                DiscoveryCandidate(addresses=[], hostnames=[hostname], reason="pasted")
+            )
             continue
-        seen.add(address)
+        key = ("address", address)
+        if key in seen:
+            continue
+        seen.add(key)
+        hostnames: list[str] = []
+        if len(fields) > 1:
+            try:
+                hostnames = [normalize_hostname(fields[1])]
+            except ValidationError as exc:
+                raise ValidationError(
+                    f"line {number}: expected IP [hostname] or hostname"
+                ) from exc
         candidates.append(
             DiscoveryCandidate(
                 addresses=[address],
-                hostnames=[fields[1]] if len(fields) > 1 else [],
+                hostnames=hostnames,
                 reason="pasted",
             )
         )
@@ -164,9 +296,85 @@ def reconcile_candidates(
     ]
     results: list[Reconciliation] = []
     for candidate in candidates:
+        if not candidate.addresses:
+            if not candidate.hostnames:
+                results.append(
+                    Reconciliation(
+                        candidate=candidate,
+                        addresses=[],
+                        action="ignore",
+                        note="candidate has no address or hostname",
+                    )
+                )
+                continue
+            hostname = normalize_hostname(candidate.hostnames[0])
+            raw_matches = [
+                item
+                for item in scopes
+                if item.kind == ScopeKind.DOMAIN
+                and hostname_matches(item.domain, hostname)
+            ]
+            matching = [item for item in raw_matches if item.matches_hostname(hostname)]
+            if not matching:
+                note = (
+                    f"excluded by {raw_matches[0].label}"
+                    if raw_matches
+                    else "outside selected domain scope"
+                )
+                results.append(
+                    Reconciliation(candidate, [], "ignore", note=note)
+                )
+                continue
+            if len(matching) > 1:
+                results.append(
+                    Reconciliation(
+                        candidate,
+                        [],
+                        "ignore",
+                        note="matches more than one selected domain entry",
+                    )
+                )
+                continue
+            existing = [
+                target.id
+                for target in engagement.targets
+                if hostname in target.hostnames
+            ]
+            if len(existing) == 1:
+                results.append(
+                    Reconciliation(
+                        candidate,
+                        [],
+                        "merge",
+                        merge_target_id=existing[0],
+                        note=f"hostname match in {matching[0].label}",
+                        hostname_scope_id=matching[0].id,
+                    )
+                )
+            elif existing:
+                results.append(
+                    Reconciliation(
+                        candidate,
+                        [],
+                        "ignore",
+                        note="candidate matches multiple existing targets",
+                    )
+                )
+            else:
+                results.append(
+                    Reconciliation(
+                        candidate,
+                        [],
+                        "add",
+                        note=f"matched domain scope: {matching[0].label}",
+                        hostname_scope_id=matching[0].id,
+                    )
+                )
+            continue
         addresses: list[TargetAddress] = []
         unmatched: list[str] = []
         ambiguous: list[str] = []
+        excluded: list[str] = []
         for raw_address in candidate.addresses:
             try:
                 address = ipaddress.ip_address(raw_address)
@@ -175,16 +383,23 @@ def reconcile_candidates(
                     f"discovery candidate contains an invalid IP address: {raw_address}"
                 ) from exc
             matching = [
-                item for item in scopes if address in ipaddress.ip_network(item.network)
+                item
+                for item in scopes
+                if item.kind == ScopeKind.NETWORK
+                and address in ipaddress.ip_network(item.network)
             ]
             if not matching:
                 unmatched.append(str(address))
                 continue
-            if len(matching) > 1:
+            allowed = [item for item in matching if item.contains(address)]
+            if not allowed:
+                excluded.append(str(address))
+                continue
+            if len(allowed) > 1:
                 ambiguous.append(str(address))
                 continue
-            addresses.append(TargetAddress(str(address), matching[0].id))
-        if unmatched or ambiguous or not addresses:
+            addresses.append(TargetAddress(str(address), allowed[0].id))
+        if unmatched or ambiguous or excluded or not addresses:
             reasons: list[str] = []
             if unmatched:
                 reasons.append("outside selected scope: " + ", ".join(unmatched))
@@ -193,6 +408,8 @@ def reconcile_candidates(
                     "matches more than one selected scope entry: "
                     + ", ".join(ambiguous)
                 )
+            if excluded:
+                reasons.append("excluded from selected scope: " + ", ".join(excluded))
             if not reasons:
                 reasons.append("candidate has no scope-qualified address")
             results.append(
@@ -232,19 +449,19 @@ def reconcile_candidates(
             candidate_names = {
                 item.casefold().rstrip(".") for item in candidate.hostnames
             }
-            hostname_matches = [
+            existing_hostname_matches = [
                 target.id
                 for target in engagement.targets
                 if candidate_names
                 & {item.casefold().rstrip(".") for item in target.hostnames}
             ]
-            if len(hostname_matches) == 1:
+            if len(existing_hostname_matches) == 1:
                 results.append(
                     Reconciliation(
                         candidate=candidate,
                         addresses=addresses,
                         action="add",
-                        merge_target_id=hostname_matches[0],
+                        merge_target_id=existing_hostname_matches[0],
                         note="possible second interface: matching hostname; operator must choose Add or Merge",
                     )
                 )
@@ -264,6 +481,7 @@ def apply_reconciliation(
     decisions: Sequence[Reconciliation],
     *,
     allowed_scope_ids: set[str],
+    source_copy: tuple[Path, Path] | None = None,
 ) -> list[Target]:
     if not allowed_scope_ids:
         raise ValidationError("discovery commit requires at least one scope entry")
@@ -272,63 +490,104 @@ def apply_reconciliation(
     snapshot = deepcopy(engagement)
     changed: list[Target] = []
     created_roots: list[Path] = []
+    copied_source: Path | None = None
+    services_accepted = False
     try:
-        for requested in decisions:
-            canonical = reconcile_candidates(
-                engagement,
-                [requested.candidate],
-                allowed_scope_ids=allowed_scope_ids,
-            )[0]
-            canonical.action = requested.action
-            if requested.action == "merge":
-                if (
-                    canonical.allowed_actions == ("merge", "ignore")
-                    and canonical.merge_target_id
-                    and requested.merge_target_id != canonical.merge_target_id
-                ):
-                    raise ValidationError(
-                        f"{requested.candidate.display_name} already belongs to "
-                        f"{canonical.merge_target_id}"
-                    )
-                canonical.merge_target_id = requested.merge_target_id
-            canonical.validate_action()
-            if canonical.action == "ignore":
-                continue
-            if canonical.action == "merge":
-                target = engagement.target_by_id(canonical.merge_target_id)
-                existing = {(item.scope_id, item.value) for item in target.addresses}
-                target.addresses.extend(
-                    item
-                    for item in canonical.addresses
-                    if (item.scope_id, item.value) not in existing
-                )
-                target.hostnames = sorted(
-                    set(target.hostnames + canonical.candidate.hostnames)
-                )
-                if not target.primary_endpoint:
-                    target.primary_endpoint = canonical.addresses[0].value
-                changed.append(target)
-            elif canonical.action == "add":
-                target = workspace.stage_target(
-                    engagement_root,
+        with workspace.lock(engagement_root):
+            workspace._assert_current_revision(engagement_root, engagement)
+            for requested in decisions:
+                canonical = reconcile_candidates(
                     engagement,
-                    canonical.candidate.display_name,
-                    addresses=canonical.addresses,
-                    hostnames=canonical.candidate.hostnames,
-                    primary_endpoint=canonical.addresses[0].value,
-                )
-                created_roots.append(engagement_root / "targets" / target.directory)
-                changed.append(target)
-            else:
-                raise ValidationError(
-                    f"unknown reconciliation action: {canonical.action}"
-                )
-        engagement.validate()
-        workspace.save(engagement_root, engagement)
+                    [requested.candidate],
+                    allowed_scope_ids=allowed_scope_ids,
+                )[0]
+                canonical.action = requested.action
+                if requested.action == "merge":
+                    if (
+                        canonical.allowed_actions == ("merge", "ignore")
+                        and canonical.merge_target_id
+                        and requested.merge_target_id != canonical.merge_target_id
+                    ):
+                        raise ValidationError(
+                            f"{requested.candidate.display_name} already belongs to "
+                            f"{canonical.merge_target_id}"
+                        )
+                    canonical.merge_target_id = requested.merge_target_id
+                canonical.validate_action()
+                if canonical.action == "ignore":
+                    continue
+                if canonical.action == "merge":
+                    target = engagement.target_by_id(canonical.merge_target_id)
+                    existing = {
+                        (item.scope_id, item.value) for item in target.addresses
+                    }
+                    target.addresses.extend(
+                        item
+                        for item in canonical.addresses
+                        if (item.scope_id, item.value) not in existing
+                    )
+                    target.hostnames = sorted(
+                        set(target.hostnames + canonical.candidate.hostnames)
+                    )
+                    target.services = merge_services(
+                        target.services, canonical.candidate.services
+                    )
+                    services_accepted = services_accepted or bool(
+                        canonical.candidate.services
+                    )
+                    if not target.primary_endpoint:
+                        target.primary_endpoint = (
+                            canonical.addresses[0].value
+                            if canonical.addresses
+                            else canonical.candidate.hostnames[0]
+                        )
+                    changed.append(target)
+                elif canonical.action == "add":
+                    target = workspace.stage_target(
+                        engagement_root,
+                        engagement,
+                        canonical.candidate.display_name,
+                        addresses=canonical.addresses,
+                        hostnames=canonical.candidate.hostnames,
+                        primary_endpoint=(
+                            canonical.addresses[0].value
+                            if canonical.addresses
+                            else canonical.candidate.hostnames[0]
+                        ),
+                        services=canonical.candidate.services,
+                    )
+                    created_roots.append(
+                        engagement_root / "targets" / target.directory
+                    )
+                    changed.append(target)
+                    services_accepted = services_accepted or bool(
+                        canonical.candidate.services
+                    )
+                else:
+                    raise ValidationError(
+                        f"unknown reconciliation action: {canonical.action}"
+                    )
+            engagement.normalize()
+            engagement.validate()
+            if source_copy is not None and services_accepted:
+                source, destination = source_copy
+                try:
+                    destination.resolve(strict=False).relative_to(
+                        engagement_root.resolve(strict=True)
+                    )
+                except (OSError, ValueError) as exc:
+                    raise ValidationError(
+                        "service import destination must stay inside the engagement"
+                    ) from exc
+                write_private_bytes(destination, source.read_bytes(), replace=False)
+                copied_source = destination
+            workspace.save(engagement_root, engagement, True)
     except BaseException:
         restore_engagement_state(engagement, snapshot)
         for target_root in created_roots:
             shutil.rmtree(target_root, ignore_errors=True)
+        if copied_source is not None:
+            copied_source.unlink(missing_ok=True)
         raise
     return list({target.id: target for target in changed}.values())
 
@@ -435,18 +694,7 @@ class DiscoveryJobs:
             raise ExternalToolError(
                 "Nmap is not installed; XML and pasted-host import remain available"
             )
-        if len(scope_ids) != len(set(scope_ids)):
-            raise ValidationError("select each scope entry only once")
-        selected = [engagement.scope_by_id(item) for item in scope_ids]
-        if not selected:
-            raise ValidationError("select at least one scope entry")
-        unavailable = [
-            item.label
-            for item in selected
-            if item.availability != ScopeAvailability.READY
-        ]
-        if unavailable:
-            raise ConflictError("scope is unavailable: " + ", ".join(unavailable))
+        selected = _validated_scan_scopes(engagement, scope_ids)
         jobs_root = engagement_root / ".tacmux/jobs"
         with self.workspace.lock(engagement_root):
             current = self.workspace.load(engagement_root)
@@ -466,14 +714,6 @@ class DiscoveryJobs:
             os.chmod(job_root, 0o700)
             xml_path = job_root / "results.xml"
             log_path = job_root / "nmap.log"
-            argv = [
-                "nmap",
-                "-sn",
-                "--reason",
-                "-oX",
-                str(xml_path),
-                *[item.network for item in selected],
-            ]
             value = {
                 "schema": JOB_SCHEMA,
                 "id": job_id,
@@ -485,14 +725,16 @@ class DiscoveryJobs:
                 "finished_at": None,
                 "exit_code": None,
                 "imported_at": None,
-                "argv": argv,
+                "argv": _scan_argv("nmap", xml_path, selected),
                 "xml_path": str(xml_path),
                 "log_path": str(log_path),
             }
             job_file = job_root / "job.json"
             session = self.tmux.job_session_name(engagement, job_id)
             value["session"] = session
-            write_private_json(job_file, value)
+            write_private_json(
+                job_file, {key: item for key, item in value.items() if key != "argv"}
+            )
             write_private_json(job_root / "status.json", value)
         command = [
             sys.executable,
@@ -601,16 +843,10 @@ def run_job(settings: Settings, job_file: Path) -> int:
             or len(scope_ids) != len(set(scope_ids))
         ):
             raise ValidationError("discovery job has invalid scope IDs")
-        selected = [engagement.scope_by_id(item) for item in scope_ids]
-        unavailable = [
-            item.label
-            for item in selected
-            if item.availability != ScopeAvailability.READY
-        ]
-        if unavailable:
-            raise ValidationError(
-                "discovery job scope is unavailable: " + ", ".join(unavailable)
-            )
+        try:
+            selected = _validated_scan_scopes(engagement, scope_ids)
+        except ConflictError as exc:
+            raise ValidationError(str(exc)) from exc
         nmap = shutil.which("nmap")
         if not nmap:
             raise ExternalToolError("Nmap is not installed")
@@ -622,14 +858,7 @@ def run_job(settings: Settings, job_file: Path) -> int:
                 "engagement_id": engagement.id,
                 "scope_ids": scope_ids,
                 "session": TmuxService(settings).job_session_name(engagement, job_id),
-                "argv": [
-                    nmap,
-                    "-sn",
-                    "--reason",
-                    "-oX",
-                    str(xml_path),
-                    *[item.network for item in selected],
-                ],
+                "argv": _scan_argv(nmap, xml_path, selected),
                 "xml_path": str(xml_path),
                 "log_path": str(log_path),
                 "state": "running",

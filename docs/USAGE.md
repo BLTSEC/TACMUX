@@ -14,22 +14,23 @@ Run `tacmux`, press `n`, and supply:
   certification environment, or training platform that owns the work.
 - **Engagement Name:** a recognizable assessment, project, lab, or exercise name.
 - **Assessment Type:** External, Internal, External + Internal, or Single-machine Lab.
-- **External/Internal scope:** optional IPs or CIDRs already known. Use `Label=network` when a friendly label helps.
+- **External/Internal scope:** optional IPs, CIDRs, or domain patterns already known. Use `Label=value` when a friendly label helps.
 - **Internal scope reachability:** whether the internal scope is reachable now
   through a direct, on-site, or VPN connection, or requires later access and a
   pivot.
 - **Pane logging:** per-engagement default.
 
-Known `/32` hosts and networks can be entered before testing. Scope groups are intentionally limited to **external** and **internal**.
+Known `/32` hosts, networks, and web domains can be entered before testing. Scope groups are intentionally limited to **external** and **internal**.
 
 ## Cockpit workflow
 
-The four tabs answer different operator questions:
+The five tabs answer different operator questions:
 
 | Tab | Operator question |
 |---|---|
 | Targets | What host am I working on, is its session live, and what access is confirmed? |
-| Scope & Discovery | What may I touch, what is reachable, and what identification jobs/results need review? |
+| Scope | What may I touch, what is excluded, and what discovery jobs/results need review? |
+| Records | What access, activity, findings, attack paths, and cleanup obligations are recorded? |
 | Situation | What does the network look like, and what confirmed chain has been demonstrated? |
 | Documents | Where are the narrative, findings, notes, logs, and evidence? |
 
@@ -46,9 +47,22 @@ Each address is stored with a scope-entry ID, not as a globally unique host key.
 - multiple networks accessed through one pivot;
 - an internal range that begins unavailable.
 
+Each scope entry may carry exclusions inside its own network or domain. This is
+important when two engagements or routes reuse the same RFC1918 space. TACMUX
+enforces exclusions in manifest validation, import review, and Nmap
+`--exclude`. Select overlapping network entries in separate discovery jobs so
+an address is never assigned by guesswork.
+
+Domain entries accept exact names (`acme.test`) and strict wildcards
+(`*.acme.test`). A wildcard matches subdomains, not the apex. TACMUX never
+resolves or scans a domain entry. Import a bare-hostname list through discovery.
+Hostname-only targets must match declared domain scope when domain entries
+exist; aliases on an IP-backed target remain visible even when they are not
+domain scoped.
+
 After a foothold creates an approved route:
 
-1. Open **Scope & Discovery**.
+1. Open **Scope**.
 2. Highlight the internal scope and press Enter or `a`.
 3. Set availability to **Reachable now** and select the target through which it
    is reachable.
@@ -56,17 +70,17 @@ After a foothold creates an approved route:
 
 TACMUX records the route relationship; it does not configure VPNs, SOCKS proxies, Ligolo, SSH forwarding, or firewall rules.
 
-## Host identification and reconciliation
+## Host discovery and reconciliation
 
 Press `d` and choose one of three inputs:
 
-1. **Run detached Nmap host identification** — launches only:
+1. **Run Nmap host discovery (detached)** — launches only:
 
    ```text
-   nmap -sn --reason -oX <job>/results.xml <selected-ready-scope...>
+   nmap -sn --reason [--exclude <declared-carve-outs>] -oX <job>/results.xml <selected-ready-scope...>
    ```
 
-2. **Import XML or pasted hosts** — accepts Nmap XML or one `IP [hostname]` per line.
+2. **Import XML or pasted hosts** — accepts Nmap XML, `IP [hostname]`, or one bare hostname per line.
 3. **Review a completed detached scan** — opens a successful job's XML.
 
 Highlight a job and press Enter to import a successful result or cancel an active scan. Imported jobs remain visible and are marked as imported.
@@ -86,8 +100,8 @@ still being established; add a scope-qualified address or hostname later through
 **Edit target identity**.
 
 Discovered hostnames are retained as aliases, but the accepted scope-qualified
-IP is always the initial primary endpoint exported as `TARGET`. Choosing a
-hostname as primary is an explicit operator action.
+IP is the initial primary endpoint exported as `TARGET`. A hostname-only
+candidate is accepted only through selected domain scope.
 
 ## Target work
 
@@ -98,9 +112,10 @@ Target actions include:
 - start/attach or stop session;
 - edit display name, scope-qualified addresses, hostnames, and primary endpoint;
 - edit `NOTES.md` through `$VISUAL`, `$EDITOR`, or `vi`;
-- record confirmed access or curated activity;
+- inspect imported services;
+- record confirmed access or activity;
 - create and edit a finding;
-- edit or delete structured engagement records;
+- record an item that must be removed during cleanup;
 - view a NOCAP timeline when enabled;
 - create a verified target archive;
 - permanently delete an unreferenced mistaken target.
@@ -113,7 +128,7 @@ The optional engagement operations session starts in the engagement root. Stop-a
 
 ### Activity
 
-Use activity for concise, curated events—not every command. Select one result:
+Use activity for concise, relevant events—not every command. Select one result:
 
 - **Confirmed:** the described outcome was demonstrated.
 - **Failed:** the attempt conclusively failed.
@@ -138,7 +153,23 @@ Create a finding only after selecting affected targets. TACMUX records title, se
 
 Use **Draft** when validation or reporting language remains incomplete, **Confirmed** when evidence supports it, and **Closed** for a resolved/retested record. Draft findings cannot be attack-path steps.
 
-Choose **Manage engagement records** from a contextual action menu to correct or delete access, activity, finding, and attack-path records. A record used by an attack path must be removed from that path first. Scope entries can likewise be fully edited or deleted when no target address uses them.
+Open **Records** to correct or delete access, activity, finding, attack-path, and cleanup records. A record used by an attack path must be removed from that path first. Scope entries can likewise be fully edited or deleted when no target address uses them.
+
+### Cleanup
+
+Record files, accounts, services, scheduled tasks, or configuration changes left
+on a target. Mark an item removed only after verifying cleanup. Both outstanding
+and removed cleanup records retain their target reference; remove the cleanup
+record itself before deleting a mistaken target.
+
+### Service inventory
+
+TACMUX never launches a port or version scan. Run an authorized scan yourself,
+for example `nmap -sV -oX services.xml <in-scope-hosts>`, then import that XML
+through discovery. Observed `open` and UDP `open|filtered` services attach to
+scope-qualified targets during the normal Add/Merge/Ignore review. External XML
+is copied into `.tacmux/imports/` only after a confirmed import so the service
+snapshot retains provenance.
 
 ## Building an attack path
 
@@ -146,15 +177,45 @@ Network topology and attack path are separate views:
 
 - topology maps external/internal scope, hosts, interfaces, access level, pivots,
   and unresolved or hostname-only targets not yet assigned to an address;
-- an attack path is a curated sequence of demonstrated findings, access records, and confirmed activities.
+- an attack path is an ordered sequence of demonstrated findings, access records, and confirmed activities.
 
 Open **Situation**, press `a`, and choose **Build confirmed attack path**. Press Enter on eligible records to add them. In the chosen list, Delete removes a step and `Ctrl+Up` / `Ctrl+Down` changes order. Optional one-line step notes explain how each fact advances the chain.
 
 Each step may only reference structured confirmed state. The generated `notes/attack-path.md` and `SITREP.md` therefore cannot accidentally promote a failed responder attempt into a demonstrated compromise.
 
+## Authorization window and engagement lifecycle
+
+From the engagement picker press `a` and choose **Edit engagement details** to
+record the authorizing party, reference, emergency contact, and explicit UTC
+start/end times. Starting a target, operations session, detached discovery, or
+an import that creates sessions outside that window requires confirmation. The
+warning never overrides operator authority.
+
+Close an engagement after stopping target/operations sessions and discovery
+jobs. A closed engagement remains reviewable and archivable, but blocks new
+targets, sessions, discovery commits, and record creation until reopened. The
+close confirmation reports outstanding cleanup items.
+
+## Capture from a working pane
+
+TACMUX target and operations sessions export stable context, so a small CLI can
+capture facts without leaving the shell:
+
+```text
+tacmux note "shell as svc_deploy"
+tacmux activity confirmed --evidence targets/T0002-svc/recon/share.txt "Readable deployment share"
+tacmux activity no-result "LLMNR produced no usable authentication"
+tacmux sitrep
+```
+
+`--evidence` must appear immediately after the activity result. Notes append to
+the current target's `NOTES.md`, or the engagement operator notes in an
+operations session. Structured activity appears in the cockpit automatically;
+press `r` after appending a note if its document preview is already open.
+
 ## Documents and evidence
 
-The Documents tab previews:
+The Documents tab indexes evidence when opened (or refreshed) and previews:
 
 - editable Markdown;
 - generated Markdown;
@@ -173,12 +234,17 @@ not edited directly.
 
 Target and engagement archives are private `.tar.gz` files with adjacent `.manifest.json` documents. Creation verifies the completed archive immediately. `tacmux archive verify FILE` checks archive size, SHA-256, member hashes, paths, links, and root structure.
 
-Restore refuses an existing destination and extracts through a private staging directory. Engagement restores validate the embedded manifest and identity; target restores validate archived metadata against the current engagement.
+Restore refuses an existing destination and extracts through a private staging
+directory. Engagement restores validate the embedded manifest and identity;
+target restores validate archived metadata against the current engagement.
+Press `r` in the engagement picker to restore an engagement archive, including
+when the picker is empty. In an open engagement, use **Restore verified archive**
+from the Command Palette to restore a missing target or another engagement.
 
 Permanent target deletion is deliberately stricter than archive:
 
 - the tmux target session must be stopped;
-- no scope pivot, access, activity, or finding may reference the target;
+- no scope pivot, access, activity, finding, or cleanup record may reference the target;
 - the exact displayed confirmation must be typed;
 - the target directory is staged, the manifest is saved, and only then are files removed.
 
@@ -206,3 +272,18 @@ cap timeline --format json
 ```
 
 TACMUX does not write NOCAP state. Operator judgment remains the trust boundary.
+
+## Clipboard
+
+Pipe data to `tacmux clip` to use TACMUX's trusted clipboard path. It prefers a
+tmux buffer, then Wayland/X11 clipboard tools, and finally OSC 52 on a terminal;
+over SSH it writes OSC 52 to the controlling terminal when available. Explicit
+tmux copy-mode actions use the same path. Clipboard forwarding can expose
+sensitive material on the local workstation, so verify the destination first.
+
+## Logging boundary
+
+Automatic tmux hooks log TACMUX-owned sessions only. Explicit `prefix+T`
+(toggle), `prefix+S` (scrollback capture), and `prefix+H` (fallback log) remain
+available. Set `behavior.log_outside_tacmux = true` only when global tmux
+logging is intentional.

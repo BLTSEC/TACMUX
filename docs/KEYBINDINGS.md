@@ -12,11 +12,11 @@ Press the tmux prefix, release it, then press `E`. The complete TACMUX tmux conf
 | `a` | Actions for the selected engagement or active cockpit tab |
 | `n` | Add a target |
 | `d` | Host discovery actions |
-| `g` | Return to the engagement picker |
-| `/` | Filter targets or engagements |
+| `e` | Return to the engagement picker (`g` remains a hidden alias) |
+| `/` | Filter the active Targets, Records, or Documents table |
 | `r` | Refresh sessions, jobs, topology, and SITREP |
 | `t` | Open the fuzzy theme selector |
-| `1`–`4` | Targets, Scope & Discovery, Situation, Documents |
+| `1`–`5` | Targets, Scope, Records, Situation, Documents |
 | `Ctrl+P` | Command Palette (fuzzy command search) |
 | `Escape` | Close a modal/cancel an entry |
 | `q` | Quit the cockpit; detached sessions continue |
@@ -26,10 +26,11 @@ curated dark catalog contains BLTSEC, Textual Dark, Nord, Dracula, Catppuccin
 Mocha, Tokyo Night, Gruvbox, Rose Pine Moon, and Solarized Dark. BLTSEC is the
 default.
 
-From the engagement picker, `a` opens a short Actions menu for opening,
-archiving, or permanently deleting the selected engagement. The Command Palette
-is the global searchable command launcher; it does not replace contextual
-Actions menus.
+From the engagement picker, `a` opens the engagement menu: open, edit details,
+close/reopen, archive, or guarded delete. The Command Palette is the global
+searchable command launcher; contextual Actions menus remain the primary flow.
+Press `r` in the picker to choose a verified engagement archive to restore; the
+same key works when no live engagements remain.
 
 Discovery review:
 
@@ -59,12 +60,13 @@ Press the tmux prefix, then:
 |---|---|
 | `T` | Toggle logging for the current pane |
 | `S` | Capture full current-pane scrollback |
-| `L` | Display logging state and active file |
 | `H` | Force a fallback log under the configured log directory |
-| `q` | Stop current-pane logging |
 | `P` | Pin the pane title; empty input unpins it |
 
-Logging hooks use target context when a pane belongs to TACMUX and the fallback directory otherwise. Raw logs remain authoritative.
+Automatic logging hooks ignore non-TACMUX sessions by default. `T`, `S`, and
+`H` are explicit operator actions and remain available. Set
+`behavior.log_outside_tacmux = true` to restore automatic logging for all tmux
+sessions. Raw logs remain authoritative.
 
 ## Complete tmux configuration
 

@@ -8,6 +8,8 @@ log_dir = "~/logs"
 
 [behavior]
 auto_log = true
+# Automatic hooks log TACMUX sessions only. Set true to restore global tmux logging.
+log_outside_tacmux = false
 startup = "resume_last"
 include_mermaid = true
 

@@ -57,6 +57,11 @@ class LogController:
     def _disabled(self, pane: str) -> bool:
         if not self.settings.auto_log:
             return True
+        if (
+            not self.settings.log_outside_tacmux
+            and not self._session_option(pane, "@tacmux_engagement_id")
+        ):
+            return True
         return (
             self._session_environment(pane, "TACMUX_NO_AUTOLOG") == "1"
             or self._session_environment(pane, "TACMUX_BOOTSTRAP") == "1"
@@ -150,11 +155,25 @@ def clipboard_copy(tmux: TmuxService, data: bytes) -> int:
     for command in candidates:
         if shutil.which(command[0]):
             return subprocess.run(command, input=data).returncode
-    if os.isatty(2):
+    descriptor: int | None = 2 if os.isatty(2) else None
+    close_descriptor = False
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        try:
+            descriptor = os.open(
+                "/dev/tty", os.O_WRONLY | getattr(os, "O_NOCTTY", 0)
+            )
+            close_descriptor = True
+        except OSError:
+            pass
+    if descriptor is not None:
         import base64
 
         encoded = base64.b64encode(data).decode("ascii")
-        os.write(2, f"\033]52;c;{encoded}\a".encode())
+        try:
+            os.write(descriptor, f"\033]52;c;{encoded}\a".encode())
+        finally:
+            if close_descriptor:
+                os.close(descriptor)
         return 0
     raise ExternalToolError("no trusted clipboard path is available")
 
