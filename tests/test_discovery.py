@@ -57,6 +57,8 @@ def test_nmap_xml_and_pasted_hosts_are_strictly_parsed():
     assert len(pasted) == 2 and pasted[0].hostnames == ["host-a"]
     with pytest.raises(ValidationError, match="line 1"):
         parse_host_lines("not-an-ip host")
+    with pytest.raises(ValidationError, match="line 1"):
+        parse_host_lines("10.0.0.3 host-b unexpected")
 
 
 def test_malformed_nmap_address_is_a_validation_error(tmp_path):
@@ -67,6 +69,48 @@ def test_malformed_nmap_address_is_a_validation_error(tmp_path):
     )
     with pytest.raises(ValidationError, match="host 1.*invalid IP address"):
         parse_nmap_xml(xml)
+
+
+def test_nmap_xml_encoding_errors_are_wrapped_and_utf16_provenance_is_exact(
+    tmp_path, workspace, record
+):
+    unknown = tmp_path / "unknown.xml"
+    unknown.write_bytes(
+        b"<?xml version='1.0' encoding='x-tacmux-unknown'?><nmaprun/>"
+    )
+    with pytest.raises(ValidationError, match="cannot parse Nmap XML"):
+        parse_nmap_xml(unknown)
+
+    scope = workspace.add_scope(
+        record.root,
+        record.engagement,
+        "DMZ",
+        ScopeGroup.EXTERNAL,
+        "198.51.100.0/24",
+    )
+    source = tmp_path / "utf16.xml"
+    source.write_bytes(
+        """<?xml version='1.0' encoding='UTF-16'?>
+<nmaprun><host><status state='up' reason='echo-reply'/>
+<address addr='198.51.100.25' addrtype='ipv4'/><ports>
+<port protocol='tcp' portid='443'><state state='open'/>
+<service name='https'/></port></ports></host></nmaprun>""".encode("utf-16")
+    )
+    relative = ".tacmux/imports/utf16.xml"
+    candidates = parse_nmap_xml(source, source=relative)
+    decisions = reconcile_candidates(
+        record.engagement, candidates, allowed_scope_ids={scope.id}
+    )
+    destination = record.root / relative
+    apply_reconciliation(
+        workspace,
+        record.root,
+        record.engagement,
+        decisions,
+        allowed_scope_ids={scope.id},
+        source_copy=(source, destination),
+    )
+    assert destination.read_bytes() == source.read_bytes()
 
 
 def test_reconciliation_requires_review_and_supports_second_interface_merge(
@@ -250,7 +294,12 @@ def test_exact_address_match_allows_merge_or_ignore_but_not_add(workspace, recor
 def test_discovery_job_uses_only_fixed_host_identification_profile(
     monkeypatch, workspace, record, settings
 ):
-    ready = record.engagement.add_scope("DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24")
+    ready = record.engagement.add_scope(
+        "DMZ",
+        ScopeGroup.EXTERNAL,
+        "198.51.100.0/24",
+        exclusions=["198.51.100.254/32"],
+    )
     blocked = record.engagement.add_scope(
         "LAN", ScopeGroup.INTERNAL, "10.0.0.0/24", ScopeAvailability.UNAVAILABLE
     )
@@ -261,7 +310,14 @@ def test_discovery_job_uses_only_fixed_host_identification_profile(
         "tacmux.discovery.shutil.which", lambda name: f"/usr/bin/{name}"
     )
     value = jobs.create(record.root, record.engagement, [ready.id])
-    assert value["argv"][:4] == ["nmap", "-sn", "--reason", "-oX"]
+    assert value["argv"][:5] == [
+        "nmap",
+        "-sn",
+        "--reason",
+        "--exclude",
+        "198.51.100.254/32",
+    ]
+    assert "-oX" in value["argv"]
     assert value["argv"][-1] == "198.51.100.0/24"
     assert tmux.calls[0][:6] == [
         "new-session",
@@ -273,6 +329,8 @@ def test_discovery_job_uses_only_fixed_host_identification_profile(
     ]
     status = json.loads((record.root / ".tacmux/jobs/J0001/status.json").read_text())
     assert status["state"] == "queued" and status["session"] == value["session"]
+    job_spec = json.loads((record.root / ".tacmux/jobs/J0001/job.json").read_text())
+    assert "argv" not in job_spec
     with pytest.raises(ConflictError, match="unavailable"):
         jobs.create(record.root, record.engagement, [blocked.id])
 
@@ -280,7 +338,12 @@ def test_discovery_job_uses_only_fixed_host_identification_profile(
 def test_run_job_rebuilds_command_and_output_paths(
     monkeypatch, tmp_path, workspace, record, settings
 ):
-    scope = record.engagement.add_scope("DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24")
+    scope = record.engagement.add_scope(
+        "DMZ",
+        ScopeGroup.EXTERNAL,
+        "198.51.100.0/24",
+        exclusions=["198.51.100.254/32"],
+    )
     workspace.save(record.root, record.engagement)
     jobs = DiscoveryJobs(settings, RecordingTmux(), workspace)
     monkeypatch.setattr("tacmux.discovery.shutil.which", lambda name: "/usr/bin/nmap")
@@ -298,7 +361,7 @@ def test_run_job_rebuilds_command_and_output_paths(
 
     def fake_run(argv, *, stdout, stderr, check):
         calls.append(list(argv))
-        Path(argv[4]).write_text("<nmaprun></nmaprun>")
+        Path(argv[argv.index("-oX") + 1]).write_text("<nmaprun></nmaprun>")
         stdout.write(b"scan complete\n")
         return subprocess.CompletedProcess(argv, 0)
 
@@ -309,6 +372,8 @@ def test_run_job_rebuilds_command_and_output_paths(
             "/usr/bin/nmap",
             "-sn",
             "--reason",
+            "--exclude",
+            "198.51.100.254/32",
             "-oX",
             str(job_root / "results.xml"),
             "198.51.100.0/24",

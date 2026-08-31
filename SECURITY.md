@@ -8,7 +8,7 @@ Include the affected TACMUX version, operating system, Python/tmux versions, rep
 
 ## Authorization and trust model
 
-TACMUX is for authorized security work. It does not determine whether a scope entry, scan, command, or technique is authorized. The operator must verify written authorization, rules of engagement, testing windows, allowed techniques, evidence handling, and retention.
+TACMUX is for authorized security work. It records authorization metadata and warns before starting work outside a configured UTC window, but the operator remains the authority. Verify written authorization, rules of engagement, allowed techniques, evidence handling, and retention.
 
 The following inputs are trusted local operator inputs:
 
@@ -25,16 +25,16 @@ TACMUX applies an owner-only `077` umask. Newly created directories are normally
 
 Unix permissions may not be enforced by VM shared folders, FAT filesystems, some network mounts, cloud-sync directories, or removable media. Keep engagement data on an approved encrypted local filesystem or other approved protected volume.
 
-Automatic pane logging is enabled by default and can capture credentials, tokens, personal data, and client evidence. Disable it in the engagement creation form or config when the rules of engagement require that. Stopping the TUI does not stop detached sessions or their logging.
+Automatic pane logging is enabled for TACMUX-owned sessions by default and can capture credentials, tokens, personal data, and client evidence. Non-TACMUX sessions are ignored unless `behavior.log_outside_tacmux = true`. Disable logging in the engagement form or config when required. Stopping the TUI does not stop detached sessions or their logging.
 
 Archive manifests contain SHA-256 integrity metadata, not a digital signature. A party able to replace both archive and sidecar can replace the recorded hashes. Protect or sign both through the approved evidence-transfer process when independent authenticity is required.
 
 ## External tools and integrations
 
-- Nmap discovery is optional and limited by TACMUX to `-sn --reason -oX`. It still generates network traffic.
+- Nmap discovery is optional and limited by TACMUX to `-sn --reason -oX`, plus declared `--exclude` carve-outs. Domain scope is never resolved or scanned. Imported service data comes only from operator-produced Nmap XML. Discovery still generates network traffic.
 - NOCAP is disabled by default. When enabled, TACMUX invokes only documented JSON read commands and exports workspace context to target sessions; NOCAP has its own trust boundary.
 - `$VISUAL` / `$EDITOR` is executed as the current user. Configure only a trusted editor command.
-- Explicit clipboard actions may forward data to the local workstation through tmux/OSC 52. Verify the destination before copying sensitive material.
+- Explicit clipboard actions, including `tacmux clip`, may forward data to the local workstation through tmux, desktop clipboard tools, or OSC 52. Verify the destination before copying sensitive material.
 
 ## Destructive operations
 

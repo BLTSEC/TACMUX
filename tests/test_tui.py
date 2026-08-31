@@ -17,13 +17,17 @@ from textual.widgets import (
 )
 
 from tacmux.app import EngagementPickerScreen, MainScreen, TacmuxApp
+from tacmux.archive import create_archive
 from tacmux.dialogs import (
     ActionMenu,
     AttackPathForm,
     ConfirmModal,
     DiscoveryReview,
     EngagementForm,
+    MessageModal,
     ScanForm,
+    TargetAddressForm,
+    TargetForm,
 )
 from tacmux.discovery import DiscoveryCandidate, Reconciliation
 from tacmux.errors import ConflictError
@@ -32,9 +36,12 @@ from tacmux.model import (
     AccessRecord,
     Activity,
     ActivityResult,
+    Authorization,
+    EngagementStatus,
     ScopeAvailability,
     ScopeGroup,
     TargetAddress,
+    CleanupKind,
 )
 from tacmux.themes import CURATED_THEME_NAMES, DEFAULT_THEME
 
@@ -69,8 +76,8 @@ async def test_picker_actions_permanently_delete_selected_engagement(
         await pilot.pause()
         assert isinstance(app.screen, ActionMenu)
         actions = app.screen.query_one(OptionList)
-        assert actions.option_count == 3
-        actions.highlighted = 2
+        assert actions.option_count == 5
+        actions.highlighted = 4
         await pilot.press("enter")
         await pilot.pause()
 
@@ -93,6 +100,37 @@ async def test_picker_actions_permanently_delete_selected_engagement(
         assert isinstance(app.screen, EngagementPickerScreen)
         assert app.screen.query_one("#engagements").row_count == 0
         assert not record.root.exists()
+
+
+@pytest.mark.asyncio
+async def test_picker_restores_the_only_deleted_engagement(
+    settings, workspace, record
+):
+    archive, _ = create_archive(
+        record.root,
+        settings.archive_dir,
+        kind="engagements",
+        engagement_id=record.engagement.id,
+        object_id=record.engagement.id,
+    )
+    workspace.delete_engagement(record.engagement.id)
+    assert archive.is_file() and workspace.list_engagements() == []
+
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, EngagementPickerScreen)
+        assert app.screen.query_one("#engagements").row_count == 0
+        await pilot.press("r")
+        await pilot.pause()
+        assert isinstance(app.screen, ActionMenu)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, MessageModal)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, EngagementPickerScreen)
+        assert app.screen.query_one("#engagements").row_count == 1
 
 
 def test_engagement_lifecycle_reports_all_active_work(
@@ -296,7 +334,7 @@ async def test_main_cockpit_is_responsive_and_lists_evidence(
         assert app.screen.has_class("narrow")
         assert app.screen.query_one("#target-table").row_count == 1
         assert app.screen.query_one("#scope-table").row_count == 1
-        assert any(
+        assert not any(
             path == evidence for path, _, _ in app.screen.document_paths.values()
         )
         await pilot.press("2")
@@ -314,6 +352,11 @@ async def test_main_cockpit_is_responsive_and_lists_evidence(
         assert app.screen.query_one(OptionList).option_count == 2
         await pilot.press("escape")
         await pilot.pause()
+        await pilot.press("5")
+        await pilot.pause()
+        assert any(
+            path == evidence for path, _, _ in app.screen.document_paths.values()
+        )
         await pilot.press("d")
         await pilot.pause()
         assert isinstance(app.screen, ActionMenu)
@@ -413,6 +456,7 @@ async def test_record_manager_is_visible_and_logging_uses_config_default(
             target.id,
             "SSH",
             AccessLevel.USER_EXECUTION,
+            evidence="logs/missing-proof.txt",
         )
     )
     workspace.save(record.root, record.engagement)
@@ -424,9 +468,274 @@ async def test_record_manager_is_visible_and_logging_uses_config_default(
         assert isinstance(main, MainScreen)
         main.action_records()
         await pilot.pause()
-        assert isinstance(app.screen, ActionMenu)
-        assert app.screen.query_one(OptionList).option_count == 1
-        await pilot.press("escape")
+        assert isinstance(app.screen, MainScreen)
+        records = app.screen.query_one("#records-table")
+        assert records.row_count == 1
+        assert "missing evidence" in str(records.get_row("access:AR0001")[3])
         app.push_screen(EngagementForm(app.settings.auto_log))
         await pilot.pause()
         assert not app.screen.query_one("#logging", Checkbox).value
+
+
+@pytest.mark.asyncio
+async def test_operator_text_is_literal_and_records_are_first_class(
+    settings, workspace, record
+):
+    record.engagement.client = "ACME [prod]"
+    record.engagement.name = "Assessment [Q3]"
+    scope = record.engagement.add_scope(
+        "DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24"
+    )
+    target = workspace.create_target(
+        record.root,
+        record.engagement,
+        "web[1]",
+        addresses=[TargetAddress("198.51.100.25", scope.id)],
+        primary_endpoint="198.51.100.25",
+    )
+    workspace.create_cleanup_item(
+        record.root,
+        record.engagement,
+        target_id=target.id,
+        kind=CleanupKind.FILE,
+        location="/tmp/agent[1]",
+    )
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        banner = str(main.query_one("#engagement-banner", Label).render())
+        assert "ACME [prod]" in banner and "Assessment [Q3]" in banner
+        await pilot.press("a")
+        await pilot.pause()
+        assert isinstance(app.screen, ActionMenu)
+        assert "web[1]" in str(app.screen.query_one(".title", Label).render())
+        await pilot.press("escape")
+        await pilot.pause()
+        await pilot.press("3")
+        await pilot.pause()
+        assert main.query_one("#records-table").row_count == 1
+
+
+@pytest.mark.asyncio
+async def test_target_forms_reject_a_selected_scope_that_does_not_match(
+    settings, workspace, record
+):
+    first = record.engagement.add_scope(
+        "Segment A", ScopeGroup.INTERNAL, "10.0.0.0/24"
+    )
+    record.engagement.add_scope(
+        "Segment B", ScopeGroup.INTERNAL, "10.0.0.0/25"
+    )
+    wrong = record.engagement.add_scope(
+        "Other", ScopeGroup.INTERNAL, "192.0.2.0/24"
+    )
+    workspace.save(record.root, record.engagement)
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.push_screen(TargetForm(record.engagement))
+        await pilot.pause()
+        form = app.screen
+        form.query_one("#name", Input).value = "host"
+        form.query_one("#address", Input).value = "10.0.0.10"
+        form.query_one("#scope", Select).value = wrong.id
+        form.query_one("#add", Button).press()
+        await pilot.pause()
+        assert isinstance(app.screen, TargetForm)
+        assert "does not contain" in str(
+            app.screen.query_one(".error", Static).render()
+        )
+        await pilot.press("escape")
+        app.push_screen(TargetAddressForm(record.engagement, "host"))
+        await pilot.pause()
+        form = app.screen
+        form.query_one("#address", Input).value = "10.0.0.10"
+        form.query_one("#scope", Select).value = wrong.id
+        form.query_one("#add", Button).press()
+        await pilot.pause()
+        assert isinstance(app.screen, TargetAddressForm)
+        assert "does not contain" in str(
+            app.screen.query_one(".error", Static).render()
+        )
+    assert first.id != wrong.id
+
+
+@pytest.mark.asyncio
+async def test_outside_window_warns_before_every_session_start_path(
+    settings, workspace, record, monkeypatch
+):
+    scope = record.engagement.add_scope(
+        "DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24"
+    )
+    workspace.create_target(
+        record.root,
+        record.engagement,
+        "web",
+        addresses=[TargetAddress("198.51.100.25", scope.id)],
+        primary_endpoint="198.51.100.25",
+    )
+    record.engagement.authorization = Authorization(
+        authorized_by="ACME",
+        window_start="2020-01-01T00:00:00Z",
+        window_end="2020-01-02T00:00:00Z",
+    )
+    workspace.save(record.root, record.engagement)
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    monkeypatch.setattr(
+        app.tmux,
+        "start_target",
+        lambda *_args, **_kwargs: pytest.fail("started without confirmation"),
+    )
+    monkeypatch.setattr(
+        app.tmux,
+        "start_ops",
+        lambda *_args, **_kwargs: pytest.fail("started without confirmation"),
+    )
+    monkeypatch.setattr(
+        app.jobs,
+        "create",
+        lambda *_args, **_kwargs: pytest.fail("scanned without confirmation"),
+    )
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        actions = [
+            main.action_attach,
+            main.action_ops,
+            lambda: main._start_scan([scope.id]),
+            lambda: main._commit_import(([], True, {scope.id})),
+        ]
+        for action in actions:
+            action()
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmModal)
+            assert app.screen.modal_title == "Outside Authorized Window"
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is main
+
+
+@pytest.mark.asyncio
+async def test_closed_engagement_blocks_operational_entry_points(
+    settings, workspace, record, monkeypatch
+):
+    workspace.set_status(
+        record.root, record.engagement, EngagementStatus.CLOSED
+    )
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    errors: list[str] = []
+    monkeypatch.setattr(app, "show_error", errors.append)
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        main.action_new_target()
+        main.action_attach()
+        main.action_scan()
+        main._commit_import(([], False, set()))
+        await pilot.pause()
+    assert errors == [
+        "Engagement is closed — reopen it from the engagement picker"
+    ] * 4
+
+
+@pytest.mark.asyncio
+async def test_failed_refresh_does_not_publish_partial_runtime_state(
+    settings, workspace, record, monkeypatch
+):
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        original_record = main.record
+        original_live = main.live_target_ids.copy()
+        original_states = main._job_states.copy()
+        external = workspace.load(record.root)
+        workspace.add_scope(
+            record.root,
+            external,
+            "External",
+            ScopeGroup.EXTERNAL,
+            "198.51.100.0/24",
+        )
+        monkeypatch.setattr(
+            app.tmux, "live_target_ids", lambda _engagement: {"T9999"}
+        )
+        monkeypatch.setattr(
+            app.jobs,
+            "list",
+            lambda _root: [{"id": "J9999", "state": "running"}],
+        )
+        monkeypatch.setattr(
+            app.workspace,
+            "refresh_sitrep",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+        )
+        errors: list[str] = []
+        monkeypatch.setattr(app, "show_error", errors.append)
+        assert main.refresh_all() is False
+        assert errors == ["disk full"]
+        assert main.record is original_record
+        assert main.live_target_ids == original_live
+        assert main._job_states == original_states
+
+
+@pytest.mark.asyncio
+async def test_discovery_post_commit_failures_do_not_report_a_rollback(
+    settings, workspace, record, monkeypatch
+):
+    scope = record.engagement.add_scope(
+        "DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24"
+    )
+    target = workspace.create_target(
+        record.root,
+        record.engagement,
+        "web",
+        addresses=[TargetAddress("198.51.100.25", scope.id)],
+        primary_endpoint="198.51.100.25",
+    )
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        messages: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "tacmux.app.apply_reconciliation",
+            lambda *_args, **_kwargs: [target],
+        )
+        monkeypatch.setattr(
+            app.jobs,
+            "mark_imported",
+            lambda *_args: (_ for _ in ()).throw(OSError("read-only status")),
+        )
+        monkeypatch.setattr(
+            app.tmux,
+            "start_target",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                ConflictError("session collision")
+            ),
+        )
+        monkeypatch.setattr(
+            app,
+            "notify",
+            lambda message, *_args, **kwargs: messages.append(
+                (str(message), str(kwargs.get("severity", "")))
+            ),
+        )
+        main.pending_job_id = "J0001"
+        main._commit_import(([], True, {scope.id}), window_checked=True)
+        await pilot.pause()
+        assert main.pending_job_id == ""
+        assert messages and messages[-1][1] == "warning"
+        assert "already committed" in messages[-1][0]
+        assert "sessions not started" in messages[-1][0]

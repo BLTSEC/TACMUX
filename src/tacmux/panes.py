@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import DataTable, Label, Static
+from textual.widgets.data_table import RowDoesNotExist
 
 from .errors import TacmuxError, ValidationError
 from .model import Engagement, Target
@@ -70,8 +72,9 @@ class TargetsPane(Horizontal):
     ) -> None:
         self.engagement = engagement
         table = self.query_one("#target-table", DataTable)
+        selected = self.selected_target_id(required=False)
         if not table.columns:
-            table.add_columns("State", "Group", "Target", "Addresses", "Access")
+            table.add_columns("State", "Group", "Target", "Addresses", "Svc", "Access")
         table.clear()
         query = query.casefold().strip()
         for target in engagement.targets:
@@ -87,6 +90,11 @@ class TargetsPane(Horizontal):
                     engagement.scope_by_id(item.scope_id).group.value
                     for item in target.addresses
                 }
+                | {
+                    scope.group.value
+                    for hostname in target.hostnames
+                    for scope in engagement.hostname_scope(hostname)
+                }
             )
             access = engagement.strongest_access(target.id)
             table.add_row(
@@ -94,9 +102,15 @@ class TargetsPane(Horizontal):
                 "/".join(groups) or "—",
                 target.display_name,
                 addresses or identity,
+                str(len(target.services)) if target.services else "—",
                 ACCESS_LABELS[access] if access else "—",
                 key=target.id,
             )
+        if selected:
+            try:
+                table.move_cursor(row=table.get_row_index(selected))
+            except RowDoesNotExist:
+                pass
         selected = self.selected_target_id(required=False)
         self.update_detail(engagement.target_by_id(selected) if selected else None)
 
@@ -121,7 +135,25 @@ class TargetsPane(Horizontal):
             f"Directory: {target.directory}",
             f"Primary: {target.primary_endpoint or '—'}",
             f"Addresses: {', '.join(item.value for item in target.addresses) or '—'}",
-            f"Hostnames: {', '.join(target.hostnames) or '—'}",
+            "Hostnames: "
+            + (
+                ", ".join(
+                    item + (" (unscoped)" if item in self.engagement.unscoped_hostnames(target) else "")
+                    for item in target.hostnames
+                )
+                or "—"
+            ),
+            "",
+            f"Observed services ({len(target.services)})",
+            *(
+                [
+                    f"• {item.port}/{item.protocol} [{item.state}] "
+                    f"{item.name or 'unknown'} "
+                    + " ".join(value for value in (item.product, item.version) if value)
+                    for item in target.services[:12]
+                ]
+                or ["• None"]
+            ),
             "",
             "Confirmed access",
         ]
@@ -133,7 +165,7 @@ class TargetsPane(Horizontal):
             )
         else:
             lines.append("• None")
-        lines.extend(["", "Recent curated activity"])
+        lines.extend(["", "Recent activity"])
         lines.extend(f"• {item.result.value}: {item.summary}" for item in recent)
         if not recent:
             lines.append("• None")
@@ -151,15 +183,17 @@ class TargetsPane(Horizontal):
 
 class ScopeDiscoveryPane(Static):
     def compose(self) -> ComposeResult:
-        yield Label("Declared Scope", classes="section-title")
+        yield Label("Declared scope", classes="section-title")
         yield DataTable(id="scope-table", cursor_type="row", zebra_stripes=True)
-        yield Label("Detached Discovery Jobs", classes="section-title")
+        yield Label("Discovery jobs", classes="section-title")
         yield DataTable(id="jobs-table", cursor_type="row", zebra_stripes=True)
 
     def populate(self, engagement: Engagement, jobs: list[dict]) -> None:
         table = self.query_one("#scope-table", DataTable)
         if not table.columns:
-            table.add_columns("Group", "Label", "Network", "Availability", "Via")
+            table.add_columns(
+                "Group", "Kind", "Label", "Scope", "Exclusions", "Availability", "Via"
+            )
         table.clear()
         for item in engagement.scope:
             via = (
@@ -169,8 +203,10 @@ class ScopeDiscoveryPane(Static):
             )
             table.add_row(
                 item.group.value,
+                item.kind.value,
                 item.label,
-                item.network,
+                item.spec,
+                ", ".join(item.exclusions) or "—",
                 item.availability.value,
                 via,
                 key=item.id,
@@ -207,7 +243,7 @@ class ScopeDiscoveryPane(Static):
         return str(row_key.value)
 
 
-class SituationPane(Static):
+class SituationPane(Static, can_focus=True):
     def populate(self, engagement: Engagement) -> None:
         topology = topology_text(engagement).rstrip()
         paths = attack_paths_text(engagement).rstrip()
@@ -219,11 +255,85 @@ class SituationPane(Static):
         )
 
 
+class RecordsPane(Static):
+    def compose(self) -> ComposeResult:
+        yield DataTable(id="records-table", cursor_type="row", zebra_stripes=True)
+
+    def populate(
+        self,
+        engagement: Engagement,
+        query: str = "",
+        *,
+        root: Path | None = None,
+    ) -> None:
+        table = self.query_one("#records-table", DataTable)
+        if not table.columns:
+            table.add_columns("Kind", "ID", "Target", "Summary", "Status", "When")
+        table.clear()
+        rows: list[tuple[str, str, str, str, str, str]] = []
+        for item in engagement.access:
+            target = engagement.target_by_id(item.target_id).display_name
+            summary = f"{item.principal} via {item.method or 'unspecified'}"
+            if root is not None and item.evidence and not (root / item.evidence).is_file():
+                summary += " (missing evidence)"
+            rows.append(("access", item.id, target, summary, ACCESS_LABELS[item.level], item.observed_at))
+        for item in engagement.activities:
+            target = (
+                engagement.target_by_id(item.target_id).display_name
+                if item.target_id
+                else "Engagement"
+            )
+            summary = item.summary
+            if root is not None and item.evidence and not (root / item.evidence).is_file():
+                summary += " (missing evidence)"
+            rows.append(("activity", item.id, target, summary, item.result.value, item.occurred_at))
+        for item in engagement.findings:
+            targets = ", ".join(
+                engagement.target_by_id(target_id).display_name
+                for target_id in item.target_ids
+            )
+            title = item.title
+            if root is not None and any(
+                not (root / reference).is_file() for reference in item.evidence
+            ):
+                title += " (missing evidence)"
+            rows.append(
+                (
+                    "finding",
+                    item.id,
+                    targets or "—",
+                    title,
+                    f"{item.severity.value} / {item.state.value}",
+                    "",
+                )
+            )
+        for item in engagement.attack_paths:
+            rows.append(("attack path", item.id, "—", item.name, f"{len(item.steps)} steps", ""))
+        for item in engagement.cleanup:
+            target = engagement.target_by_id(item.target_id).display_name
+            status = f"removed {item.removed_at[:16]}" if item.removed_at else "outstanding"
+            rows.append(("cleanup", item.id, target, item.location, status, item.created_at))
+        query = query.casefold().strip()
+        for kind, item_id, target, summary, status, when in sorted(rows):
+            if query and query not in " ".join((kind, item_id, target, summary, status)).casefold():
+                continue
+            table.add_row(kind, item_id, target, summary, status, when[:16] or "—", key=f"{kind}:{item_id}")
+
+    def selected_record(self) -> tuple[str, str] | None:
+        table = self.query_one("#records-table", DataTable)
+        if not table.row_count:
+            return None
+        row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+        kind, item_id = str(row_key.value).split(":", 1)
+        return kind.replace(" ", "_"), item_id
+
+
 class DocumentsPane(Horizontal):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.record: EngagementRecord | None = None
         self.document_paths: dict[str, tuple[Path, bool, str]] = {}
+        self._limit_notified = False
 
     def compose(self) -> ComposeResult:
         yield DataTable(id="documents-table", cursor_type="row", zebra_stripes=True)
@@ -250,6 +360,12 @@ class DocumentsPane(Horizontal):
             ),
             ("Payload log", record.root / "notes/payloads.md", True, "markdown"),
         ]
+        entries = [
+            item
+            for item in entries
+            if item[0] not in {"Generated attack paths", "Payload log"}
+            or item[1].is_file()
+        ]
         entries.extend(
             (
                 f"Finding {item.id}: {item.title}",
@@ -275,8 +391,33 @@ class DocumentsPane(Horizontal):
         record: EngagementRecord,
     ) -> tuple[list[tuple[str, Path, bool, str]], bool]:
         entries: list[tuple[str, Path, bool, str]] = []
+        seen: set[Path] = set()
         evidence_count = 0
         limit_reached = False
+
+        def add_entry(label: str, path: Path, *, editable: bool = False) -> None:
+            nonlocal evidence_count, limit_reached
+            if evidence_count >= 500:
+                limit_reached = True
+                return
+            try:
+                resolved = path.resolve(strict=True)
+                resolved.relative_to(record.root.resolve(strict=True))
+            except (OSError, ValueError):
+                return
+            if resolved in seen or not resolved.is_file() or path.is_symlink():
+                return
+            seen.add(resolved)
+            entries.append(
+                (
+                    label,
+                    resolved,
+                    editable,
+                    "markdown" if editable else "evidence",
+                )
+            )
+            evidence_count += 1
+
         for target in record.engagement.targets:
             target_root = record.root / "targets" / target.directory
             for phase in (
@@ -294,28 +435,73 @@ class DocumentsPane(Horizontal):
                 for path in paths:
                     relative = path.relative_to(target_root)
                     editable = path.suffix.casefold() in {".md", ".markdown"}
-                    entries.append(
-                        (
-                            f"{target.display_name} / {relative}",
-                            path,
-                            editable,
-                            "markdown" if editable else "evidence",
-                        )
+                    add_entry(
+                        f"{target.display_name} / {relative}",
+                        path,
+                        editable=editable,
                     )
-                    evidence_count += 1
                 if truncated:
                     limit_reached = True
                 if limit_reached:
                     break
             if limit_reached:
                 break
+
+        imports_root = record.root / ".tacmux/imports"
+        if imports_root.is_dir() and not limit_reached:
+            paths, truncated = bounded_files(imports_root, 500 - evidence_count)
+            for path in paths:
+                add_entry(
+                    f"Imported provenance / {path.relative_to(imports_root)}", path
+                )
+            limit_reached = limit_reached or truncated
+
+        jobs_root = record.root / ".tacmux/jobs"
+        if jobs_root.is_dir() and not limit_reached:
+            for job_root in sorted(jobs_root.glob("J*")):
+                try:
+                    status = json.loads((job_root / "status.json").read_text())
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    continue
+                if status.get("state") not in {"succeeded", "failed", "cancelled"}:
+                    continue
+                for filename in ("results.xml", "nmap.log"):
+                    add_entry(
+                        f"Discovery {job_root.name} / {filename}",
+                        job_root / filename,
+                    )
+
+        if not limit_reached:
+            for target in record.engagement.targets:
+                for service in target.services:
+                    if service.source:
+                        add_entry(
+                            f"Service provenance / {target.display_name} / "
+                            f"{service.source}",
+                            record.root / service.source,
+                        )
         return entries, limit_reached
 
-    def populate(self, record: EngagementRecord) -> None:
+    def populate(
+        self,
+        record: EngagementRecord,
+        query: str = "",
+        *,
+        include_evidence: bool = True,
+    ) -> None:
         self.record = record
         entries = self._document_entries(record)
-        evidence, limit_reached = self._evidence_entries(record)
-        entries.extend(evidence)
+        limit_reached = False
+        if include_evidence:
+            evidence, limit_reached = self._evidence_entries(record)
+            entries.extend(evidence)
+        query = query.casefold().strip()
+        if query:
+            entries = [
+                item
+                for item in entries
+                if query in f"{item[0]} {item[1]} {item[3]}".casefold()
+            ]
         table = self.query_one("#documents-table", DataTable)
         if not table.columns:
             table.add_columns("Document / Evidence", "Mode")
@@ -325,7 +511,8 @@ class DocumentsPane(Horizontal):
             key = f"D{index:04d}"
             self.document_paths[key] = (path, editable, kind)
             table.add_row(label, "editable" if editable else kind, key=key)
-        if limit_reached:
+        if limit_reached and not self._limit_notified:
+            self._limit_notified = True
             self.app.notify(
                 "Evidence list is limited to the first 500 files", severity="warning"
             )

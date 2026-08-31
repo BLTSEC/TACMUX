@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import ipaddress
 from pathlib import Path
 import shutil
 import subprocess
-from typing import ClassVar
+from typing import Callable, ClassVar
+from uuid import uuid4
 
 from textual import events, on
 from textual.app import (
@@ -30,6 +32,7 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
+from rich.text import Text
 
 from .archive import (
     create_archive,
@@ -45,6 +48,8 @@ from .dialogs import (
     AttackPathForm,
     ConfirmModal,
     DiscoveryReview,
+    CleanupForm,
+    EngagementDetailsForm,
     EngagementForm,
     FindingForm,
     ImportDiscoveryForm,
@@ -52,6 +57,7 @@ from .dialogs import (
     MessageModal,
     PromptModal,
     ScanForm,
+    ServicesModal,
     ScopeForm,
     TargetAddressForm,
     TargetForm,
@@ -69,19 +75,57 @@ from .model import (
     AccessRecord,
     Activity,
     AttackPath,
+    CleanupItem,
     Engagement,
+    EngagementStatus,
     Finding,
     ScopeAvailability,
     ScopeGroup,
+    ScopeKind,
     Target,
     TargetAddress,
+    utc_now,
+    classify_scope,
+    pattern_inside,
 )
 from .nocap import NocapReader
-from .panes import DocumentsPane, ScopeDiscoveryPane, SituationPane, TargetsPane
-from .store import EngagementRecord, Workspace
+from .panes import (
+    DocumentsPane,
+    RecordsPane,
+    ScopeDiscoveryPane,
+    SituationPane,
+    TargetsPane,
+)
+from .store import EngagementRecord, Workspace, safe_filename
 from .themes import BLTSEC_THEME, CURATED_THEME_NAMES, DEFAULT_THEME
 from .terminal_output import iter_rendered
 from .tmux import LaunchIntent, TmuxService
+from .ui import plain, sentence
+
+
+def _newest_archives(paths: list[Path]) -> list[Path]:
+    def modified(path: Path) -> int:
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return 0
+
+    return sorted((path for path in paths if path.is_file()), key=modified, reverse=True)
+
+
+def _engagement_archives(settings: Settings) -> list[Path]:
+    return _newest_archives(
+        list(settings.archive_dir.glob("*/engagements/*.tar.gz"))
+    )
+
+
+def _cockpit_archives(settings: Settings, engagement_id: str) -> list[Path]:
+    return _newest_archives(
+        [
+            *settings.archive_dir.glob("*/engagements/*.tar.gz"),
+            *(settings.archive_dir / engagement_id / "targets").glob("*.tar.gz"),
+        ]
+    )
 
 
 class OperatorCommands(Provider):
@@ -114,11 +158,13 @@ class OperatorCommands(Provider):
 
 class EngagementPickerScreen(Screen):
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("enter", "open_selected", "Open", priority=True),
+        Binding("enter", "open_selected", "Open"),
         Binding("a", "actions", "Actions"),
         Binding("n", "new_engagement", "New"),
         Binding("i", "import_legacy", "Import v1"),
+        Binding("r", "restore", "Restore"),
         Binding("/", "filter", "Filter"),
+        Binding("escape", "close_filter", show=False),
         Binding("q", "app.quit", "Quit"),
     ]
     operator_commands: ClassVar[list[tuple[str, str, str]]] = [
@@ -138,11 +184,20 @@ class EngagementPickerScreen(Screen):
             "Create an external, internal, both, or lab engagement",
         ),
         (
-            "Copy a TACMUX v1 workspace",
+            "Import v1 workspace",
             "import_legacy",
-            "Copy existing evidence into a stable v2 layout",
+            "Import existing evidence into a stable v2 layout",
+        ),
+        (
+            "Restore verified engagement archive",
+            "restore",
+            "Restore a deleted or missing engagement from a v2 archive",
         ),
     ]
+
+    def __init__(self):
+        super().__init__()
+        self.restore_options: list[Path] = []
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -154,13 +209,13 @@ class EngagementPickerScreen(Screen):
             )
             yield DataTable(id="engagements", cursor_type="row", zebra_stripes=True)
             yield Static(
-                "a: actions  n: new  i: copy v1  /: filter  Enter: open",
+                str(self.app.settings.workspace),
                 id="picker-hint",
             )
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#engagement-filter", Input).display = False
+        self.app.sub_title = ""
         self.refresh_table()
         self.query_one("#engagements", DataTable).focus()
 
@@ -168,11 +223,13 @@ class EngagementPickerScreen(Screen):
         table = self.query_one("#engagements", DataTable)
         if not table.columns:
             table.add_columns(
-                "Client / Lab / Platform", "Engagement", "Type", "Created"
+                "Client / Lab / Platform", "Engagement", "Type", "Status", "Targets", "Live"
             )
         table.clear()
         query = query.casefold()
-        for record in self.app.workspace.list_engagements():
+        records = self.app.workspace.list_engagements()
+        live = self.app.tmux.live_target_ids_by_engagement()
+        for record in records:
             engagement = record.engagement
             haystack = (
                 f"{engagement.client} {engagement.name} "
@@ -184,9 +241,17 @@ class EngagementPickerScreen(Screen):
                 engagement.client,
                 engagement.name,
                 engagement.assessment_type.value.replace("_", " "),
-                engagement.created_at[:10],
+                engagement.status.value,
+                str(len(engagement.targets)),
+                str(len(live.get(engagement.id, set()))),
                 key=engagement.id,
             )
+        self.query_one("#picker-hint", Static).update(
+            plain(
+                f"{self.app.settings.workspace} · {len(records)} "
+                f"{'engagement' if len(records) == 1 else 'engagements'}"
+            )
+        )
 
     def selected_id(self) -> str:
         table = self.query_one("#engagements", DataTable)
@@ -212,8 +277,15 @@ class EngagementPickerScreen(Screen):
                 f"{record.engagement.client} / {record.engagement.name}",
                 [
                     ("open", "Open engagement"),
+                    ("edit", "Edit engagement details"),
+                    (
+                        "reopen" if record.engagement.status == EngagementStatus.CLOSED else "close",
+                        "Reopen engagement"
+                        if record.engagement.status == EngagementStatus.CLOSED
+                        else "Close engagement",
+                    ),
                     ("archive", "Create verified archive"),
-                    ("delete", "Permanently delete engagement"),
+                    ("delete", "Delete engagement…"),
                 ],
             ),
             lambda action: self._engagement_action(record.engagement.id, action),
@@ -227,8 +299,71 @@ class EngagementPickerScreen(Screen):
                 self.app.show_error(str(exc))
         elif action == "archive":
             self._archive_engagement(engagement_id)
+        elif action == "edit":
+            self._edit_engagement(engagement_id)
+        elif action == "close":
+            self._confirm_close_engagement(engagement_id)
+        elif action == "reopen":
+            self._set_engagement_status(engagement_id, EngagementStatus.ACTIVE)
         elif action == "delete":
             self._confirm_delete_engagement(engagement_id)
+
+    def _edit_engagement(self, engagement_id: str) -> None:
+        try:
+            record = self.app.workspace.find(engagement_id)
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
+            return
+        self.app.push_screen(
+            EngagementDetailsForm(record.engagement),
+            lambda value: self._save_engagement_details(engagement_id, value),
+        )
+
+    def _save_engagement_details(self, engagement_id: str, value: dict | None) -> None:
+        if value is None:
+            return
+        try:
+            record = self.app.workspace.find(engagement_id)
+            self.app.workspace.update_engagement_details(
+                record.root, record.engagement, **value
+            )
+            self.app.refresh_runtime_sitrep(record)
+            self.refresh_table(self.query_one("#engagement-filter", Input).value)
+        except (TacmuxError, OSError, ValueError) as exc:
+            self.app.show_error(str(exc))
+
+    def _confirm_close_engagement(self, engagement_id: str) -> None:
+        try:
+            record = self.app.require_idle_engagement(
+                engagement_id, "closing the engagement"
+            )
+        except (TacmuxError, OSError) as exc:
+            self.app.show_error(str(exc))
+            return
+        outstanding = len(record.engagement.outstanding_cleanup)
+        message = "Close this engagement? Operational changes will be blocked until it is reopened."
+        if outstanding:
+            message += f"\n\n{outstanding} cleanup item(s) are still outstanding."
+        self.app.push_screen(
+            ConfirmModal("Close Engagement", message),
+            lambda confirmed: self._set_engagement_status(
+                engagement_id, EngagementStatus.CLOSED
+            )
+            if confirmed
+            else None,
+        )
+
+    def _set_engagement_status(
+        self, engagement_id: str, status: EngagementStatus
+    ) -> None:
+        try:
+            record = self.app.workspace.find(engagement_id)
+            self.app.workspace.set_status(record.root, record.engagement, status)
+            self.app.refresh_runtime_sitrep(record)
+            self.refresh_table(self.query_one("#engagement-filter", Input).value)
+            self.app.notify(f"Engagement {status.value}")
+        except (TacmuxError, OSError) as exc:
+            self.app.show_error(str(exc))
 
     def _archive_engagement(self, engagement_id: str) -> None:
         try:
@@ -302,8 +437,15 @@ class EngagementPickerScreen(Screen):
 
     @on(Input.Submitted, "#engagement-filter")
     def filter_submitted(self) -> None:
-        self.query_one("#engagement-filter", Input).display = False
-        self.query_one("#engagements", DataTable).focus()
+        self.action_close_filter()
+        if self.query_one("#engagements", DataTable).row_count:
+            self.action_open_selected()
+
+    def action_close_filter(self) -> None:
+        field = self.query_one("#engagement-filter", Input)
+        if field.display:
+            field.display = False
+            self.query_one("#engagements", DataTable).focus()
 
     def action_new_engagement(self) -> None:
         self.app.push_screen(
@@ -314,7 +456,9 @@ class EngagementPickerScreen(Screen):
         if value is None:
             return
         try:
-            scope_specs: list[tuple[str, ScopeGroup, str, ScopeAvailability]] = []
+            scope_specs: list[
+                tuple[str, ScopeGroup, str, ScopeAvailability, list[str]]
+            ] = []
             for group_name, group, availability in (
                 ("external", ScopeGroup.EXTERNAL, ScopeAvailability.READY),
                 (
@@ -330,7 +474,33 @@ class EngagementPickerScreen(Screen):
                     label, separator, network = line.partition("=")
                     network = network.strip() if separator else label.strip()
                     label = label.strip() if separator else network
-                    scope_specs.append((label, group, network, availability))
+                    scope_specs.append((label, group, network, availability, []))
+            for raw_line in value["exclusions"].splitlines():
+                exclusion = raw_line.strip()
+                if not exclusion:
+                    continue
+                kind, excluded_network, excluded_domain, _ = classify_scope(exclusion)
+                matches: list[int] = []
+                for index, (_, _, scope_value, _, _) in enumerate(scope_specs):
+                    scope_kind, scope_network, scope_domain, _ = classify_scope(scope_value)
+                    if scope_kind != kind:
+                        continue
+                    if kind == ScopeKind.NETWORK:
+                        try:
+                            inside = ipaddress.ip_network(excluded_network).subnet_of(
+                                ipaddress.ip_network(scope_network)
+                            )
+                        except TypeError:
+                            inside = False
+                    else:
+                        inside = pattern_inside(excluded_domain, scope_domain)
+                    if inside:
+                        matches.append(index)
+                if len(matches) != 1:
+                    raise ValidationError(
+                        f"exclusion {exclusion} must be inside exactly one front-loaded scope entry"
+                    )
+                scope_specs[matches[0]][4].append(exclusion)
             record = self.app.workspace.create_engagement(
                 value["client"],
                 value["name"],
@@ -354,23 +524,79 @@ class EngagementPickerScreen(Screen):
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
+    def action_restore(self) -> None:
+        self.restore_options = _engagement_archives(self.app.settings)
+        if not self.restore_options:
+            self._prompt_restore_path()
+            return
+        self.app.push_screen(
+            ActionMenu(
+                "Restore Engagement Archive",
+                [
+                    (str(index), str(path))
+                    for index, path in enumerate(self.restore_options)
+                ]
+                + [("path", "Enter a path…")],
+            ),
+            self._restore_choice,
+        )
+
+    def _restore_choice(self, value: str | None) -> None:
+        if value == "path":
+            self._prompt_restore_path()
+        elif value is not None:
+            try:
+                path = self.restore_options[int(value)]
+            except (IndexError, ValueError):
+                self.app.show_error("The selected archive is no longer available")
+            else:
+                self._restore(str(path))
+
+    def _prompt_restore_path(self) -> None:
+        self.app.push_screen(
+            PromptModal("Restore Engagement Archive", "Path to .tar.gz archive"),
+            self._restore,
+        )
+
+    def _restore(self, value: str | None) -> None:
+        if value is None:
+            return
+        try:
+            archive = Path(value).expanduser()
+            document = verify_archive(archive)
+            context = document["context"]
+            if context["kind"] != "engagements":
+                raise ValidationError(
+                    "The engagement picker can restore engagement archives only"
+                )
+            restored = restore_engagement_archive(
+                archive, self.app.workspace, context
+            )
+            self.refresh_table(self.query_one("#engagement-filter", Input).value)
+            self.app.push_screen(MessageModal("Engagement Restored", str(restored)))
+        except (TacmuxError, OSError, KeyError) as exc:
+            self.app.show_error(str(exc))
+
     def run_operator_command(self, action: str) -> None:
         getattr(self, f"action_{action}")()
 
 
 class MainScreen(Screen):
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("enter", "default_action", "Open / Attach", priority=True),
+        Binding("enter", "default_action", "Open / Attach"),
         Binding("a", "actions", "Actions"),
         Binding("n", "new_target", "New target"),
         Binding("d", "discovery", "Discovery"),
-        Binding("g", "switch_engagement", "Engagements"),
+        Binding("e", "switch_engagement", "Engagements"),
+        Binding("g", "switch_engagement", "Engagements", show=False),
         Binding("/", "filter", "Filter"),
-        Binding("r", "refresh", "Refresh"),
+        Binding("escape", "close_filter", show=False),
+        Binding("r", "refresh", "Refresh", show=False),
         Binding("1", "tab('targets')", "Targets", show=False),
         Binding("2", "tab('scope')", "Scope", show=False),
-        Binding("3", "tab('situation')", "Situation", show=False),
-        Binding("4", "tab('documents')", "Documents", show=False),
+        Binding("3", "tab('records')", "Records", show=False),
+        Binding("4", "tab('situation')", "Situation", show=False),
+        Binding("5", "tab('documents')", "Documents", show=False),
         Binding("q", "app.quit", "Quit"),
     ]
     operator_commands: ClassVar[list[tuple[str, str, str]]] = [
@@ -393,7 +619,7 @@ class MainScreen(Screen):
         (
             "Run detached host discovery",
             "scan",
-            "Run the fixed Nmap host-identification profile",
+            "Run the fixed Nmap host-discovery profile",
         ),
         (
             "Import discovery results",
@@ -406,7 +632,7 @@ class MainScreen(Screen):
             "Review the output of a successful detached scan",
         ),
         (
-            "Record curated activity",
+            "Record activity",
             "activity",
             "Record a confirmed, failed, or no-result activity",
         ),
@@ -416,7 +642,7 @@ class MainScreen(Screen):
             "Assemble a path from confirmed records",
         ),
         (
-            "Manage engagement records",
+            "Open records",
             "records",
             "Edit or delete access, activity, findings, and attack paths",
         ),
@@ -458,6 +684,11 @@ class MainScreen(Screen):
         self.record = record
         self.pending_job_id = ""
         self.live_target_ids: set[str] = set()
+        self._manifest_mtime = 0
+        self._job_states: dict[str, str] = {}
+        self.pending_service_copy: tuple[Path, Path] | None = None
+        self.restore_options: list[Path] = []
+        self._active_tab = "targets"
 
     @property
     def engagement(self) -> Engagement:
@@ -467,29 +698,52 @@ class MainScreen(Screen):
     def document_paths(self) -> dict[str, tuple[Path, bool, str]]:
         return self.query_one(DocumentsPane).document_paths
 
+    def _require_active(self) -> None:
+        if self.engagement.status == EngagementStatus.CLOSED:
+            raise ConflictError(
+                "Engagement is closed — reopen it from the engagement picker"
+            )
+
+    def _confirm_window(self, callback: Callable[[], None]) -> bool:
+        if self.engagement.authorization.window_state() != "outside":
+            return True
+        authorization = self.engagement.authorization
+        self.app.push_screen(
+            ConfirmModal(
+                "Outside Authorized Window",
+                "Authorized window: "
+                f"{authorization.window_start or 'open'} – "
+                f"{authorization.window_end or 'open'}\n\nContinue anyway?",
+            ),
+            lambda confirmed: callback() if confirmed else None,
+        )
+        return False
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Label(
-            f"{self.engagement.client}  /  {self.engagement.name}",
+            plain(f"{self.engagement.client}  /  {self.engagement.name}"),
             id="engagement-banner",
         )
         yield Input(placeholder="Filter targets", id="target-filter")
         with TabbedContent(initial="targets", id="workspace-tabs"):
-            with TabPane("Targets", id="targets"):
+            with TabPane("1 Targets", id="targets"):
                 yield TargetsPane(id="target-layout")
-            with TabPane("Scope & Discovery", id="scope"):
+            with TabPane("2 Scope", id="scope"):
                 yield ScopeDiscoveryPane()
-            with TabPane("Situation", id="situation"):
+            with TabPane("3 Records", id="records"):
+                yield RecordsPane()
+            with TabPane("4 Situation", id="situation"):
                 yield SituationPane(id="situation-view")
-            with TabPane("Documents", id="documents"):
+            with TabPane("5 Documents", id="documents"):
                 yield DocumentsPane(id="documents-layout")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#target-filter", Input).display = False
         self.app.title = "TACMUX"
         self.app.sub_title = f"{self.engagement.client}: {self.engagement.name}"
         self.refresh_all()
+        self.set_interval(3.0, self._poll_external_state)
         self.query_one("#target-table", DataTable).focus()
 
     def on_resize(self, event: events.Resize) -> None:
@@ -497,41 +751,151 @@ class MainScreen(Screen):
 
     def action_tab(self, tab_id: str) -> None:
         self.query_one("#workspace-tabs", TabbedContent).active = tab_id
+        self._handle_tab_change(tab_id)
         focus_target = {
             "targets": "#target-table",
             "scope": "#scope-table",
+            "records": "#records-table",
+            "situation": "#situation-view",
             "documents": "#documents-table",
         }.get(tab_id)
         if focus_target:
             self.query_one(focus_target).focus()
 
+    @on(TabbedContent.TabActivated, "#workspace-tabs")
+    def tab_activated(self) -> None:
+        self._handle_tab_change(
+            self.query_one("#workspace-tabs", TabbedContent).active
+        )
+
+    def _handle_tab_change(self, tab_id: str) -> None:
+        if tab_id == self._active_tab:
+            return
+        self._active_tab = tab_id
+        field = self.query_one("#target-filter", Input)
+        field.display = False
+        if field.value:
+            field.value = ""
+        if tab_id == "documents":
+            self.query_one(DocumentsPane).populate(self.record)
+
     def selected_target(self, *, required: bool = True) -> Target | None:
         target_id = self.query_one(TargetsPane).selected_target_id(required=required)
         return self.engagement.target_by_id(target_id) if target_id else None
 
+    def _status_line(self, jobs: list[dict]) -> Text:
+        active_jobs = sum(
+            item.get("state") in {"queued", "running"} for item in jobs
+        )
+        parts: list[tuple[str, str]] = [
+            (f"{self.engagement.client} / {self.engagement.name}", ""),
+            (
+                f"{len(self.engagement.targets)} "
+                f"{'target' if len(self.engagement.targets) == 1 else 'targets'}",
+                "",
+            ),
+            (f"{len(self.live_target_ids)} live", ""),
+            (
+                f"{active_jobs} {'job' if active_jobs == 1 else 'jobs'} running",
+                "",
+            ),
+            (
+                "logging on" if self.engagement.logging_enabled else "logging off",
+                "",
+            ),
+        ]
+        if self.engagement.outstanding_cleanup:
+            parts.append((f"cleanup {len(self.engagement.outstanding_cleanup)}", ""))
+        if self.engagement.status == EngagementStatus.CLOSED:
+            parts.append(("CLOSED", "bold red"))
+        else:
+            state = self.engagement.authorization.window_state()
+            if state == "outside":
+                parts.append(("OUTSIDE WINDOW", "bold dark_orange"))
+            elif self.engagement.authorization.window_end:
+                parts.append(
+                    (f"window ends {self.engagement.authorization.window_end}", "")
+                )
+            else:
+                parts.append(("window not set", ""))
+        result = Text()
+        for index, (value, style) in enumerate(parts):
+            if index:
+                result.append(" · ")
+            result.append(value, style=style)
+        return result
+
     def refresh_all(self) -> bool:
         try:
-            self.record = EngagementRecord(
+            record = EngagementRecord(
                 self.record.root, self.app.workspace.load(self.record.root)
             )
-            live = self.app.tmux.live_target_ids(self.engagement)
-            self.live_target_ids = live
-            jobs = self.app.jobs.list(self.record.root)
-            self.app.workspace.refresh_sitrep(
-                self.record.root, self.engagement, live_target_ids=live, jobs=jobs
+            live = self.app.tmux.live_target_ids(record.engagement)
+            jobs = self.app.jobs.list(record.root)
+            states = {
+                str(item.get("id")): str(item.get("state")) for item in jobs
+            }
+            manifest_mtime = self.app.workspace.refresh_sitrep(
+                record.root,
+                record.engagement,
+                live_target_ids=live,
+                jobs=jobs,
             )
+            self.record = record
+            self.live_target_ids = live
+            self._manifest_mtime = manifest_mtime
+            self._job_states = states
+            active = self.query_one("#workspace-tabs", TabbedContent).active
+            query = self.query_one("#target-filter", Input).value
             self.query_one(TargetsPane).populate(
                 self.engagement,
                 live,
-                self.query_one("#target-filter", Input).value,
+                query if active == "targets" else "",
             )
             self.query_one(ScopeDiscoveryPane).populate(self.engagement, jobs)
+            self.query_one(RecordsPane).populate(
+                self.engagement,
+                query if active == "records" else "",
+                root=self.record.root,
+            )
             self.query_one(SituationPane).populate(self.engagement)
-            self.query_one(DocumentsPane).populate(self.record)
+            self.query_one(DocumentsPane).populate(
+                self.record,
+                query if active == "documents" else "",
+                include_evidence=(
+                    active == "documents"
+                ),
+            )
+            self.query_one("#engagement-banner", Label).update(
+                self._status_line(jobs)
+            )
             return True
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
             return False
+
+    def _poll_external_state(self) -> None:
+        if self.app.screen is not self:
+            return
+        try:
+            mtime = (
+                self.record.root / ".tacmux/engagement.json"
+            ).stat().st_mtime_ns
+            jobs = self.app.jobs.list(self.record.root)
+            states = {str(item.get("id")): str(item.get("state")) for item in jobs}
+            live = self.app.tmux.live_target_ids(self.engagement)
+            changed_jobs = [
+                (job_id, state)
+                for job_id, state in states.items()
+                if self._job_states.get(job_id) != state
+                and state in {"succeeded", "failed", "cancelled"}
+            ]
+            if mtime != self._manifest_mtime or states != self._job_states or live != self.live_target_ids:
+                self.refresh_all()
+            for job_id, state in changed_jobs:
+                self.app.notify(f"Discovery {job_id} {state} — press d to import")
+        except (TacmuxError, OSError, ValueError) as exc:
+            self.app.show_error(str(exc))
 
     @on(DataTable.RowSelected)
     def row_selected(self, event: DataTable.RowSelected) -> None:
@@ -541,6 +905,8 @@ class MainScreen(Screen):
             self.edit_scope()
         elif event.data_table.id == "jobs-table":
             self.job_actions()
+        elif event.data_table.id == "records-table":
+            self.edit_selected_record()
         elif event.data_table.id == "documents-table":
             self.open_selected_document()
 
@@ -556,25 +922,64 @@ class MainScreen(Screen):
                 self.edit_scope()
         elif active == "documents":
             self.open_selected_document()
+        elif active == "records":
+            self.edit_selected_record()
 
     def action_filter(self) -> None:
         field = self.query_one("#target-filter", Input)
-        self.action_tab("targets")
+        active = self.query_one("#workspace-tabs", TabbedContent).active
+        if active not in {"targets", "records", "documents"}:
+            self.action_tab("targets")
+            active = "targets"
+        field.placeholder = f"Filter {active}"
         field.display = True
         field.focus()
 
+    def action_close_filter(self) -> None:
+        field = self.query_one("#target-filter", Input)
+        if not field.display:
+            return
+        field.display = False
+        active = self.query_one("#workspace-tabs", TabbedContent).active
+        self.query_one(
+            "#records-table"
+            if active == "records"
+            else "#documents-table"
+            if active == "documents"
+            else "#target-table",
+            DataTable,
+        ).focus()
+
     @on(Input.Changed, "#target-filter")
     def filter_changed(self, event: Input.Changed) -> None:
-        self.query_one(TargetsPane).populate(
-            self.engagement,
-            self.live_target_ids,
-            event.value,
-        )
+        active = self.query_one("#workspace-tabs", TabbedContent).active
+        if active == "records":
+            self.query_one(RecordsPane).populate(
+                self.engagement, event.value, root=self.record.root
+            )
+        elif active == "documents":
+            self.query_one(DocumentsPane).populate(self.record, event.value)
+        else:
+            self.query_one(TargetsPane).populate(
+                self.engagement,
+                self.live_target_ids,
+                event.value,
+            )
 
     @on(Input.Submitted, "#target-filter")
     def filter_submitted(self) -> None:
-        self.query_one("#target-filter", Input).display = False
-        self.query_one("#target-table", DataTable).focus()
+        active = self.query_one("#workspace-tabs", TabbedContent).active
+        self.action_close_filter()
+        table = self.query_one(
+            "#records-table"
+            if active == "records"
+            else "#documents-table"
+            if active == "documents"
+            else "#target-table",
+            DataTable,
+        )
+        if table.row_count:
+            self.action_default_action()
 
     def action_refresh(self) -> None:
         if self.refresh_all():
@@ -584,7 +989,11 @@ class MainScreen(Screen):
         self.app.switch_screen(EngagementPickerScreen())
 
     def action_new_target(self) -> None:
-        self.app.push_screen(TargetForm(self.engagement), self._create_target)
+        try:
+            self._require_active()
+            self.app.push_screen(TargetForm(self.engagement), self._create_target)
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
 
     def _create_target(self, value: dict | None) -> None:
         if value is None:
@@ -595,7 +1004,17 @@ class MainScreen(Screen):
                 if value["address"]
                 else []
             )
-            primary = value["hostnames"][0] if value["hostnames"] else value["address"]
+            primary = value["address"] or (
+                next(
+                    (
+                        hostname
+                        for hostname in value["hostnames"]
+                        if not self.engagement.domain_entries
+                        or self.engagement.hostname_scope(hostname)
+                    ),
+                    "",
+                )
+            )
             self.app.workspace.create_target(
                 self.record.root,
                 self.engagement,
@@ -631,10 +1050,9 @@ class MainScreen(Screen):
             ("delete_scope", "Delete selected unused scope entry"),
             ("add_scope", "Add external or internal scope"),
             ("discovery", "Host discovery actions"),
-            ("records", "Manage engagement records"),
         ]
         self.app.push_screen(
-            ActionMenu("Scope & Discovery", actions), self._scope_action
+            ActionMenu("Scope and Discovery", actions), self._scope_action
         )
 
     def _scope_action(self, action: str | None) -> None:
@@ -678,7 +1096,7 @@ class MainScreen(Screen):
         self.app.push_screen(
             ConfirmModal(
                 "Delete Scope Entry",
-                f"Delete {scope.label} ({scope.network})? Referenced scope cannot be deleted.",
+                f"Delete {scope.label} ({scope.spec})? Referenced scope cannot be deleted.",
             ),
             lambda confirmed: self._delete_scope(scope.id) if confirmed else None,
         )
@@ -691,7 +1109,15 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
 
     def action_attach(self) -> None:
+        self._attach_target(window_checked=False)
+
+    def _attach_target(self, *, window_checked: bool) -> None:
         try:
+            self._require_active()
+            if not window_checked and not self._confirm_window(
+                lambda: self._attach_target(window_checked=True)
+            ):
+                return
             target = self.selected_target()
             intent = self.app.tmux.start_target(
                 self.record.root, self.engagement, target
@@ -701,7 +1127,15 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
 
     def action_ops(self) -> None:
+        self._open_ops(window_checked=False)
+
+    def _open_ops(self, *, window_checked: bool) -> None:
         try:
+            self._require_active()
+            if not window_checked and not self._confirm_window(
+                lambda: self._open_ops(window_checked=True)
+            ):
+                return
             self.app.exit(self.app.tmux.start_ops(self.record.root, self.engagement))
         except TacmuxError as exc:
             self.app.show_error(str(exc))
@@ -730,6 +1164,8 @@ class MainScreen(Screen):
         active = self.query_one("#workspace-tabs", TabbedContent).active
         if active == "scope":
             self.scope_actions()
+        elif active == "records":
+            self.records_actions()
         elif active == "documents":
             self.document_actions()
         elif active == "situation":
@@ -738,7 +1174,6 @@ class MainScreen(Screen):
                     "Situation",
                     [
                         ("attack_path", "Build confirmed attack path"),
-                        ("records", "Manage engagement records"),
                         ("refresh", "Refresh topology and SITREP"),
                     ],
                 ),
@@ -761,12 +1196,13 @@ class MainScreen(Screen):
             [
                 ("identity", "Edit target identity and addresses"),
                 ("notes", "Edit target notes"),
+                ("services", "Services"),
                 ("access", "Record confirmed access"),
                 ("activity", "Record activity"),
                 ("finding", "Create finding"),
-                ("records", "Manage engagement records"),
+                ("cleanup", "Record cleanup item"),
                 ("archive", "Archive target"),
-                ("delete", "Permanently delete mistaken target"),
+                ("delete", "Delete target…"),
             ]
         )
         if self.app.settings.nocap_enabled:
@@ -783,10 +1219,11 @@ class MainScreen(Screen):
             "stop": self.stop_target,
             "identity": self.edit_target_identity,
             "notes": self.edit_target_notes,
+            "services": self.show_services,
             "access": self.record_access,
             "activity": self.action_activity,
             "finding": self.create_finding,
-            "records": self.action_records,
+            "cleanup": self.record_cleanup,
             "nocap": self.view_nocap,
             "archive": self.archive_target,
             "delete": self.delete_target,
@@ -892,9 +1329,14 @@ class MainScreen(Screen):
 
     def choose_primary_endpoint(self) -> None:
         target = self.selected_target()
+        hostnames = target.hostnames
+        if self.engagement.domain_entries:
+            hostnames = [
+                item for item in hostnames if self.engagement.hostname_scope(item)
+            ]
         endpoints = list(
             dict.fromkeys(
-                [*target.hostnames, *(item.value for item in target.addresses)]
+                [*hostnames, *(item.value for item in target.addresses)]
             )
         )
         if not endpoints:
@@ -937,11 +1379,13 @@ class MainScreen(Screen):
         if value is None:
             return
         try:
-            self.app.workspace.rename_target(
+            warning = self.app.workspace.rename_target(
                 self.record.root, self.engagement, target_id, value
             )
             self.refresh_all()
-        except TacmuxError as exc:
+            if warning:
+                self.app.notify(warning, severity="warning")
+        except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
     def edit_target_notes(self) -> None:
@@ -949,12 +1393,64 @@ class MainScreen(Screen):
         self.app.edit_file(self.record.root / "targets" / target.directory / "NOTES.md")
         self.query_one(DocumentsPane).populate(self.record)
 
-    def record_access(self) -> None:
+    def show_services(self) -> None:
         target = self.selected_target()
         self.app.push_screen(
-            AccessForm(target.display_name),
-            lambda value: self._record_access(target.id, value),
+            ServicesModal(target),
+            lambda action: self._confirm_clear_services(target.id)
+            if action == "clear"
+            else None,
         )
+
+    def _confirm_clear_services(self, target_id: str) -> None:
+        self.app.push_screen(
+            ConfirmModal(
+                "Clear Services",
+                "Remove the imported service snapshot from this target? The source XML is retained.",
+            ),
+            lambda confirmed: self._clear_services(target_id) if confirmed else None,
+        )
+
+    def _clear_services(self, target_id: str) -> None:
+        try:
+            self.app.workspace.clear_services(
+                self.record.root, self.engagement, target_id
+            )
+            self.refresh_all()
+        except (TacmuxError, OSError) as exc:
+            self.app.show_error(str(exc))
+
+    def record_cleanup(self) -> None:
+        try:
+            self._require_active()
+            target = self.selected_target(required=False)
+            self.app.push_screen(
+                CleanupForm(self.engagement, target), self._create_cleanup
+            )
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
+
+    def _create_cleanup(self, value: dict | None) -> None:
+        if value is None:
+            return
+        try:
+            self.app.workspace.create_cleanup_item(
+                self.record.root, self.engagement, **value
+            )
+            self.refresh_all()
+        except (TacmuxError, OSError, ValueError) as exc:
+            self.app.show_error(str(exc))
+
+    def record_access(self) -> None:
+        try:
+            self._require_active()
+            target = self.selected_target()
+            self.app.push_screen(
+                AccessForm(target.display_name),
+                lambda value: self._record_access(target.id, value),
+            )
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
 
     def _record_access(self, target_id: str, value: dict | None) -> None:
         if value is None:
@@ -968,11 +1464,15 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
 
     def action_activity(self) -> None:
-        target = self.selected_target(required=False)
-        self.app.push_screen(
-            ActivityForm(self.engagement, target.id if target else ""),
-            self._record_activity,
-        )
+        try:
+            self._require_active()
+            target = self.selected_target(required=False)
+            self.app.push_screen(
+                ActivityForm(self.engagement, target.id if target else ""),
+                self._record_activity,
+            )
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
 
     def _record_activity(self, value: dict | None) -> None:
         if value is None:
@@ -986,11 +1486,15 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
 
     def create_finding(self) -> None:
-        target = self.selected_target(required=False)
-        self.app.push_screen(
-            FindingForm(self.engagement, target.id if target else ""),
-            self._create_finding,
-        )
+        try:
+            self._require_active()
+            target = self.selected_target(required=False)
+            self.app.push_screen(
+                FindingForm(self.engagement, target.id if target else ""),
+                self._create_finding,
+            )
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
 
     def _create_finding(self, value: dict | None) -> None:
         if value is None:
@@ -1005,7 +1509,13 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
 
     def action_attack_path(self) -> None:
-        self.app.push_screen(AttackPathForm(self.engagement), self._create_attack_path)
+        try:
+            self._require_active()
+            self.app.push_screen(
+                AttackPathForm(self.engagement), self._create_attack_path
+            )
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
 
     def _create_attack_path(self, value: dict | None) -> None:
         if value is None:
@@ -1023,44 +1533,56 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
 
     def action_records(self) -> None:
-        actions: list[tuple[str, str]] = []
-        actions.extend(
-            (
-                f"access:{item.id}",
-                f"Access {item.id} — {item.authority + chr(92) if item.authority else ''}{item.principal}",
-            )
-            for item in self.engagement.access
-        )
-        actions.extend(
-            (f"activity:{item.id}", f"Activity {item.id} — {item.summary}")
-            for item in self.engagement.activities
-        )
-        actions.extend(
-            (f"finding:{item.id}", f"Finding {item.id} — {item.title}")
-            for item in self.engagement.findings
-        )
-        actions.extend(
-            (f"attack_path:{item.id}", f"Attack Path {item.id} — {item.name}")
-            for item in self.engagement.attack_paths
-        )
-        if not actions:
-            self.app.show_error("No engagement records have been created")
+        self.action_tab("records")
+
+    def edit_selected_record(self) -> None:
+        selected = self.query_one(RecordsPane).selected_record()
+        if selected is None:
+            self.app.show_error("No engagement record is selected")
             return
+        self._edit_record(*selected)
+
+    def records_actions(self) -> None:
+        selected = self.query_one(RecordsPane).selected_record()
+        actions = [
+            ("activity", "Record activity"),
+            ("cleanup", "Record cleanup item"),
+            ("attack_path", "Build confirmed attack path"),
+        ]
+        if selected:
+            actions[:0] = [("edit", "Edit record"), ("delete", "Delete record")]
+            if selected[0] == "cleanup":
+                item = self._record(*selected)
+                if not item.removed_at:
+                    actions.insert(2, ("removed", "Mark cleanup item removed"))
         self.app.push_screen(
-            ActionMenu("Manage Engagement Records", actions), self._record_actions
+            ActionMenu("Records", actions),
+            lambda action: self._records_action(selected, action),
         )
 
-    def _record_actions(self, key: str | None) -> None:
-        if not key:
+    def _records_action(
+        self, selected: tuple[str, str] | None, action: str | None
+    ) -> None:
+        if not action:
             return
-        kind, record_id = key.split(":", 1)
-        self.app.push_screen(
-            ActionMenu(
-                f"{kind.replace('_', ' ').title()} {record_id}",
-                [("edit", "Edit record"), ("delete", "Delete record")],
-            ),
-            lambda action: self._record_action(kind, record_id, action),
-        )
+        if action in {"activity", "cleanup", "attack_path"}:
+            if action == "cleanup":
+                self.record_cleanup()
+                return
+            self.run_operator_command(action)
+        elif action == "removed" and selected:
+            self._mark_cleanup_removed(selected[1])
+        elif selected:
+            self._record_action(*selected, action)
+
+    def _mark_cleanup_removed(self, item_id: str) -> None:
+        try:
+            self.app.workspace.mark_cleanup_removed(
+                self.record.root, self.engagement, item_id
+            )
+            self.refresh_all()
+        except (TacmuxError, OSError) as exc:
+            self.app.show_error(str(exc))
 
     def _record_action(self, kind: str, record_id: str, action: str | None) -> None:
         if action == "edit":
@@ -1079,12 +1601,13 @@ class MainScreen(Screen):
 
     def _record(
         self, kind: str, record_id: str
-    ) -> AccessRecord | Activity | Finding | AttackPath:
+    ) -> AccessRecord | Activity | Finding | AttackPath | CleanupItem:
         collections = {
             "access": self.engagement.access,
             "activity": self.engagement.activities,
             "finding": self.engagement.findings,
             "attack_path": self.engagement.attack_paths,
+            "cleanup": self.engagement.cleanup,
         }
         record = next(
             (item for item in collections.get(kind, []) if item.id == record_id), None
@@ -1103,6 +1626,8 @@ class MainScreen(Screen):
                 form = ActivityForm(self.engagement, activity=record)
             elif kind == "finding":
                 form = FindingForm(self.engagement, finding=record)
+            elif kind == "cleanup":
+                form = CleanupForm(self.engagement, item=record)
             else:
                 form = AttackPathForm(self.engagement, path=record)
             self.app.push_screen(
@@ -1187,10 +1712,11 @@ class MainScreen(Screen):
         required = f"DELETE {target.display_name}"
         message = (
             f"This permanently deletes {target.display_name}'s complete target directory. "
-            "It is only allowed when no scope, access, activity, or finding references remain."
+            "It is only allowed when no scope, access, activity, finding, attack-path, "
+            "or cleanup references remain."
         )
         self.app.push_screen(
-            ConfirmModal("Permanently Delete Mistaken Target", message, required),
+            ConfirmModal("Delete Target", message, required),
             lambda confirmed: self._delete_target(target.id) if confirmed else None,
         )
 
@@ -1204,14 +1730,18 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
 
     def action_scan(self) -> None:
-        self.app.push_screen(ScanForm(self.engagement), self._start_scan)
+        try:
+            self._require_active()
+            self.app.push_screen(ScanForm(self.engagement), self._start_scan)
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
 
     def action_discovery(self) -> None:
         self.app.push_screen(
             ActionMenu(
                 "Host Discovery",
                 [
-                    ("scan", "Run detached Nmap host identification"),
+                    ("scan", "Run Nmap host discovery (detached)"),
                     ("import_discovery", "Import XML or pasted hosts"),
                     ("import_completed", "Review a completed detached scan"),
                 ],
@@ -1219,10 +1749,17 @@ class MainScreen(Screen):
             lambda action: self.run_operator_command(action) if action else None,
         )
 
-    def _start_scan(self, scope_ids: list[str] | None) -> None:
+    def _start_scan(
+        self, scope_ids: list[str] | None, *, window_checked: bool = False
+    ) -> None:
         if not scope_ids:
             return
         try:
+            self._require_active()
+            if not window_checked and not self._confirm_window(
+                lambda: self._start_scan(scope_ids, window_checked=True)
+            ):
+                return
             job = self.app.jobs.create(self.record.root, self.engagement, scope_ids)
             self.app.notify(f"Discovery {job['id']} started in detached mode")
             self.action_tab("scope")
@@ -1262,8 +1799,14 @@ class MainScreen(Screen):
             return
         jobs = self.app.jobs.list(self.record.root)
         job = next((item for item in jobs if str(item.get("id")) == job_id), None)
-        if job is None or job.get("state") != "succeeded":
-            self.app.show_error("Only a successful discovery job can be imported")
+        if (
+            job is None
+            or job.get("state") != "succeeded"
+            or job.get("imported_at")
+        ):
+            self.app.show_error(
+                "Only a successful, not-yet-imported discovery job can be imported"
+            )
             return
         self._open_job_import([job], job_id)
 
@@ -1285,7 +1828,7 @@ class MainScreen(Screen):
             self.app.show_error("The selected discovery job no longer exists")
             return
         actions = []
-        if job.get("state") == "succeeded":
+        if job.get("state") == "succeeded" and not job.get("imported_at"):
             actions.append(("import", "Review and import results"))
         if job.get("state") in {"queued", "running"}:
             actions.append(("cancel", "Cancel detached scan"))
@@ -1331,11 +1874,32 @@ class MainScreen(Screen):
         if value is None:
             return
         try:
-            candidates = (
-                parse_nmap_xml(Path(value["xml_path"]).expanduser())
-                if value["xml_path"]
-                else parse_host_lines(value["pasted"])
-            )
+            self.pending_service_copy = None
+            if value["xml_path"]:
+                source_path = Path(value["xml_path"]).expanduser().resolve(strict=True)
+                try:
+                    source_reference = str(
+                        source_path.relative_to(self.record.root.resolve(strict=True))
+                    )
+                    external_source = False
+                except ValueError:
+                    filename = safe_filename(source_path.name, "nmap.xml")
+                    source_reference = (
+                        ".tacmux/imports/"
+                        f"{utc_now().replace(':', '').replace('-', '')}-"
+                        f"{uuid4().hex[:6]}-{filename}"
+                    )
+                    external_source = True
+                candidates = parse_nmap_xml(
+                    source_path, source=source_reference
+                )
+                if external_source and any(item.services for item in candidates):
+                    self.pending_service_copy = (
+                        source_path,
+                        self.record.root / source_reference,
+                    )
+            else:
+                candidates = parse_host_lines(value["pasted"])
             decisions = reconcile_candidates(
                 self.engagement, candidates, allowed_scope_ids=set(value["scope_ids"])
             )
@@ -1357,30 +1921,66 @@ class MainScreen(Screen):
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
-    def _commit_import(self, value: tuple[list, bool, set[str]] | None) -> None:
+    def _commit_import(
+        self,
+        value: tuple[list, bool, set[str]] | None,
+        *,
+        window_checked: bool = False,
+    ) -> None:
         if value is None:
             return
         decisions, create_sessions, allowed_scope_ids = value
         try:
+            self._require_active()
+            if create_sessions and not window_checked and not self._confirm_window(
+                lambda: self._commit_import(value, window_checked=True)
+            ):
+                return
             targets = apply_reconciliation(
                 self.app.workspace,
                 self.record.root,
                 self.engagement,
                 decisions,
                 allowed_scope_ids=allowed_scope_ids,
+                source_copy=self.pending_service_copy,
             )
-            if self.pending_job_id:
-                self.app.jobs.mark_imported(self.record.root, self.pending_job_id)
-                self.pending_job_id = ""
-            if create_sessions:
-                self.app.tmux.start_targets_detached(
-                    self.record.root, self.engagement, targets
-                )
-            self.app.notify(f"Accepted {len(targets)} discovery result(s)")
-            self.refresh_all()
-            self.action_tab("targets")
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
+            return
+
+        job_id = self.pending_job_id
+        self.pending_job_id = ""
+        self.pending_service_copy = None
+        warnings: list[str] = []
+        if job_id:
+            try:
+                self.app.jobs.mark_imported(self.record.root, job_id)
+            except (TacmuxError, OSError) as exc:
+                warnings.append(
+                    f"job {job_id} could not be marked imported ({exc}); "
+                    "its records are already committed and should not be re-imported"
+                )
+        if create_sessions:
+            failed_sessions: list[str] = []
+            for target in targets:
+                try:
+                    self.app.tmux.start_target(
+                        self.record.root, self.engagement, target
+                    )
+                except (TacmuxError, OSError) as exc:
+                    failed_sessions.append(f"{target.display_name}: {exc}")
+            if failed_sessions:
+                warnings.append(
+                    "sessions not started for " + "; ".join(failed_sessions)
+                )
+        self.refresh_all()
+        self.action_tab("targets")
+        count = len(targets)
+        message = f"Accepted {count} discovery {'result' if count == 1 else 'results'}"
+        if warnings:
+            self.app.notify(message + "; " + "; ".join(warnings), severity="warning")
+        else:
+            self.app.notify(message)
 
     def edit_selected_document(self) -> None:
         documents = self.query_one(DocumentsPane)
@@ -1438,6 +2038,36 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
 
     def action_restore(self) -> None:
+        self.restore_options = _cockpit_archives(
+            self.app.settings, self.engagement.id
+        )
+        if not self.restore_options:
+            self._prompt_restore_path()
+            return
+        self.app.push_screen(
+            ActionMenu(
+                "Restore Verified Archive",
+                [
+                    (str(index), str(path))
+                    for index, path in enumerate(self.restore_options)
+                ]
+                + [("path", "Enter a path…")],
+            ),
+            self._restore_choice,
+        )
+
+    def _restore_choice(self, value: str | None) -> None:
+        if value == "path":
+            self._prompt_restore_path()
+        elif value is not None:
+            try:
+                path = self.restore_options[int(value)]
+            except (IndexError, ValueError):
+                self.app.show_error("The selected archive is no longer available")
+            else:
+                self._restore(str(path))
+
+    def _prompt_restore_path(self) -> None:
         self.app.push_screen(
             PromptModal("Restore Verified Archive", "Path to .tar.gz archive"),
             self._restore,
@@ -1479,19 +2109,22 @@ class MainScreen(Screen):
 
 
 class TacmuxApp(App[LaunchIntent | None]):
-    BINDINGS: ClassVar[list[Binding]] = [Binding("t", "change_theme", "Theme")]
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("t", "change_theme", "Theme", show=False)
+    ]
     CSS = """
     Screen { background: $background; }
     #picker-body { padding: 1 2; }
     #picker-title, #engagement-banner { height: 3; padding: 1 2; text-style: bold; color: $accent; }
     #picker-hint { height: 2; color: $text-muted; }
-    #engagement-filter, #target-filter { margin: 0 2; }
+    #engagement-filter, #target-filter { display: none; margin: 0 2; }
     #target-layout, #documents-layout { height: 1fr; }
     #target-table { width: 62%; }
     #target-detail { width: 38%; padding: 1 2; border-left: solid $panel; overflow-y: auto; }
     ScopeDiscoveryPane { height: 1fr; }
     #scope-table { height: 44%; }
     #jobs-table { height: 36%; }
+    #records-table { height: 1fr; }
     .section-title { height: 2; padding-left: 1; text-style: bold; }
     #situation-view { height: 1fr; padding: 1 2; overflow-y: auto; }
     #documents-table { width: 38%; }
@@ -1524,6 +2157,10 @@ class TacmuxApp(App[LaunchIntent | None]):
         for theme_name in tuple(self.available_themes):
             if theme_name not in CURATED_THEME_NAMES:
                 self.unregister_theme(theme_name)
+
+    def notify(self, message: str, *args, **kwargs) -> None:
+        kwargs.setdefault("markup", False)
+        super().notify(str(message), *args, **kwargs)
 
     def on_mount(self) -> None:
         self.workspace.initialize()
@@ -1608,10 +2245,30 @@ class TacmuxApp(App[LaunchIntent | None]):
             )
         return record
 
+    def refresh_runtime_sitrep(
+        self,
+        record: EngagementRecord,
+        *,
+        live_target_ids: set[str] | None = None,
+    ) -> int:
+        live = (
+            self.tmux.live_target_ids(record.engagement)
+            if live_target_ids is None
+            else live_target_ids
+        )
+        jobs = self.jobs.list(record.root)
+        return self.workspace.refresh_sitrep(
+            record.root,
+            record.engagement,
+            live_target_ids=live,
+            jobs=jobs,
+        )
+
     def archive_engagement(self, engagement_id: str) -> Path:
         record = self.require_idle_engagement(
             engagement_id, "archiving the engagement"
         )
+        self.refresh_runtime_sitrep(record, live_target_ids=set())
         archive, _ = create_archive(
             record.root,
             self.settings.archive_dir,
@@ -1622,7 +2279,7 @@ class TacmuxApp(App[LaunchIntent | None]):
         return archive
 
     def show_error(self, message: str) -> None:
-        self.notify(message, title="TACMUX", severity="error", timeout=8)
+        self.notify(sentence(message), title="TACMUX", severity="error", timeout=8)
 
     def edit_file(self, path: Path) -> None:
         try:

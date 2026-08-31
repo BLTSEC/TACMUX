@@ -60,7 +60,13 @@ settings = load_settings(); workspace = Workspace(settings)
 record = workspace.create_engagement("ACME", "Integration", AssessmentType.BOTH)
 scope = record.engagement.add_scope("LAN", ScopeGroup.INTERNAL, "10.20.0.0/24")
 workspace.save(record.root, record.engagement)
-target = workspace.create_target(record.root, record.engagement, "host20", addresses=[TargetAddress("10.20.0.20", scope.id)], primary_endpoint="10.20.0.20")
+target = workspace.create_target(
+    record.root,
+    record.engagement,
+    "host20",
+    addresses=[TargetAddress("10.20.0.20", scope.id)],
+    primary_endpoint="10.20.0.20",
+)
 root = Path(os.environ["TEST_ROOT"])
 (root / "engagement-id").write_text(record.engagement.id)
 (root / "target-id").write_text(target.id)
@@ -107,13 +113,17 @@ scrollback_logs=("$target_root"/logs/*/scrollback_*.log(N))
 rg -q TACMUX_V2_MARKER "$scrollback_logs[1]" || \
     fail "scrollback evidence did not contain pane history" || exit 1
 
-printf 'clipboard-v2' | tacmux _internal clip
+printf 'clipboard-v2' | tacmux clip
 [[ "$(tmux show-buffer)" == clipboard-v2 ]] || fail "clipboard buffer mismatch" || exit 1
 
 tmux new-session -d -s plain -c "$TEST_ROOT"
+sleep 0.2
+[[ "$(tmux display-message -t "=plain:" -p "#{pane_pipe}")" == 0 ]] || \
+    fail "ordinary session was logged automatically" || exit 1
+tacmux _internal log force '=plain:' fallback || exit 1
 wait_for '[[ "$(tmux display-message -t "=plain:" -p "#{pane_pipe}")" == 1 ]]' || \
-    fail "ordinary session did not use fallback logging" || exit 1
+    fail "explicit fallback logging did not start" || exit 1
 plain_log=$(tmux show-option -p -t '=plain:' -qv @tacmux_log_file)
 [[ "$plain_log" == "$TEST_ROOT/logs"/* ]] || fail "fallback log path was incorrect" || exit 1
 
-print -- '[PASS] v2 session context, continuous logging, scrollback, and clipboard'
+print -- '[PASS] v2 session context, bounded logging, scrollback, and clipboard'

@@ -46,6 +46,7 @@ class Settings:
     include_mermaid: bool = True
     nocap_enabled: bool = False
     session_prefix: str = "tacmux-"
+    log_outside_tacmux: bool = False
 
     @property
     def editor_argv(self) -> list[str]:
@@ -139,4 +140,5 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         include_mermaid=_boolean(behavior, "include_mermaid", True),
         nocap_enabled=_boolean(nocap, "enabled", False),
         session_prefix=prefix,
+        log_outside_tacmux=_boolean(behavior, "log_outside_tacmux", False),
     )

@@ -300,31 +300,35 @@ def restore_target_archive(
         or archived_target.directory != context["source_name"]
     ):
         raise ValidationError("target archive metadata does not match archive context")
-    existing_target = next(
-        (item for item in engagement.targets if item.id == archived_target.id), None
-    )
-    if existing_target is not None and existing_target != archived_target:
-        raise ValidationError(
-            "target archive metadata does not match the existing target"
-        )
-    if existing_target is None:
-        snapshot = deepcopy(engagement)
-        engagement.targets.append(archived_target)
+    snapshot = deepcopy(engagement)
+    restored: Path | None = None
+    with workspace.lock(engagement_root):
         try:
-            engagement.validate()
-        finally:
-            restore_engagement_state(engagement, snapshot)
-
-    restored = restore_archive(archive, engagement_root / "targets")
-    if existing_target is None:
-        snapshot = deepcopy(engagement)
-        engagement.targets.append(archived_target)
-        try:
-            workspace.save(engagement_root, engagement)
+            workspace._assert_current_revision(engagement_root, engagement)
+            existing_target = next(
+                (
+                    item
+                    for item in engagement.targets
+                    if item.id == archived_target.id
+                ),
+                None,
+            )
+            if existing_target is not None and existing_target != archived_target:
+                raise ValidationError(
+                    "target archive metadata does not match the existing target"
+                )
+            if existing_target is None:
+                engagement.targets.append(archived_target)
+                engagement.validate()
+            restored = restore_archive(archive, engagement_root / "targets")
+            if existing_target is None:
+                workspace.save(engagement_root, engagement, True)
         except BaseException:
             restore_engagement_state(engagement, snapshot)
-            shutil.rmtree(restored, ignore_errors=True)
+            if restored is not None:
+                shutil.rmtree(restored, ignore_errors=True)
             raise
+    assert restored is not None
     return restored
 
 

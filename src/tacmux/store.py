@@ -24,17 +24,25 @@ from .model import (
     Activity,
     ActivityResult,
     AssessmentType,
+    Authorization,
     AttackPath,
     AttackPathStep,
+    CleanupItem,
+    CleanupKind,
     Engagement,
+    EngagementStatus,
     Finding,
     FindingState,
     ScopeEntry,
     ScopeAvailability,
     ScopeGroup,
+    ScopeKind,
+    Service,
     Severity,
     Target,
     TargetAddress,
+    classify_scope,
+    utc_now,
 )
 from .render import render_activity_markdown, render_attack_path_markdown, render_sitrep
 
@@ -97,6 +105,35 @@ def write_private_text(path: Path, text: str) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        os.chmod(path, 0o600)
+        _fsync_directory(path.parent)
+    except BaseException:
+        with suppress(OSError):
+            os.close(descriptor)
+        with suppress(FileNotFoundError):
+            os.unlink(temporary)
+        raise
+
+
+def write_private_bytes(path: Path, data: bytes, *, replace: bool = True) -> None:
+    """Atomically write private bytes, optionally refusing an existing destination."""
+
+    _private_directory(path.parent)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if replace:
+            os.replace(temporary, path)
+        else:
+            try:
+                os.link(temporary, path)
+            except FileExistsError as exc:
+                raise ConflictError(f"destination already exists: {path}") from exc
+            os.unlink(temporary)
         os.chmod(path, 0o600)
         _fsync_directory(path.parent)
     except BaseException:
@@ -275,7 +312,10 @@ class Workspace:
         assessment_type: AssessmentType,
         *,
         logging_enabled: bool | None = None,
-        initial_scope: Iterable[tuple[str, ScopeGroup, str, ScopeAvailability]] = (),
+        initial_scope: Iterable[
+            tuple[str, ScopeGroup, str, ScopeAvailability]
+            | tuple[str, ScopeGroup, str, ScopeAvailability, list[str]]
+        ] = (),
     ) -> EngagementRecord:
         self.initialize()
         engagement = Engagement.create(
@@ -286,8 +326,15 @@ class Workspace:
             if logging_enabled is None
             else logging_enabled,
         )
-        for label, group, network, availability in initial_scope:
-            engagement.add_scope(label, group, network, availability)
+        for values in initial_scope:
+            label, group, scope_value, availability, *extra = values
+            engagement.add_scope(
+                label,
+                group,
+                scope_value,
+                availability,
+                exclusions=extra[0] if extra else (),
+            )
         directory = f"{engagement.id}-{safe_filename(name, 'engagement')}"
         root = self.settings.workspace / directory
         if root.exists():
@@ -316,13 +363,6 @@ class Workspace:
 
 > Confirm written authorization, scope, rules of engagement, and retention requirements before testing.
 
-## Authorization
-
-- Authorized by:
-- Contract / SOW reference:
-- Testing window (UTC):
-- Emergency contact:
-
 ## Objectives
 
 -
@@ -343,48 +383,60 @@ Created: {engagement.created_at}
 """
         write_private_text(root / "ENGAGEMENT.md", overview)
         write_private_text(
-            root / "notes/payloads.md",
-            "# Payload Log\n\n| UTC | Target | Path | SHA-256 | Cleanup |\n|---|---|---|---|---|\n",
-        )
-        write_private_text(
             root / "findings/README.md",
             "# Findings\n\nFinding narratives are created through TACMUX and edited with `$EDITOR`.\n",
         )
 
-    def save(self, root: Path, engagement: Engagement) -> None:
+    def _assert_current_revision(self, root: Path, engagement: Engagement) -> None:
+        manifest = root / MANIFEST_RELATIVE
+        if manifest.is_file() and self.load(root).revision != engagement.revision:
+            raise ConflictError(
+                "engagement changed in another TACMUX process; refresh and retry"
+            )
+
+    def save(
+        self,
+        root: Path,
+        engagement: Engagement,
+        _lock_held: bool = False,
+    ) -> None:
         if not _contained(self.settings.workspace, root):
             raise SafetyError(f"engagement is outside configured workspace: {root}")
-        engagement.validate()
+        if _lock_held:
+            self._save_locked(root, engagement)
+            return
         with self.lock(root):
-            manifest = root / MANIFEST_RELATIVE
-            if manifest.is_file():
-                current = self.load(root)
-                if current.revision != engagement.revision:
-                    raise ConflictError(
-                        "engagement changed in another TACMUX process; refresh and retry"
-                    )
-            previous_revision = engagement.revision
-            engagement.revision += 1
-            try:
-                write_private_text(
-                    root / "notes/activity.md", render_activity_markdown(engagement)
-                )
-                write_private_text(
-                    root / "notes/attack-path.md",
-                    render_attack_path_markdown(engagement),
-                )
-                write_private_text(
-                    root / "SITREP.md",
-                    render_sitrep(
-                        engagement, include_mermaid=self.settings.include_mermaid
-                    ),
-                )
-                # The manifest is the commit point. Generated documents are recoverable;
-                # a manifest that references missing target files is not.
-                write_private_json(manifest, engagement.to_dict())
-            except BaseException:
-                engagement.revision = previous_revision
-                raise
+            self._save_locked(root, engagement)
+
+    def _save_locked(self, root: Path, engagement: Engagement) -> None:
+        engagement.normalize()
+        engagement.validate()
+        self._assert_current_revision(root, engagement)
+        manifest = root / MANIFEST_RELATIVE
+        previous_revision = engagement.revision
+        engagement.revision += 1
+        try:
+            write_private_text(
+                root / "notes/activity.md", render_activity_markdown(engagement)
+            )
+            write_private_text(
+                root / "notes/attack-path.md",
+                render_attack_path_markdown(engagement),
+            )
+            write_private_text(
+                root / "SITREP.md",
+                render_sitrep(
+                    engagement,
+                    include_mermaid=self.settings.include_mermaid,
+                    warnings=self.missing_evidence(root, engagement),
+                ),
+            )
+            # The manifest is the commit point. Generated documents are recoverable;
+            # a manifest that references missing target files is not.
+            write_private_json(manifest, engagement.to_dict())
+        except BaseException:
+            engagement.revision = previous_revision
+            raise
 
     def _mutate_manifest(
         self,
@@ -394,9 +446,11 @@ Created: {engagement.created_at}
     ) -> MutationResult:
         snapshot = deepcopy(engagement)
         try:
-            result = mutation()
-            self.save(root, engagement)
-            return result
+            with self.lock(root):
+                self._assert_current_revision(root, engagement)
+                result = mutation()
+                self.save(root, engagement, True)
+                return result
         except BaseException:
             restore_engagement_state(engagement, snapshot)
             raise
@@ -410,12 +464,18 @@ Created: {engagement.created_at}
         network: str,
         availability: ScopeAvailability = ScopeAvailability.READY,
         via_target_id: str = "",
+        exclusions: Iterable[str] = (),
     ) -> ScopeEntry:
         return self._mutate_manifest(
             root,
             engagement,
             lambda: engagement.add_scope(
-                label, group, network, availability, via_target_id
+                label,
+                group,
+                network,
+                availability,
+                via_target_id,
+                list(exclusions),
             ),
         )
 
@@ -430,24 +490,65 @@ Created: {engagement.created_at}
         network: str,
         availability: ScopeAvailability,
         via_target_id: str,
+        exclusions: Iterable[str] = (),
     ) -> ScopeEntry:
         def mutate() -> ScopeEntry:
             scope = engagement.scope_by_id(scope_id)
-            scope.label = label
+            kind, stored_network, domain, normalized_exclusions = classify_scope(
+                network, list(exclusions)
+            )
+            scope.label = label.strip() or stored_network or domain
             scope.group = group
-            scope.network = str(ipaddress.ip_network(network, strict=False))
+            scope.kind = kind
+            scope.network = stored_network
+            scope.domain = domain
+            scope.exclusions = normalized_exclusions
             scope.availability = availability
             scope.via_target_id = via_target_id
             if any(
                 item.id != scope.id
                 and item.group == scope.group
-                and item.network == scope.network
+                and item.kind == scope.kind
+                and item.spec == scope.spec
                 for item in engagement.scope
             ):
                 raise ValidationError(
-                    f"scope already exists in {scope.group.value}: {scope.network}"
+                    f"scope already exists in {scope.group.value}: {scope.spec}"
                 )
             return scope
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def update_engagement_details(
+        self,
+        root: Path,
+        engagement: Engagement,
+        *,
+        client: str,
+        name: str,
+        assessment_type: AssessmentType,
+        logging_enabled: bool,
+        authorization: Authorization,
+    ) -> Engagement:
+        def mutate() -> Engagement:
+            engagement.client = client.strip()
+            engagement.name = name.strip()
+            engagement.assessment_type = assessment_type
+            engagement.logging_enabled = logging_enabled
+            engagement.authorization = authorization
+            return engagement
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def set_status(
+        self,
+        root: Path,
+        engagement: Engagement,
+        status: EngagementStatus,
+    ) -> Engagement:
+        def mutate() -> Engagement:
+            engagement.status = status
+            return engagement
 
         return self._mutate_manifest(root, engagement, mutate)
 
@@ -488,10 +589,8 @@ Created: {engagement.created_at}
                     "target address selection is no longer valid"
                 ) from exc
             if target.primary_endpoint == removed.value:
-                target.primary_endpoint = (
-                    target.hostnames[0]
-                    if target.hostnames
-                    else (target.addresses[0].value if target.addresses else "")
+                target.primary_endpoint = self._fallback_primary(
+                    engagement, target
                 )
             return target
 
@@ -514,14 +613,26 @@ Created: {engagement.created_at}
                 target.primary_endpoint in previous
                 and target.primary_endpoint not in target.hostnames
             ):
-                target.primary_endpoint = (
-                    target.hostnames[0]
-                    if target.hostnames
-                    else (target.addresses[0].value if target.addresses else "")
+                target.primary_endpoint = self._fallback_primary(
+                    engagement, target
                 )
             return target
 
         return self._mutate_manifest(root, engagement, mutate)
+
+    @staticmethod
+    def _fallback_primary(engagement: Engagement, target: Target) -> str:
+        if target.addresses:
+            return target.addresses[0].value
+        return next(
+            (
+                hostname
+                for hostname in target.hostnames
+                if not engagement.domain_entries
+                or engagement.hostname_scope(hostname)
+            ),
+            "",
+        )
 
     def set_primary_endpoint(
         self,
@@ -587,6 +698,94 @@ Created: {engagement.created_at}
 
         return self._mutate_manifest(root, engagement, mutate)
 
+    def create_cleanup_item(
+        self,
+        root: Path,
+        engagement: Engagement,
+        *,
+        target_id: str,
+        kind: CleanupKind,
+        location: str,
+        sha256: str = "",
+        note: str = "",
+    ) -> CleanupItem:
+        def mutate() -> CleanupItem:
+            item = CleanupItem(
+                id=engagement.next_id("cleanup", "C"),
+                target_id=target_id,
+                kind=kind,
+                location=location.strip(),
+                sha256=sha256.strip().casefold(),
+                note=note.strip(),
+            )
+            engagement.cleanup.append(item)
+            return item
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def mark_cleanup_removed(
+        self,
+        root: Path,
+        engagement: Engagement,
+        item_id: str,
+    ) -> CleanupItem:
+        def mutate() -> CleanupItem:
+            item = next(
+                (value for value in engagement.cleanup if value.id == item_id), None
+            )
+            if item is None:
+                raise ValidationError(f"unknown cleanup item: {item_id}")
+            if not item.removed_at:
+                item.removed_at = utc_now()
+            return item
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def clear_services(
+        self,
+        root: Path,
+        engagement: Engagement,
+        target_id: str,
+    ) -> Target:
+        def mutate() -> Target:
+            target = engagement.target_by_id(target_id)
+            target.services.clear()
+            return target
+
+        return self._mutate_manifest(root, engagement, mutate)
+
+    def append_note(
+        self,
+        record: EngagementRecord,
+        target: Target | None,
+        text: str,
+    ) -> Path:
+        if not text.strip():
+            raise ValidationError("note text is required")
+        if target is None:
+            path = record.root / "ENGAGEMENT.md"
+            heading = "## Operator Notes"
+        else:
+            path = record.root / "targets" / target.directory / "NOTES.md"
+            heading = "## Notes"
+        if not _contained(record.root, path):
+            raise SafetyError(f"unsafe note path: {path}")
+        with self.lock(record.root):
+            content = path.read_text(encoding="utf-8")
+            if heading not in content:
+                raise ValidationError(f"note file is missing {heading}: {path}")
+            line = f"- {utc_now()} — {text.strip()}\n"
+            prefix, marker, remainder = content.partition(heading)
+            boundary = len(remainder)
+            for token in ("\n## ", "\n---"):
+                index = remainder.find(token)
+                if index >= 0:
+                    boundary = min(boundary, index)
+            notes, suffix = remainder[:boundary], remainder[boundary:]
+            notes = notes.rstrip() + "\n" if notes.strip() else "\n"
+            write_private_text(path, prefix + marker + notes + line + suffix)
+        return path
+
     def create_attack_path(
         self,
         root: Path,
@@ -612,15 +811,16 @@ Created: {engagement.created_at}
         kind: str,
         record_id: str,
         value: dict,
-    ) -> AccessRecord | Activity | Finding | AttackPath:
+    ) -> AccessRecord | Activity | Finding | AttackPath | CleanupItem:
         collections = {
             "access": engagement.access,
             "activity": engagement.activities,
             "finding": engagement.findings,
             "attack_path": engagement.attack_paths,
+            "cleanup": engagement.cleanup,
         }
 
-        def mutate() -> AccessRecord | Activity | Finding | AttackPath:
+        def mutate() -> AccessRecord | Activity | Finding | AttackPath | CleanupItem:
             record = next(
                 (item for item in collections.get(kind, []) if item.id == record_id),
                 None,
@@ -631,6 +831,7 @@ Created: {engagement.created_at}
                 "access": ("principal", "authority", "method", "level", "evidence"),
                 "activity": ("summary", "result", "target_id", "evidence"),
                 "finding": ("title", "severity", "state", "target_ids", "evidence"),
+                "cleanup": ("target_id", "kind", "location", "sha256", "note", "removed_at"),
             }
             if kind == "attack_path":
                 record.name = value["name"]
@@ -649,12 +850,9 @@ Created: {engagement.created_at}
         *,
         live_target_ids: set[str] | None = None,
         jobs: list[dict] | None = None,
-    ) -> None:
+    ) -> int:
         with self.lock(root):
-            if self.load(root).revision != engagement.revision:
-                raise ConflictError(
-                    "engagement changed in another TACMUX process; refresh and retry"
-                )
+            self._assert_current_revision(root, engagement)
             write_private_text(
                 root / "SITREP.md",
                 render_sitrep(
@@ -662,8 +860,39 @@ Created: {engagement.created_at}
                     live_sessions=live_target_ids or set(),
                     jobs=jobs or [],
                     include_mermaid=self.settings.include_mermaid,
+                    warnings=self.missing_evidence(root, engagement),
                 ),
             )
+            return (root / MANIFEST_RELATIVE).stat().st_mtime_ns
+
+    def missing_evidence(self, root: Path, engagement: Engagement) -> list[str]:
+        references: list[tuple[str, str, str]] = []
+        references.extend(
+            ("access", item.id, item.evidence)
+            for item in engagement.access
+            if item.evidence
+        )
+        references.extend(
+            ("activity", item.id, item.evidence)
+            for item in engagement.activities
+            if item.evidence
+        )
+        references.extend(
+            ("finding", item.id, reference)
+            for item in engagement.findings
+            for reference in item.evidence
+        )
+        references.extend(
+            ("service", target.id, service.source)
+            for target in engagement.targets
+            for service in target.services
+            if service.source
+        )
+        return [
+            f"{kind} {item_id} references missing evidence: {reference}"
+            for kind, item_id, reference in references
+            if not (root / reference).is_file()
+        ]
 
     def create_target(
         self,
@@ -674,19 +903,23 @@ Created: {engagement.created_at}
         addresses: list[TargetAddress] | None = None,
         hostnames: list[str] | None = None,
         primary_endpoint: str = "",
+        services: list[Service] | None = None,
     ) -> Target:
         snapshot = deepcopy(engagement)
         target: Target | None = None
         try:
-            target = self.stage_target(
-                root,
-                engagement,
-                display_name,
-                addresses=addresses,
-                hostnames=hostnames,
-                primary_endpoint=primary_endpoint,
-            )
-            self.save(root, engagement)
+            with self.lock(root):
+                self._assert_current_revision(root, engagement)
+                target = self.stage_target(
+                    root,
+                    engagement,
+                    display_name,
+                    addresses=addresses,
+                    hostnames=hostnames,
+                    primary_endpoint=primary_endpoint,
+                    services=services,
+                )
+                self.save(root, engagement, True)
         except BaseException:
             restore_engagement_state(engagement, snapshot)
             if target is not None:
@@ -704,6 +937,7 @@ Created: {engagement.created_at}
         addresses: list[TargetAddress] | None = None,
         hostnames: list[str] | None = None,
         primary_endpoint: str = "",
+        services: list[Service] | None = None,
     ) -> Target:
         """Prepare one target for a caller that will commit the engagement once."""
 
@@ -718,6 +952,7 @@ Created: {engagement.created_at}
             addresses=list(addresses or []),
             hostnames=sorted(set(hostnames or [])),
             primary_endpoint=primary_endpoint.strip(),
+            services=list(services or []),
         )
         target_root = root / "targets" / directory
         if not _contained(root, target_root) or target_root.exists():
@@ -726,11 +961,15 @@ Created: {engagement.created_at}
         try:
             for phase in TARGET_PHASES:
                 _private_directory(target_root / phase)
-            write_private_text(
-                target_root / "NOTES.md",
-                f"# {target.display_name}\n\n- Target ID: `{target.id}`\n- Created: {target.created_at}\n\n## Notes\n\n-\n",
+            note_text = (
+                f"# {target.display_name}\n\n"
+                f"- Target ID: `{target.id}`\n"
+                f"- Created: {target.created_at}\n\n"
+                "## Notes\n\n-\n"
             )
+            write_private_text(target_root / "NOTES.md", note_text)
             engagement.targets.append(target)
+            engagement.normalize()
             engagement.validate()
         except BaseException:
             engagement.targets = [
@@ -742,25 +981,32 @@ Created: {engagement.created_at}
 
     def rename_target(
         self, root: Path, engagement: Engagement, target_id: str, name: str
-    ) -> None:
+    ) -> str:
         if not name.strip():
             raise ValidationError("target display name is required")
-
-        def mutate() -> Target:
-            target = engagement.target_by_id(target_id)
-            target.display_name = name.strip()
-            return target
-
-        target = self._mutate_manifest(root, engagement, mutate)
-        notes = root / "targets" / target.directory / "NOTES.md"
+        snapshot = deepcopy(engagement)
         try:
-            content = notes.read_text(encoding="utf-8")
-            _, separator, remainder = content.partition("\n")
-            write_private_text(notes, f"# {target.display_name}{separator}{remainder}")
-        except OSError:
-            # Target identity is durable in the manifest; a missing editable note is
-            # surfaced by the document browser and must not roll back the rename.
-            pass
+            with self.lock(root):
+                self._assert_current_revision(root, engagement)
+                target = engagement.target_by_id(target_id)
+                target.display_name = name.strip()
+                self.save(root, engagement, True)
+                notes = root / "targets" / target.directory / "NOTES.md"
+                try:
+                    content = notes.read_text(encoding="utf-8")
+                    _, separator, remainder = content.partition("\n")
+                    write_private_text(
+                        notes, f"# {target.display_name}{separator}{remainder}"
+                    )
+                except (OSError, UnicodeError) as exc:
+                    return (
+                        "Target renamed, but its NOTES.md heading could not be "
+                        f"updated: {exc}"
+                    )
+        except BaseException:
+            restore_engagement_state(engagement, snapshot)
+            raise
+        return ""
 
     def create_finding(
         self,
@@ -774,44 +1020,61 @@ Created: {engagement.created_at}
         evidence: list[str] | None = None,
     ) -> Finding:
         snapshot = deepcopy(engagement)
-        finding_id = engagement.next_id("finding", "F")
-        document = f"findings/{finding_id}.md"
-        finding = Finding(
-            id=finding_id,
-            title=title.strip(),
-            severity=severity,
-            state=state,
-            target_ids=target_ids,
-            evidence=list(evidence or []),
-            document=document,
-        )
-        engagement.findings.append(finding)
-        finding_path = root / document
+        finding: Finding | None = None
+        finding_path: Path | None = None
+        document_created = False
         try:
-            engagement.validate()
-            write_private_text(
-                finding_path,
-                f"# {title.strip()}\n\n"
-                f"- **ID:** `{finding_id}`\n"
-                f"- **Severity:** {severity.value}\n"
-                f"- **State:** {state.value}\n\n"
-                "## Summary\n\n\n"
-                "## Evidence\n\n\n"
-                "## Impact\n\n\n"
-                "## Recommendation\n\n\n",
-            )
-            self.save(root, engagement)
+            with self.lock(root):
+                self._assert_current_revision(root, engagement)
+                finding_id = engagement.next_id("finding", "F")
+                document = f"findings/{finding_id}.md"
+                finding = Finding(
+                    id=finding_id,
+                    title=title.strip(),
+                    severity=severity,
+                    state=state,
+                    target_ids=target_ids,
+                    evidence=list(evidence or []),
+                    document=document,
+                )
+                engagement.findings.append(finding)
+                finding_path = root / document
+                engagement.validate()
+                if finding_path.exists():
+                    raise ConflictError(
+                        f"finding document already exists: {finding_path}"
+                    )
+                write_private_text(
+                    finding_path,
+                    f"# {title.strip()}\n\n"
+                    f"- **ID:** `{finding_id}`\n"
+                    f"- **Severity:** {severity.value}\n"
+                    f"- **State:** {state.value}\n\n"
+                    "## Summary\n\n\n"
+                    "## Evidence\n\n\n"
+                    "## Impact\n\n\n"
+                    "## Recommendation\n\n\n",
+                )
+                document_created = True
+                self.save(root, engagement, True)
         except BaseException:
             restore_engagement_state(engagement, snapshot)
-            finding_path.unlink(missing_ok=True)
+            if finding_path is not None and document_created:
+                finding_path.unlink(missing_ok=True)
             raise
+        assert finding is not None
         return finding
 
     def sync_finding_document(self, root: Path, finding: Finding) -> None:
         path = root / finding.document
         if not _contained(root, path) or not path.is_file():
             raise SafetyError(f"finding document is missing or unsafe: {path}")
-        content = path.read_text(encoding="utf-8")
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            raise ValidationError(
+                f"finding document is not valid UTF-8: {finding.document}"
+            ) from exc
         marker = "## Summary"
         _, separator, narrative = content.partition(marker)
         if not separator:
@@ -827,33 +1090,40 @@ Created: {engagement.created_at}
         write_private_text(path, header + marker + narrative)
 
     def delete_target(self, root: Path, engagement: Engagement, target_id: str) -> None:
-        target = engagement.target_by_id(target_id)
-        references = engagement.target_references(target_id)
-        if references:
-            raise ConflictError(
-                "target is referenced by "
-                + ", ".join(references)
-                + "; remove those records first"
+        staging: Path | None = None
+        target_root: Path | None = None
+        snapshot = deepcopy(engagement)
+        with self.lock(root):
+            self._assert_current_revision(root, engagement)
+            target = engagement.target_by_id(target_id)
+            references = engagement.target_references(target_id)
+            if references:
+                raise ConflictError(
+                    "target is referenced by "
+                    + ", ".join(references)
+                    + "; remove those records first"
+                )
+            target_root = root / "targets" / target.directory
+            if not _contained(root / "targets", target_root) or not target_root.is_dir():
+                raise SafetyError(
+                    f"refusing to delete unsafe or missing target path: {target_root}"
+                )
+            staging = root / ".tacmux/deleting" / (
+                f"{target.id}-{os.getpid()}-{secrets.token_hex(4)}"
             )
-        target_root = root / "targets" / target.directory
-        if not _contained(root / "targets", target_root) or not target_root.is_dir():
-            raise SafetyError(
-                f"refusing to delete unsafe or missing target path: {target_root}"
-            )
-        staging = root / ".tacmux/deleting" / f"{target.id}-{os.getpid()}"
-        if staging.exists():
-            raise ConflictError(f"delete staging path already exists: {staging}")
-        target_root.rename(staging)
-        original_targets = engagement.targets
-        engagement.targets = [
-            item for item in engagement.targets if item.id != target_id
-        ]
-        try:
-            self.save(root, engagement)
-        except BaseException:
-            engagement.targets = original_targets
-            staging.rename(target_root)
-            raise
+            if staging.exists():
+                raise ConflictError(f"delete staging path already exists: {staging}")
+            target_root.rename(staging)
+            engagement.targets = [
+                item for item in engagement.targets if item.id != target_id
+            ]
+            try:
+                self.save(root, engagement, True)
+            except BaseException:
+                restore_engagement_state(engagement, snapshot)
+                staging.rename(target_root)
+                raise
+        assert staging is not None
         shutil.rmtree(staging)
 
     def delete_scope(self, root: Path, engagement: Engagement, scope_id: str) -> None:
@@ -876,41 +1146,49 @@ Created: {engagement.created_at}
     def delete_record(
         self, root: Path, engagement: Engagement, kind: str, record_id: str
     ) -> None:
-        collections = {
-            "access": engagement.access,
-            "activity": engagement.activities,
-            "finding": engagement.findings,
-            "attack_path": engagement.attack_paths,
-        }
-        if kind not in collections:
-            raise ValidationError(f"unknown record type: {kind}")
-        collection = collections[kind]
-        record = next((item for item in collection if item.id == record_id), None)
-        if record is None:
-            raise ValidationError(f"unknown {kind} record: {record_id}")
-        references = [
-            path.id
-            for path in engagement.attack_paths
-            if kind != "attack_path"
-            and any(
-                step.ref_type == kind and step.ref_id == record_id
-                for step in path.steps
-            )
-        ]
-        if references:
-            raise ConflictError(
-                f"{kind} {record_id} is used by attack path " + ", ".join(references)
-            )
-
-        staged_document = (
-            self._stage_finding_document(root, record) if kind == "finding" else None
-        )
-        original = list(collection)
-        collection[:] = [item for item in collection if item.id != record_id]
+        snapshot = deepcopy(engagement)
+        staged_document: tuple[Path, Path] | None = None
         try:
-            self.save(root, engagement)
+            with self.lock(root):
+                self._assert_current_revision(root, engagement)
+                collections = {
+                    "access": engagement.access,
+                    "activity": engagement.activities,
+                    "finding": engagement.findings,
+                    "attack_path": engagement.attack_paths,
+                    "cleanup": engagement.cleanup,
+                }
+                if kind not in collections:
+                    raise ValidationError(f"unknown record type: {kind}")
+                collection = collections[kind]
+                record = next(
+                    (item for item in collection if item.id == record_id), None
+                )
+                if record is None:
+                    raise ValidationError(f"unknown {kind} record: {record_id}")
+                references = [
+                    path.id
+                    for path in engagement.attack_paths
+                    if kind != "attack_path"
+                    and any(
+                        step.ref_type == kind and step.ref_id == record_id
+                        for step in path.steps
+                    )
+                ]
+                if references:
+                    raise ConflictError(
+                        f"{kind} {record_id} is used by attack path "
+                        + ", ".join(references)
+                    )
+                staged_document = (
+                    self._stage_finding_document(root, record)
+                    if kind == "finding"
+                    else None
+                )
+                collection[:] = [item for item in collection if item.id != record_id]
+                self.save(root, engagement, True)
         except BaseException:
-            collection[:] = original
+            restore_engagement_state(engagement, snapshot)
             if staged_document is not None:
                 staged_document[1].rename(staged_document[0])
             raise
@@ -924,7 +1202,9 @@ Created: {engagement.created_at}
         document = root / finding.document
         if not document.is_file() or not _contained(root, document):
             return None
-        staging = root / ".tacmux/deleting" / f"{finding.id}-{os.getpid()}.md"
+        staging = root / ".tacmux/deleting" / (
+            f"{finding.id}-{os.getpid()}-{secrets.token_hex(4)}.md"
+        )
         if staging.exists():
             raise ConflictError(f"delete staging path already exists: {staging}")
         document.rename(staging)

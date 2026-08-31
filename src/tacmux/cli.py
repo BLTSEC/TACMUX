@@ -11,10 +11,13 @@ from typing import Sequence
 from . import __version__
 from .archive import verify_archive
 from .config import load_settings
-from .discovery import run_job
-from .errors import TacmuxError
+from .context import resolve
+from .discovery import DiscoveryJobs, run_job
+from .errors import ConflictError, TacmuxError
 from .hooks import LogController, clipboard_copy, status_segment
-from .store import Workspace
+from .model import ActivityResult, EngagementStatus
+from .render import render_sitrep
+from .store import EngagementRecord, Workspace
 from .tmux import TmuxService
 
 
@@ -23,9 +26,21 @@ USAGE = """TACMUX — operator-first engagement workspaces for tmux
 Usage:
   tacmux                         Open the interactive operator cockpit
   tacmux health                  Check configuration and external tools
+  tacmux note TEXT...            Append a note in the current TACMUX session
+  tacmux activity RESULT [--evidence PATH] TEXT...
+                                 Record confirmed, failed, or no-result activity
+  tacmux sitrep                  Print the current engagement SITREP
+  tacmux clip                    Copy stdin through the trusted clipboard path
   tacmux archive verify FILE     Verify an archive and every member hash
   tacmux version                 Print the version
 """
+
+
+def _require_active(record: EngagementRecord) -> None:
+    if record.engagement.status == EngagementStatus.CLOSED:
+        raise ConflictError(
+            "engagement is closed; reopen it from the engagement picker"
+        )
 
 
 def _health() -> int:
@@ -41,12 +56,45 @@ def _health() -> int:
             str(settings.workspace),
         )
     )
-    invalid = Workspace(settings).invalid_engagements()
+    workspace = Workspace(settings)
+    invalid = workspace.invalid_engagements()
+    engagements = workspace.list_engagements()
     checks.append(
         (
             "engagement manifests",
             not invalid,
             "valid" if not invalid else f"{len(invalid)} invalid",
+        )
+    )
+    closed = sum(item.engagement.status.value == "closed" for item in engagements)
+    outside = sum(
+        item.engagement.authorization.window_state() == "outside"
+        for item in engagements
+        if item.engagement.status.value == "active"
+    )
+    checks.append(
+        (
+            "engagement lifecycle",
+            True,
+            f"{closed} closed; {outside} active outside window",
+        )
+    )
+    deleting_roots = [
+        settings.workspace / ".tacmux/deleting",
+        *(record.root / ".tacmux/deleting" for record in engagements),
+    ]
+    staged = sorted(
+        {
+            path
+            for deleting_root in deleting_roots
+            for path in deleting_root.glob("*")
+        }
+    )
+    checks.append(
+        (
+            "delete staging",
+            True,
+            "clear" if not staged else f"{len(staged)} item(s) require manual review",
         )
     )
     checks.append(
@@ -81,10 +129,16 @@ def _health() -> int:
         print(f"[{'ok' if ok else '--'}] {label:22} {detail}")
     for manifest, problem in invalid:
         print(f"     invalid: {manifest}: {problem}")
+    for path in staged:
+        print(f"     staged deletion: {path}")
     print(f"\nConfig: {settings.config_file}")
     return (
         0
-        if all(ok for label, ok, _ in checks if label not in {"Nmap host discovery"})
+        if all(
+            ok
+            for label, ok, _ in checks
+            if label not in {"Nmap host discovery", "editor"}
+        )
         else 1
     )
 
@@ -153,6 +207,68 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args == ["health"]:
             return _health()
+        if args == ["clip"]:
+            settings = load_settings()
+            return clipboard_copy(TmuxService(settings), sys.stdin.buffer.read())
+        if args and args[0] == "note":
+            text = " ".join(args[1:]).strip()
+            if not text:
+                return 2
+            settings = load_settings()
+            record, target = resolve(settings)
+            _require_active(record)
+            Workspace(settings).append_note(record, target, text)
+            return 0
+        if args and args[0] == "activity":
+            if len(args) < 3:
+                return 2
+            result_name = args[1].replace("-", "_")
+            rest = args[2:]
+            evidence = ""
+            if rest[:1] == ["--evidence"]:
+                if len(rest) < 3:
+                    return 2
+                evidence, rest = rest[1], rest[2:]
+            text = " ".join(rest).strip()
+            if not text:
+                return 2
+            settings = load_settings()
+            tmux = TmuxService(settings)
+            record, target = resolve(settings, tmux)
+            _require_active(record)
+            workspace = Workspace(settings)
+            workspace.create_activity(
+                record.root,
+                record.engagement,
+                summary=text,
+                result=ActivityResult(result_name),
+                target_id=target.id if target else "",
+                evidence=evidence,
+            )
+            workspace.refresh_sitrep(
+                record.root,
+                record.engagement,
+                live_target_ids=tmux.live_target_ids(record.engagement),
+                jobs=DiscoveryJobs(settings, tmux, workspace).list(record.root),
+            )
+            return 0
+        if args == ["sitrep"]:
+            settings = load_settings()
+            tmux = TmuxService(settings)
+            record, _ = resolve(settings, tmux)
+            print(
+                render_sitrep(
+                    record.engagement,
+                    live_sessions=tmux.live_target_ids(record.engagement),
+                    jobs=DiscoveryJobs(settings, tmux).list(record.root),
+                    include_mermaid=settings.include_mermaid,
+                    warnings=Workspace(settings).missing_evidence(
+                        record.root, record.engagement
+                    ),
+                ),
+                end="",
+            )
+            return 0
         if len(args) == 3 and args[:2] == ["archive", "verify"]:
             document = verify_archive(Path(args[2]))
             print(f"Verified: {args[2]}")
