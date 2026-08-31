@@ -672,6 +672,7 @@ async def test_outside_window_warns_before_every_session_start_path(
         await pilot.pause()
         main = app.screen
         assert isinstance(main, MainScreen)
+        assert main._status_line([]).plain.startswith("OUTSIDE WINDOW · ")
         actions = [
             main.action_attach,
             main.action_ops,
@@ -692,6 +693,7 @@ async def test_outside_window_warns_before_every_session_start_path(
 async def test_closed_engagement_blocks_operational_entry_points(
     settings, workspace, record, monkeypatch
 ):
+    workspace.create_target(record.root, record.engagement, "review-target")
     workspace.set_status(
         record.root, record.engagement, EngagementStatus.CLOSED
     )
@@ -703,6 +705,32 @@ async def test_closed_engagement_blocks_operational_entry_points(
         await pilot.pause()
         main = app.screen
         assert isinstance(main, MainScreen)
+        assert main._status_line([]).plain.startswith("CLOSED · ")
+        assert all(
+            main.check_action(action, ()) is False
+            for action in ("default_action", "new_target", "discovery")
+        )
+        assert all(
+            not main.operator_command_available(action)
+            for action in MainScreen.ACTIVE_ONLY_COMMANDS
+        )
+        assert main.operator_command_available("export")
+        main.target_actions()
+        await pilot.pause()
+        assert isinstance(app.screen, ActionMenu)
+        menu = app.screen.query_one(OptionList)
+        prompts = {
+            str(menu.get_option_at_index(index).prompt)
+            for index in range(menu.option_count)
+        }
+        assert prompts == {
+            "Edit target notes",
+            "View services",
+            "Archive target",
+        }
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is main
         main.action_new_target()
         main.action_attach()
         main.action_scan()

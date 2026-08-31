@@ -900,9 +900,10 @@ class DiscoveryJobs:
                 "artifacts": ["results.xml"]
                 if selected_profile == ScanProfile.HOSTS
                 else [],
-                "xml_path": str(xml_path),
                 "log_path": str(log_path),
             }
+            if selected_profile == ScanProfile.HOSTS:
+                value["xml_path"] = str(xml_path)
             job_file = job_root / "job.json"
             session = self.tmux.job_session_name(engagement, job_id)
             value["session"] = session

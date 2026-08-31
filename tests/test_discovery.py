@@ -488,6 +488,11 @@ def test_enhanced_job_revalidates_hosts_and_targets_sv_to_discovered_ports(
         profile=ScanProfile.TCP_SERVICES,
         pace=ScanPace.FAST,
     )
+    job_spec = json.loads(
+        (record.root / ".tacmux/jobs" / job["id"] / "job.json").read_text()
+    )
+    assert "xml_path" not in job_spec
+    assert not (record.root / ".tacmux/jobs" / job["id"] / "results.xml").exists()
     calls: list[list[str]] = []
 
     def fake_run(argv, *, stdout, stderr, check):
