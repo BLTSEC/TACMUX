@@ -49,8 +49,14 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
             capture_output=True,
             check=True,
         ).stdout.strip()
-        == "tacmux 2.1.0"
+        == "tacmux 2.2.0"
     )
+    installed_css = list(
+        (home / ".local/share/tacmux/app/.venv/lib").glob(
+            "python*/site-packages/tacmux/tacmux.tcss"
+        )
+    )
+    assert len(installed_css) == 1
     assert "workspace with spaces" in config.read_text()
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
     assert stat.S_IMODE(workspace.stat().st_mode) == 0o700

@@ -7,7 +7,7 @@ import ipaddress
 from pathlib import Path
 import shutil
 import subprocess
-from typing import Callable, ClassVar
+from typing import Callable, ClassVar, Iterable
 from uuid import uuid4
 
 from textual import events, on
@@ -15,13 +15,13 @@ from textual.app import (
     App,
     ComposeResult,
     SuspendNotSupported,
+    SystemCommand,
     get_system_commands_provider,
 )
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.theme import Theme
 from textual.widgets import (
     DataTable,
     Footer,
@@ -100,7 +100,7 @@ from .panes import (
     TargetsPane,
 )
 from .store import EngagementRecord, Workspace, safe_filename
-from .themes import BLTSEC_THEME, CURATED_THEME_NAMES, DEFAULT_THEME
+from .themes import BLTSEC_THEME, DEFAULT_THEME
 from .terminal_output import iter_rendered
 from .tmux import LaunchIntent, TmuxService
 from .ui import plain, sentence
@@ -211,7 +211,11 @@ class EngagementPickerScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="picker-body"):
-            yield Label("Engagements", id="picker-title")
+            yield Label("  ENGAGEMENTS", id="picker-title")
+            yield Static(
+                "Select an authorized workspace or create the next operation.",
+                id="picker-copy",
+            )
             yield Input(
                 placeholder="Filter client, lab, platform, engagement, or type",
                 id="engagement-filter",
@@ -224,6 +228,7 @@ class EngagementPickerScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.app.title = " TACMUX"
         self.app.sub_title = ""
         self.call_after_refresh(self._finish_mount)
 
@@ -255,7 +260,11 @@ class EngagementPickerScreen(Screen):
                 engagement.client,
                 engagement.name,
                 engagement.assessment_type.value.replace("_", " "),
-                engagement.status.value,
+                (
+                    " closed"
+                    if engagement.status == EngagementStatus.CLOSED
+                    else " active"
+                ),
                 str(len(engagement.targets)),
                 str(len(live.get(engagement.id, set()))),
                 key=engagement.id,
@@ -807,20 +816,20 @@ class MainScreen(Screen):
         )
         yield Input(placeholder="Filter targets", id="target-filter")
         with TabbedContent(initial="targets", id="workspace-tabs"):
-            with TabPane("1 Targets", id="targets"):
+            with TabPane("1  Targets", id="targets"):
                 yield TargetsPane(id="target-layout")
-            with TabPane("2 Scope", id="scope"):
+            with TabPane("2  Scope", id="scope"):
                 yield ScopeDiscoveryPane()
-            with TabPane("3 Records", id="records"):
+            with TabPane("3  Records", id="records"):
                 yield RecordsPane()
-            with TabPane("4 Situation", id="situation"):
+            with TabPane("4  Situation", id="situation"):
                 yield SituationPane(id="situation-view")
-            with TabPane("5 Documents", id="documents"):
+            with TabPane("5  Documents", id="documents"):
                 yield DocumentsPane(id="documents-layout")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.app.title = "TACMUX"
+        self.app.title = " TACMUX"
         self.app.sub_title = f"{self.engagement.client}: {self.engagement.name}"
         self.call_after_refresh(self._finish_mount)
         self.set_interval(3.0, self._poll_external_state)
@@ -832,7 +841,7 @@ class MainScreen(Screen):
         self.query_one("#target-table", DataTable).focus()
 
     def on_resize(self, event: events.Resize) -> None:
-        self.set_class(event.size.width < 100, "narrow")
+        self.set_class(event.size.width < 110, "narrow")
 
     def action_tab(self, tab_id: str) -> None:
         self.query_one("#workspace-tabs", TabbedContent).active = tab_id
@@ -872,48 +881,60 @@ class MainScreen(Screen):
         active_jobs = sum(
             item.get("state") in {"queued", "running"} for item in jobs
         )
-        identity = (f"{self.engagement.client} / {self.engagement.name}", "")
+        theme = self.app.current_theme
+        muted = theme.variables["text-muted"]
         state = self.engagement.authorization.window_state()
+        result = Text(no_wrap=True, overflow="ellipsis")
         if self.engagement.status == EngagementStatus.CLOSED:
-            parts: list[tuple[str, str]] = [("CLOSED", "bold red"), identity]
+            result.append("  CLOSED", style=f"bold {theme.error}")
         elif state == "outside":
-            parts = [("OUTSIDE WINDOW", "bold dark_orange"), identity]
+            result.append("  OUTSIDE WINDOW", style=f"bold {theme.warning}")
         else:
-            parts = [identity]
-        parts.extend(
+            result.append("  ACTIVE", style=f"bold {theme.success}")
+        result.append("  /  ", style=muted)
+        result.append(
+            f"{self.engagement.client} / {self.engagement.name}",
+            style=f"bold {theme.foreground}",
+        )
+
+        metrics: list[tuple[str, str]] = []
+        if self.engagement.status != EngagementStatus.CLOSED:
+            if state == "outside":
+                metrics.append((" authorization window", theme.warning))
+            elif self.engagement.authorization.window_end:
+                metrics.append(
+                    (
+                        f" until {self.engagement.authorization.window_end}",
+                        theme.primary,
+                    )
+                )
+            else:
+                metrics.append((" window not set", theme.warning))
+        count = len(self.engagement.targets)
+        metrics.extend(
             [
+                (f" {count} {'target' if count == 1 else 'targets'}", muted),
+                (f" {len(self.live_target_ids)} live", muted),
+                (f" {active_jobs} {'scan' if active_jobs == 1 else 'scans'}", muted),
                 (
-                    f"{len(self.engagement.targets)} "
-                    f"{'target' if len(self.engagement.targets) == 1 else 'targets'}",
-                    "",
-                ),
-                (f"{len(self.live_target_ids)} live", ""),
-                (
-                    f"{active_jobs} "
-                    f"{'job' if active_jobs == 1 else 'jobs'} running",
-                    "",
-                ),
-                (
-                    "logging on"
+                    " logging on"
                     if self.engagement.logging_enabled
-                    else "logging off",
-                    "",
+                    else " logging off",
+                    muted,
                 ),
             ]
         )
         if self.engagement.outstanding_cleanup:
-            parts.append((f"cleanup {len(self.engagement.outstanding_cleanup)}", ""))
-        if self.engagement.status != EngagementStatus.CLOSED and state != "outside":
-            if self.engagement.authorization.window_end:
-                parts.append(
-                    (f"window ends {self.engagement.authorization.window_end}", "")
+            metrics.append(
+                (
+                    f" cleanup {len(self.engagement.outstanding_cleanup)}",
+                    theme.warning,
                 )
-            else:
-                parts.append(("window not set", ""))
-        result = Text()
-        for index, (value, style) in enumerate(parts):
+            )
+        result.append("\n")
+        for index, (value, style) in enumerate(metrics):
             if index:
-                result.append(" · ")
+                result.append("  ·  ", style=f"dim {muted}")
             result.append(value, style=style)
         return result
 
@@ -2369,34 +2390,7 @@ class MainScreen(Screen):
 
 
 class TacmuxApp(App[LaunchIntent | None]):
-    BINDINGS: ClassVar[list[Binding]] = [
-        Binding("t", "change_theme", "Theme", show=False)
-    ]
-    CSS = """
-    Screen { background: $background; }
-    #picker-body { padding: 1 2; }
-    #picker-title, #engagement-banner { height: 3; padding: 1 2; text-style: bold; color: $accent; }
-    #picker-hint { height: 2; color: $text-muted; }
-    #engagement-filter, #target-filter { display: none; margin: 0 2; }
-    #target-layout, #documents-layout { height: 1fr; }
-    #target-table { width: 62%; }
-    #target-detail { width: 38%; padding: 1 2; border-left: solid $panel; overflow-y: auto; }
-    ScopeDiscoveryPane { height: 1fr; }
-    #scope-table { height: 44%; }
-    #jobs-table { height: 36%; }
-    #records-table { height: 1fr; }
-    .section-title { height: 2; padding-left: 1; text-style: bold; }
-    #situation-view { height: 1fr; padding: 1 2; overflow-y: auto; }
-    #documents-table { width: 38%; }
-    #document-preview { width: 62%; padding: 1 2; border-left: solid $panel; }
-    MainScreen.narrow #target-layout, MainScreen.narrow #documents-layout { layout: vertical; }
-    MainScreen.narrow #target-table, MainScreen.narrow #documents-table {
-        width: 1fr; height: 55%;
-    }
-    MainScreen.narrow #target-detail, MainScreen.narrow #document-preview {
-        width: 1fr; height: 45%; border-left: none; border-top: solid $panel;
-    }
-    """
+    CSS_PATH = "tacmux.tcss"
     COMMANDS: ClassVar[set] = {get_system_commands_provider, OperatorCommands}
 
     def __init__(self, settings: Settings):
@@ -2406,47 +2400,27 @@ class TacmuxApp(App[LaunchIntent | None]):
         self.tmux = TmuxService(settings)
         self.jobs = DiscoveryJobs(settings, self.tmux, self.workspace)
         self.nocap = NocapReader(settings)
-        self.register_theme(BLTSEC_THEME)
-        saved_theme = self.workspace.get_theme()
-        self._invalid_saved_theme = (
-            saved_theme if saved_theme and saved_theme not in CURATED_THEME_NAMES else ""
-        )
-        self._startup_theme = (
-            saved_theme if saved_theme in CURATED_THEME_NAMES else DEFAULT_THEME
-        )
         for theme_name in tuple(self.available_themes):
-            if theme_name not in CURATED_THEME_NAMES:
-                self.unregister_theme(theme_name)
+            self.unregister_theme(theme_name)
+        self.register_theme(BLTSEC_THEME)
+        self.theme = DEFAULT_THEME
 
     def notify(self, message: str, *args, **kwargs) -> None:
         kwargs.setdefault("markup", False)
         super().notify(str(message), *args, **kwargs)
 
+    def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
+        """Expose Textual's useful commands without its irrelevant theme picker."""
+
+        yield from (
+            command
+            for command in super().get_system_commands(screen)
+            if command.title != "Theme"
+        )
+
     def on_mount(self) -> None:
         self.workspace.initialize()
-        self.theme = self._startup_theme
-        self.theme_changed_signal.subscribe(self, self._persist_theme)
-        if self._invalid_saved_theme:
-            self.notify(
-                f"Saved theme {self._invalid_saved_theme!r} is unavailable; using {DEFAULT_THEME}",
-                title="TACMUX Theme",
-                severity="warning",
-            )
-            self._save_theme(DEFAULT_THEME)
         self.bootstrap()
-
-    def _persist_theme(self, theme: Theme) -> None:
-        self._save_theme(theme.name)
-
-    def _save_theme(self, theme_name: str) -> None:
-        try:
-            self.workspace.set_theme(theme_name)
-        except (OSError, TacmuxError) as exc:
-            self.notify(
-                f"Theme changed for this run but could not be saved: {exc}",
-                title="TACMUX Theme",
-                severity="warning",
-            )
 
     def bootstrap(self) -> None:
         records = self.workspace.list_engagements()

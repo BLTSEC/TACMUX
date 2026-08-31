@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from textual.command import CommandPalette
 from textual.widgets import (
     Button,
     Checkbox,
@@ -13,6 +12,7 @@ from textual.widgets import (
     Select,
     SelectionList,
     Static,
+    TabbedContent,
     TextArea,
 )
 
@@ -45,7 +45,7 @@ from tacmux.model import (
     TargetAddress,
     CleanupKind,
 )
-from tacmux.themes import CURATED_THEME_NAMES, DEFAULT_THEME
+from tacmux.themes import BLTSEC_THEME, DEFAULT_THEME
 
 
 @pytest.mark.asyncio
@@ -56,10 +56,23 @@ async def test_picker_is_usable_at_minimum_terminal_size(settings, workspace, re
         assert isinstance(app.screen, EngagementPickerScreen)
         assert app.screen.query_one("#engagements").row_count == 1
         assert app.theme == DEFAULT_THEME
-        assert set(app.available_themes) == CURATED_THEME_NAMES
-        await pilot.press("t")
+        assert set(app.available_themes) == {DEFAULT_THEME}
+        assert "t" not in app.screen.active_bindings
+        assert "Theme" not in {
+            command.title for command in app.get_system_commands(app.screen)
+        }
+
+
+@pytest.mark.asyncio
+async def test_stale_saved_theme_is_ignored(settings, workspace):
+    workspace.settings.state_file.write_text(
+        '{"schema":"tacmux.state/v1","selected_theme":"nord"}\n'
+    )
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        assert isinstance(app.screen, CommandPalette)
+        assert app.theme == DEFAULT_THEME
+        assert set(app.available_themes) == {DEFAULT_THEME}
 
 
 @pytest.mark.asyncio
@@ -209,59 +222,99 @@ async def test_new_engagement_copy_explains_grouping_and_internal_reachability(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("theme_name", sorted(CURATED_THEME_NAMES))
-async def test_curated_theme_renders_picker_at_minimum_size(
-    settings, workspace, theme_name
+@pytest.mark.parametrize("size", [(80, 24), (120, 36)])
+async def test_bltsec_theme_renders_responsive_full_cockpit(
+    settings, workspace, record, size
 ):
-    workspace.set_theme(theme_name)
-    app = TacmuxApp(settings)
-    async with app.run_test(size=(80, 24)) as pilot:
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=size) as pilot:
         await pilot.pause()
-        assert isinstance(app.screen, EngagementPickerScreen)
-        assert app.theme == theme_name
-        assert app.current_theme.dark
-
-
-@pytest.mark.asyncio
-async def test_theme_selection_persists_across_launches(settings, workspace):
-    first = TacmuxApp(settings)
-    async with first.run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        first.theme = "nord"
-        await pilot.pause()
-        assert workspace.get_theme() == "nord"
-
-    second = TacmuxApp(settings)
-    async with second.run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        assert second.theme == "nord"
-
-
-@pytest.mark.asyncio
-async def test_unknown_saved_theme_falls_back_and_repairs_state(settings, workspace):
-    workspace.set_theme("removed-theme")
-    app = TacmuxApp(settings)
-    async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
         assert app.theme == DEFAULT_THEME
-        assert workspace.get_theme() == DEFAULT_THEME
+        assert app.current_theme is BLTSEC_THEME
+        assert main.has_class("narrow") is (size[0] < 110)
+        assert main.query_one("#engagement-banner").region.width == size[0]
+
+        for key, tab_id, focus_id in (
+            ("1", "targets", "target-table"),
+            ("2", "scope", "scope-table"),
+            ("3", "records", "records-table"),
+            ("4", "situation", "situation-view"),
+            ("5", "documents", "documents-table"),
+        ):
+            await pilot.press(key)
+            await pilot.pause()
+            assert main.query_one("#workspace-tabs", TabbedContent).active == tab_id
+            focused = main.query_one(f"#{focus_id}")
+            assert focused.region.width > 0 and focused.region.height > 0
 
 
 @pytest.mark.asyncio
-async def test_theme_remains_active_when_persistence_fails(
-    settings, workspace, monkeypatch
-):
-    app = TacmuxApp(settings)
-    async with app.run_test(size=(80, 24)) as pilot:
+async def test_intermediate_width_stacks_detail_panes(settings, workspace, record):
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        assert main.has_class("narrow")
+        assert main.query_one("#target-table").region.width > 90
 
-        def fail_save(_theme_name: str) -> None:
-            raise OSError("read-only state")
 
-        monkeypatch.setattr(app.workspace, "set_theme", fail_save)
-        app.theme = "dracula"
-        await pilot.pause()
-        assert app.theme == "dracula"
+def test_bltsec_theme_has_complete_contrasting_semantic_palette():
+    def luminance(value: str) -> float:
+        channels = [int(value[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+        red, green, blue = [
+            channel / 12.92
+            if channel <= 0.04045
+            else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        ]
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+    def contrast(left: str, right: str) -> float:
+        lighter, darker = sorted(
+            (luminance(left), luminance(right)), reverse=True
+        )
+        return (lighter + 0.05) / (darker + 0.05)
+
+    required_variables = {
+        "text-muted",
+        "block-cursor-background",
+        "block-cursor-foreground",
+        "border",
+        "border-blurred",
+        "footer-background",
+        "footer-key-foreground",
+        "input-selection-background",
+        "scrollbar",
+    }
+    theme = BLTSEC_THEME
+    assert theme.name == DEFAULT_THEME
+    assert all(
+        (
+            theme.primary,
+            theme.secondary,
+            theme.accent,
+            theme.foreground,
+            theme.background,
+            theme.surface,
+            theme.panel,
+            theme.success,
+            theme.warning,
+            theme.error,
+        )
+    )
+    assert required_variables <= theme.variables.keys()
+    assert contrast(theme.foreground, theme.background) >= 4.5
+    assert contrast(theme.variables["text-muted"], theme.background) >= 4.5
+    assert contrast(theme.background, theme.primary) >= 4.5
+    assert all(
+        contrast(color, theme.background) >= 3.0
+        for color in (theme.success, theme.warning, theme.error)
+    )
 
 
 @pytest.mark.asyncio
@@ -672,7 +725,7 @@ async def test_outside_window_warns_before_every_session_start_path(
         await pilot.pause()
         main = app.screen
         assert isinstance(main, MainScreen)
-        assert main._status_line([]).plain.startswith("OUTSIDE WINDOW · ")
+        assert main._status_line([]).plain.startswith("  OUTSIDE WINDOW  /  ")
         actions = [
             main.action_attach,
             main.action_ops,
@@ -705,7 +758,7 @@ async def test_closed_engagement_blocks_operational_entry_points(
         await pilot.pause()
         main = app.screen
         assert isinstance(main, MainScreen)
-        assert main._status_line([]).plain.startswith("CLOSED · ")
+        assert main._status_line([]).plain.startswith("  CLOSED  /  ")
         assert all(
             main.check_action(action, ()) is False
             for action in ("default_action", "new_target", "discovery")

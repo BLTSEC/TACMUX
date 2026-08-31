@@ -18,7 +18,7 @@ Run `tacmux`, choose the engagement and target, and work from menus. The public 
 
 ## What TACMUX does
 
-- Provides a keyboard-driven Textual cockpit with a persistent choice of curated themes.
+- Provides a polished keyboard-driven Textual cockpit with a cohesive BLTSEC visual identity.
 - Keeps authorization, lifecycle, scope, exclusions, pivots, and overlapping network identities in one readable engagement manifest.
 - Gives engagements and targets stable IDs so renaming never moves evidence or changes session identity.
 - Runs detached target, operations, and scope-constrained Nmap discovery sessions with engagement-wide stop controls.
@@ -35,6 +35,7 @@ TACMUX does not require fzf, AutoRecon, Obsidian, or shell completions.
 - Python 3.11 or newer
 - tmux 3.2 or newer
 - [uv](https://docs.astral.sh/uv/) for installation
+- A Nerd Font-enabled terminal for the intended icon rendering
 - An editor (`$VISUAL`, then `$EDITOR`, then `vi`)
 - Optional: Nmap for launching discovery jobs; existing XML and pasted-host import work without it
 - Optional: `cap` when NOCAP integration is enabled
@@ -83,9 +84,8 @@ tacmux
 The `Ctrl+P` Command Palette provides fuzzy command search without an fzf
 dependency. Press `a` for the shorter contextual Actions menu, including
 engagement open/archive/delete choices from the picker.
-Press `t` from the cockpit or engagement picker to choose BLTSEC, Textual Dark,
-Nord, Dracula, Catppuccin Mocha, Tokyo Night, Gruvbox, Rose Pine Moon, or
-Solarized Dark. The choice applies only to TACMUX and is remembered across launches.
+The interface uses a purpose-built BLTSEC palette throughout TACMUX rather than
+adding a theme-management workflow to the operator cockpit.
 
 ## Workspace
 

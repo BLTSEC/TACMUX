@@ -98,7 +98,7 @@ class TargetsPane(Horizontal):
             )
             access = engagement.strongest_access(target.id)
             table.add_row(
-                "RUN" if target.id in live_target_ids else "—",
+                "" if target.id in live_target_ids else "·",
                 "/".join(groups) or "—",
                 target.display_name,
                 addresses or identity,
@@ -118,7 +118,7 @@ class TargetsPane(Horizontal):
         detail = self.query_one("#target-detail", Static)
         if target is None or self.engagement is None:
             detail.update(
-                "No target selected\n\nPress n to create one or d to import discovery."
+                "  NO TARGET SELECTED\n\nPress n to create one or d to import discovery."
             )
             return
         access = [
@@ -128,7 +128,7 @@ class TargetsPane(Horizontal):
             item for item in self.engagement.activities if item.target_id == target.id
         ][-5:]
         lines = [
-            f"{target.display_name}  {target.id}",
+            f"  {target.display_name}  /  {target.id}",
             "",
             "Identity: "
             + target.identity_state.replace("-", " "),
@@ -144,7 +144,7 @@ class TargetsPane(Horizontal):
                 or "—"
             ),
             "",
-            f"Observed services ({len(target.services)})",
+            f"OBSERVED SERVICES  /  {len(target.services)}",
             *(
                 [
                     f"• {item.port}/{item.protocol} [{item.state}] "
@@ -155,7 +155,7 @@ class TargetsPane(Horizontal):
                 or ["• None"]
             ),
             "",
-            "Confirmed access",
+            "CONFIRMED ACCESS",
         ]
         if access:
             lines.extend(
@@ -165,7 +165,7 @@ class TargetsPane(Horizontal):
             )
         else:
             lines.append("• None")
-        lines.extend(["", "Recent activity"])
+        lines.extend(["", "RECENT ACTIVITY"])
         lines.extend(f"• {item.result.value}: {item.summary}" for item in recent)
         if not recent:
             lines.append("• None")
@@ -183,9 +183,9 @@ class TargetsPane(Horizontal):
 
 class ScopeDiscoveryPane(Static):
     def compose(self) -> ComposeResult:
-        yield Label("Declared scope", classes="section-title")
+        yield Label("  DECLARED SCOPE", classes="section-title")
         yield DataTable(id="scope-table", cursor_type="row", zebra_stripes=True)
-        yield Label("Discovery jobs", classes="section-title")
+        yield Label("  DISCOVERY JOBS", classes="section-title")
         yield DataTable(id="jobs-table", cursor_type="row", zebra_stripes=True)
 
     def populate(self, engagement: Engagement, jobs: list[dict]) -> None:
@@ -255,8 +255,8 @@ class SituationPane(Static, can_focus=True):
         paths = attack_paths_text(engagement).rstrip()
         self.update(
             RichMarkdown(
-                f"# Network Topology\n\n```text\n{topology}\n```\n\n"
-                f"# Confirmed Attack Paths\n\n```text\n{paths}\n```\n"
+                f"#  Network Topology\n\n```text\n{topology}\n```\n\n"
+                f"#  Confirmed Attack Paths\n\n```text\n{paths}\n```\n"
             )
         )
 

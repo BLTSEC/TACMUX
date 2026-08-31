@@ -15,16 +15,13 @@ Press the tmux prefix, release it, then press `E`. The complete TACMUX tmux conf
 | `e` | Return to the engagement picker (`g` remains a hidden alias) |
 | `/` | Filter the active Targets, Records, or Documents table |
 | `r` | Refresh sessions, jobs, topology, and SITREP |
-| `t` | Open the fuzzy theme selector |
 | `1`–`5` | Targets, Scope, Records, Situation, Documents |
 | `Ctrl+P` | Command Palette (fuzzy command search) |
 | `Escape` | Close a modal/cancel an entry |
 | `q` | Quit the cockpit; detached sessions continue |
 
-Theme choices apply only to the TACMUX cockpit and persist across launches. The
-curated dark catalog contains BLTSEC, Textual Dark, Nord, Dracula, Catppuccin
-Mocha, Tokyo Night, Gruvbox, Rose Pine Moon, and Solarized Dark. BLTSEC is the
-default.
+The TACMUX cockpit uses its dedicated BLTSEC palette. A Nerd Font renders the
+interface icons as intended.
 
 From the engagement picker, `a` opens the engagement menu: open, edit details,
 close/reopen, archive, or guarded delete. The Command Palette is the global

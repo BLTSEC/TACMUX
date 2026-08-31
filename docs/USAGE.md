@@ -38,6 +38,9 @@ Press `a` for the contextual Actions menu. Press `Ctrl+P` for Textual's Command
 Palette (fuzzy command search). The palette exposes the same actions as the
 visible workflow and does not require fzf.
 
+TACMUX uses a dedicated BLTSEC palette throughout the cockpit. Use a Nerd
+Font-enabled terminal for the intended icons.
+
 ## Scope and pivots
 
 Each address is stored with a scope-entry ID, not as a globally unique host key. That permits:
