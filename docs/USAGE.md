@@ -220,7 +220,8 @@ warning never overrides operator authority.
 Close an engagement after stopping target/operations sessions and discovery
 jobs. A closed engagement remains reviewable and archivable, but blocks new
 targets, sessions, discovery commits, and record creation until reopened. The
-close confirmation reports outstanding cleanup items.
+cockpit hides those active-only shortcuts and palette commands while closed.
+The close confirmation reports outstanding cleanup items.
 
 ## Capture from a working pane
 

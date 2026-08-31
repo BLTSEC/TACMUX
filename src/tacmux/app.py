@@ -136,7 +136,13 @@ class OperatorCommands(Provider):
 
     def _commands(self) -> list[tuple[str, str, str]]:
         screen = self.screen
-        return list(getattr(screen, "operator_commands", []))
+        available = getattr(screen, "operator_command_available", None)
+        commands = list(getattr(screen, "operator_commands", []))
+        return [
+            command
+            for command in commands
+            if available is None or available(command[1])
+        ]
 
     async def discover(self) -> Hits:
         for title, action, help_text in self._commands():
@@ -591,13 +597,13 @@ class EngagementPickerScreen(Screen):
 
 class MainScreen(Screen):
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("enter", "default_action", "Open / Attach"),
+        Binding("enter", "default_action", "Attach"),
         Binding("a", "actions", "Actions"),
-        Binding("n", "new_target", "New target"),
-        Binding("d", "discovery", "Discovery"),
-        Binding("e", "switch_engagement", "Engagements"),
+        Binding("n", "new_target", "New"),
+        Binding("d", "discovery", "Scan"),
+        Binding("e", "switch_engagement", "Switch"),
         Binding("g", "switch_engagement", "Engagements", show=False),
-        Binding("/", "filter", "Filter"),
+        Binding("/", "filter", "Find"),
         Binding("escape", "close_filter", show=False),
         Binding("r", "refresh", "Refresh", show=False),
         Binding("1", "tab('targets')", "Targets", show=False),
@@ -607,6 +613,22 @@ class MainScreen(Screen):
         Binding("5", "tab('documents')", "Documents", show=False),
         Binding("q", "app.quit", "Quit"),
     ]
+    ACTIVE_ONLY_BINDINGS: ClassVar[set[str]] = {
+        "default_action",
+        "new_target",
+        "discovery",
+    }
+    ACTIVE_ONLY_COMMANDS: ClassVar[set[str]] = {
+        "attach",
+        "new_target",
+        "add_scope",
+        "scan",
+        "import_discovery",
+        "import_completed",
+        "activity",
+        "attack_path",
+        "ops",
+    }
     operator_commands: ClassVar[list[tuple[str, str, str]]] = [
         (
             "Attach or start selected target",
@@ -710,6 +732,20 @@ class MainScreen(Screen):
     @property
     def document_paths(self) -> dict[str, tuple[Path, bool, str]]:
         return self.query_one(DocumentsPane).document_paths
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if (
+            self.engagement.status == EngagementStatus.CLOSED
+            and action in self.ACTIVE_ONLY_BINDINGS
+        ):
+            return False
+        return True
+
+    def operator_command_available(self, action: str) -> bool:
+        return not (
+            self.engagement.status == EngagementStatus.CLOSED
+            and action in self.ACTIVE_ONLY_COMMANDS
+        )
 
     def _require_active(self) -> None:
         if self.engagement.status == EngagementStatus.CLOSED:
@@ -836,32 +872,39 @@ class MainScreen(Screen):
         active_jobs = sum(
             item.get("state") in {"queued", "running"} for item in jobs
         )
-        parts: list[tuple[str, str]] = [
-            (f"{self.engagement.client} / {self.engagement.name}", ""),
-            (
-                f"{len(self.engagement.targets)} "
-                f"{'target' if len(self.engagement.targets) == 1 else 'targets'}",
-                "",
-            ),
-            (f"{len(self.live_target_ids)} live", ""),
-            (
-                f"{active_jobs} {'job' if active_jobs == 1 else 'jobs'} running",
-                "",
-            ),
-            (
-                "logging on" if self.engagement.logging_enabled else "logging off",
-                "",
-            ),
-        ]
+        identity = (f"{self.engagement.client} / {self.engagement.name}", "")
+        state = self.engagement.authorization.window_state()
+        if self.engagement.status == EngagementStatus.CLOSED:
+            parts: list[tuple[str, str]] = [("CLOSED", "bold red"), identity]
+        elif state == "outside":
+            parts = [("OUTSIDE WINDOW", "bold dark_orange"), identity]
+        else:
+            parts = [identity]
+        parts.extend(
+            [
+                (
+                    f"{len(self.engagement.targets)} "
+                    f"{'target' if len(self.engagement.targets) == 1 else 'targets'}",
+                    "",
+                ),
+                (f"{len(self.live_target_ids)} live", ""),
+                (
+                    f"{active_jobs} "
+                    f"{'job' if active_jobs == 1 else 'jobs'} running",
+                    "",
+                ),
+                (
+                    "logging on"
+                    if self.engagement.logging_enabled
+                    else "logging off",
+                    "",
+                ),
+            ]
+        )
         if self.engagement.outstanding_cleanup:
             parts.append((f"cleanup {len(self.engagement.outstanding_cleanup)}", ""))
-        if self.engagement.status == EngagementStatus.CLOSED:
-            parts.append(("CLOSED", "bold red"))
-        else:
-            state = self.engagement.authorization.window_state()
-            if state == "outside":
-                parts.append(("OUTSIDE WINDOW", "bold dark_orange"))
-            elif self.engagement.authorization.window_end:
+        if self.engagement.status != EngagementStatus.CLOSED and state != "outside":
+            if self.engagement.authorization.window_end:
                 parts.append(
                     (f"window ends {self.engagement.authorization.window_end}", "")
                 )
@@ -895,6 +938,7 @@ class MainScreen(Screen):
                 jobs=jobs,
             )
             self.record = record
+            self.refresh_bindings()
             self.live_target_ids = live
             self._manifest_mtime = manifest_mtime
             self._job_statuses = statuses
@@ -1130,7 +1174,11 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
 
     def action_add_scope(self) -> None:
-        self.app.push_screen(ScopeForm(self.engagement), self._add_scope)
+        try:
+            self._require_active()
+            self.app.push_screen(ScopeForm(self.engagement), self._add_scope)
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
 
     def _add_scope(self, value: dict | None) -> None:
         if value is None:
@@ -1147,6 +1195,11 @@ class MainScreen(Screen):
         return self.query_one(ScopeDiscoveryPane).selected_scope_id()
 
     def scope_actions(self) -> None:
+        if self.engagement.status == EngagementStatus.CLOSED:
+            self.app.show_error(
+                "Engagement is closed — reopen it to change scope or discovery"
+            )
+            return
         actions = [
             ("edit_scope", "Edit selected scope entry"),
             ("delete_scope", "Delete selected unused scope entry"),
@@ -1169,6 +1222,7 @@ class MainScreen(Screen):
 
     def edit_scope(self) -> None:
         try:
+            self._require_active()
             scope = self.engagement.scope_by_id(self.selected_scope_id())
         except TacmuxError as exc:
             self.app.show_error(str(exc))
@@ -1191,6 +1245,7 @@ class MainScreen(Screen):
 
     def delete_scope(self) -> None:
         try:
+            self._require_active()
             scope = self.engagement.scope_by_id(self.selected_scope_id())
         except TacmuxError as exc:
             self.app.show_error(str(exc))
@@ -1271,13 +1326,13 @@ class MainScreen(Screen):
         elif active == "documents":
             self.document_actions()
         elif active == "situation":
+            actions = [("refresh", "Refresh topology and SITREP")]
+            if self.engagement.status != EngagementStatus.CLOSED:
+                actions.insert(0, ("attack_path", "Build confirmed attack path"))
             self.app.push_screen(
                 ActionMenu(
                     "Situation",
-                    [
-                        ("attack_path", "Build confirmed attack path"),
-                        ("refresh", "Refresh topology and SITREP"),
-                    ],
+                    actions,
                 ),
                 lambda action: self.run_operator_command(action) if action else None,
             )
@@ -1291,6 +1346,18 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
             return
         running = self.app.tmux.target_session_running(self.engagement, target)
+        if self.engagement.status == EngagementStatus.CLOSED:
+            actions = [
+                ("notes", "Edit target notes"),
+                ("services", "View services"),
+                ("archive", "Archive target"),
+            ]
+            if self.app.settings.nocap_enabled:
+                actions.insert(-1, ("nocap", "View NOCAP timeline"))
+            self.app.push_screen(
+                ActionMenu(target.display_name, actions), self._target_action
+            )
+            return
         actions = [("attach", "Attach" if running else "Start and attach")]
         if running:
             actions.append(("stop", "Stop session"))

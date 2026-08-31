@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "tacmux"
-version = "2.0.0"
+version = "2.1.0"
 description = "Operator-first engagement workspaces and tmux control for authorized security assessments"
 readme = "README.md"
 requires-python = ">=3.11"

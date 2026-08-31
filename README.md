@@ -16,27 +16,16 @@ Run `tacmux`, choose the engagement and target, and work from menus. The public 
 
 > Use TACMUX only where you have explicit authorization. Confirm scope, rules of engagement, logging, evidence handling, and retention before testing.
 
-## v2 design
+## What TACMUX does
 
-- Python 3.11+ and Textual for a responsive terminal UI.
-- An image-derived BLTSEC dark theme plus a persistent, curated fuzzy theme selector.
-- One readable JSON manifest per engagement.
-- Human-facing **Client, Lab, or Platform** and **Engagement Name** fields instead of provider/slug terminology.
-- External and internal scope groups with IPs, CIDRs, domain patterns, per-entry exclusions, unavailable internal networks, pivot relationships, dual-homed systems, and overlapping addresses qualified by scope.
-- Stable target IDs and directories. Renaming a display name never moves evidence.
-- Detached target, operations, and discovery sessions with engagement-wide stop controls.
-- Selectable detached Nmap discovery: host-only, or host discovery followed by
-  all-TCP-port identification and targeted `-sV`. Every stage is rebuilt from
-  declared scope and every result still requires Add/Merge/Ignore review.
-- Imported and TACMUX-discovered service inventory with retained XML provenance.
-- Structured authorization windows, active/closed lifecycle, Records view, and cleanup ledger.
-- In-pane `tacmux note`, `tacmux activity`, and `tacmux sitrep` capture commands.
-- Terminal-native topology and confirmed attack-path views. Optional Mermaid source is generated in `SITREP.md`.
-- Markdown and cleaned terminal-log previews, full-file paging through `$PAGER`,
-  and editing through `$VISUAL`, `$EDITOR`, or `vi`.
-- Point-in-time Markdown handoffs containing structured state, authored notes,
-  findings, paths, and either an evidence index or bounded text evidence.
-- Optional, read-only NOCAP timeline integration. NOCAP remains a separate tool.
+- Provides a keyboard-driven Textual cockpit with a persistent choice of curated themes.
+- Keeps authorization, lifecycle, scope, exclusions, pivots, and overlapping network identities in one readable engagement manifest.
+- Gives engagements and targets stable IDs so renaming never moves evidence or changes session identity.
+- Runs detached target, operations, and scope-constrained Nmap discovery sessions with engagement-wide stop controls.
+- Reconciles every discovered host through Add/Merge/Ignore review and retains XML provenance for observed services.
+- Records activity, access, findings, cleanup, and confirmed attack paths without treating authentication as compromise.
+- Renders terminal topology, SITREP, Markdown and log previews, pager/editor handoff, and compact or evidence-rich single-file exports.
+- Creates hash-verified archives and optionally reads NOCAP timelines without merging the two tools.
 
 TACMUX does not require fzf, AutoRecon, Obsidian, or shell completions.
 

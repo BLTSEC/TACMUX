@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 — 2026-08-31
 
 ### Added
 
@@ -17,6 +17,13 @@
   authorized evidence capture.
 - Full tmux installs retain the v1 operator keymap, including logging shortcuts,
   and reinstalling preserves the previously selected tmux mode.
+- Critical lifecycle state now leads the cockpit banner, narrow footer labels are
+  shorter, and closed engagements hide active-only shortcuts and commands.
+
+### Fixed
+
+- Enhanced discovery job specifications no longer advertise a nonexistent
+  single `results.xml` artifact.
 
 ## 2.0.0 — 2026-08-31
 
