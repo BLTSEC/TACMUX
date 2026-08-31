@@ -6,8 +6,9 @@ import stat
 
 import pytest
 
+from tacmux.archive import create_archive
 from tacmux.config import load_settings
-from tacmux.errors import ConflictError, ValidationError
+from tacmux.errors import ConflictError, SafetyError, ValidationError
 from tacmux.model import (
     AccessLevel,
     AccessRecord,
@@ -252,6 +253,91 @@ def test_finding_documents_generated_records_and_target_delete_guard(workspace, 
     workspace.delete_target(record.root, record.engagement, target.id)
     assert not target_root.exists()
     assert target.id not in {item.id for item in record.engagement.targets}
+
+
+def test_engagement_delete_removes_live_tree_and_preserves_archive(
+    workspace, record
+):
+    scope = record.engagement.add_scope(
+        "Perimeter", ScopeGroup.EXTERNAL, "198.51.100.10/32"
+    )
+    target = workspace.create_target(
+        record.root,
+        record.engagement,
+        "gateway",
+        addresses=[TargetAddress("198.51.100.10", scope.id)],
+        primary_endpoint="198.51.100.10",
+    )
+    evidence = record.root / "targets" / target.directory / "recon/proof.txt"
+    evidence.write_text("captured evidence")
+    job_root = record.root / ".tacmux/jobs/J0001"
+    job_root.mkdir()
+    (job_root / "status.json").write_text('{"state": "completed"}\n')
+    archive, manifest = create_archive(
+        record.root,
+        workspace.settings.archive_dir,
+        kind="engagements",
+        engagement_id=record.engagement.id,
+        object_id=record.engagement.id,
+    )
+    workspace.set_theme("nord")
+
+    workspace.delete_engagement(record.engagement.id)
+
+    assert not record.root.exists()
+    assert workspace.list_engagements() == []
+    assert workspace.get_last_engagement() == ""
+    assert workspace.get_theme() == "nord"
+    assert archive.is_file() and manifest.is_file()
+    assert not any((workspace.settings.workspace / ".tacmux/deleting").iterdir())
+
+
+def test_engagement_delete_rejects_symlinked_and_mismatched_roots(
+    workspace, record, tmp_path
+):
+    outside = tmp_path / "outside" / record.root.name
+    outside.parent.mkdir()
+    record.root.rename(outside)
+    record.root.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(SafetyError, match="symlinked engagement"):
+        workspace.delete_engagement(record.engagement.id)
+    assert outside.is_dir()
+
+    record.root.unlink()
+    mismatched = workspace.settings.workspace / "E-ffffffffffff-wrong-id"
+    outside.rename(mismatched)
+    with pytest.raises(SafetyError, match="does not match"):
+        workspace.delete_engagement(record.engagement.id)
+    assert mismatched.is_dir()
+
+
+def test_engagement_delete_rolls_back_if_state_update_fails(
+    workspace, record, monkeypatch
+):
+    def fail_state(_engagement_id: str) -> None:
+        raise OSError("state is read-only")
+
+    monkeypatch.setattr(workspace, "set_last_engagement", fail_state)
+    with pytest.raises(OSError, match="state is read-only"):
+        workspace.delete_engagement(record.engagement.id)
+    assert record.root.is_dir()
+    assert workspace.find(record.engagement.id).root == record.root
+
+
+def test_engagement_delete_reports_quarantined_cleanup_failure(
+    workspace, record, monkeypatch
+):
+    def fail_cleanup(_path) -> None:
+        raise OSError("filesystem refused removal")
+
+    monkeypatch.setattr("tacmux.store.shutil.rmtree", fail_cleanup)
+    with pytest.raises(SafetyError, match="cleanup is incomplete"):
+        workspace.delete_engagement(record.engagement.id)
+    assert not record.root.exists()
+    staged = list((workspace.settings.workspace / ".tacmux/deleting").iterdir())
+    assert len(staged) == 1
+    assert staged[0].name.startswith(record.engagement.id)
+    assert workspace.get_last_engagement() == ""
 
 
 def test_terminal_topology_separates_network_map_and_attack_path(workspace, record):

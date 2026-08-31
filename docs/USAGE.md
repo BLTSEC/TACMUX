@@ -10,11 +10,14 @@ TACMUX keeps one `tacmux.engagement/v2` JSON manifest as durable state. The TUI 
 
 Run `tacmux`, press `n`, and supply:
 
-- **Client or Lab:** a recognizable organization or training platform.
-- **Engagement Name:** a recognizable assessment or course instance.
+- **Client, Lab, or Platform:** the customer, organization, private lab,
+  certification environment, or training platform that owns the work.
+- **Engagement Name:** a recognizable assessment, project, lab, or exercise name.
 - **Assessment Type:** External, Internal, External + Internal, or Single-machine Lab.
 - **External/Internal scope:** optional IPs or CIDRs already known. Use `Label=network` when a friendly label helps.
-- **Internal availability:** ready now or unavailable until access exists.
+- **Internal scope reachability:** whether the internal scope is reachable now
+  through a direct, on-site, or VPN connection, or requires later access and a
+  pivot.
 - **Pane logging:** per-engagement default.
 
 Known `/32` hosts and networks can be entered before testing. Scope groups are intentionally limited to **external** and **internal**.
@@ -30,7 +33,9 @@ The four tabs answer different operator questions:
 | Situation | What does the network look like, and what confirmed chain has been demonstrated? |
 | Documents | Where are the narrative, findings, notes, logs, and evidence? |
 
-Press `a` for actions relevant to the active tab. Press `Ctrl+P` for Textual's fuzzy command palette. The palette exposes the same actions as the visible workflow and does not require fzf.
+Press `a` for the contextual Actions menu. Press `Ctrl+P` for Textual's Command
+Palette (fuzzy command search). The palette exposes the same actions as the
+visible workflow and does not require fzf.
 
 ## Scope and pivots
 
@@ -45,7 +50,8 @@ After a foothold creates an approved route:
 
 1. Open **Scope & Discovery**.
 2. Highlight the internal scope and press Enter or `a`.
-3. Set availability to **Ready** and select the target through which it is reachable.
+3. Set availability to **Reachable now** and select the target through which it
+   is reachable.
 4. Refresh the Situation view.
 
 TACMUX records the route relationship; it does not configure VPNs, SOCKS proxies, Ligolo, SSH forwarding, or firewall rules.
@@ -155,12 +161,12 @@ This example uses documentation-only addresses and mirrors a realistic flow with
 Create:
 
 ```text
-Client or Lab: ACME
+Client, Lab, or Platform: ACME
 Engagement Name: 2026 External and Internal Assessment
 Assessment Type: External + Internal
 External: Internet Perimeter=198.51.100.0/24
 Internal: Corporate LAN=10.77.10.0/24
-Internal availability: Unavailable until access
+Internal scope reachability: Not reachable yet (requires access or pivot)
 ```
 
 Run detached identification against the external entry. Review two results:
@@ -192,7 +198,8 @@ Activity A0001 (Confirmed):
 Established the approved route from MAIL to the corporate LAN
 ```
 
-Update **Corporate LAN** to Ready via MAIL. The terminal topology now reads conceptually:
+Update **Corporate LAN** to Reachable now via MAIL. The terminal topology now
+reads conceptually:
 
 ```text
 EXTERNAL
@@ -266,7 +273,7 @@ bounded directory-scan budget; use ordinary filesystem tools for larger
 collections. Generated Markdown is changed through its structured TACMUX record,
 not edited directly.
 
-## Archives, restore, and mistaken-target deletion
+## Archives, restore, and permanent deletion
 
 Target and engagement archives are private `.tar.gz` files with adjacent `.manifest.json` documents. Creation verifies the completed archive immediately. `tacmux archive verify FILE` checks archive size, SHA-256, member hashes, paths, links, and root structure.
 
@@ -278,6 +285,15 @@ Permanent target deletion is deliberately stricter than archive:
 - no scope pivot, access, activity, or finding may reference the target;
 - the exact displayed confirmation must be typed;
 - the target directory is staged, the manifest is saved, and only then are files removed.
+
+Permanent engagement deletion is available from the engagement picker through
+`a`. It removes the complete live engagement directory, including scope,
+targets, evidence, notes, findings, and completed discovery jobs. TACMUX refuses
+while target, operations, or discovery work is active and requires
+`DELETE E-<stable-id>` exactly. It does not stop sessions, cancel jobs, create an
+archive automatically, or remove verified archives stored outside the live
+workspace. Choose **Create verified archive** from the same Actions menu first
+when a recovery copy is required.
 
 ## v1 import
 

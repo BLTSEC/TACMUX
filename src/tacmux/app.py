@@ -63,7 +63,7 @@ from .discovery import (
     parse_nmap_xml,
     reconcile_candidates,
 )
-from .errors import TacmuxError, ValidationError
+from .errors import ConflictError, TacmuxError, ValidationError
 from .migration import import_v1_workspace
 from .model import (
     AccessRecord,
@@ -115,12 +115,18 @@ class OperatorCommands(Provider):
 class EngagementPickerScreen(Screen):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("enter", "open_selected", "Open", priority=True),
+        Binding("a", "actions", "Actions"),
         Binding("n", "new_engagement", "New"),
         Binding("i", "import_legacy", "Import v1"),
         Binding("/", "filter", "Filter"),
         Binding("q", "app.quit", "Quit"),
     ]
     operator_commands: ClassVar[list[tuple[str, str, str]]] = [
+        (
+            "Engagement actions",
+            "actions",
+            "Open, archive, or permanently delete the highlighted engagement",
+        ),
         (
             "Open selected engagement",
             "open_selected",
@@ -143,10 +149,14 @@ class EngagementPickerScreen(Screen):
         with Vertical(id="picker-body"):
             yield Label("Engagements", id="picker-title")
             yield Input(
-                placeholder="Filter client, engagement, or type", id="engagement-filter"
+                placeholder="Filter client, lab, platform, engagement, or type",
+                id="engagement-filter",
             )
             yield DataTable(id="engagements", cursor_type="row", zebra_stripes=True)
-            yield Static("n: new  i: copy v1  /: filter  Enter: open", id="picker-hint")
+            yield Static(
+                "a: actions  n: new  i: copy v1  /: filter  Enter: open",
+                id="picker-hint",
+            )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -157,12 +167,17 @@ class EngagementPickerScreen(Screen):
     def refresh_table(self, query: str = "") -> None:
         table = self.query_one("#engagements", DataTable)
         if not table.columns:
-            table.add_columns("Client / Lab", "Engagement", "Type", "Created")
+            table.add_columns(
+                "Client / Lab / Platform", "Engagement", "Type", "Created"
+            )
         table.clear()
         query = query.casefold()
         for record in self.app.workspace.list_engagements():
             engagement = record.engagement
-            haystack = f"{engagement.client} {engagement.name} {engagement.assessment_type.value}".casefold()
+            haystack = (
+                f"{engagement.client} {engagement.name} "
+                f"{engagement.assessment_type.value}"
+            ).casefold()
             if query and query not in haystack:
                 continue
             table.add_row(
@@ -185,6 +200,92 @@ class EngagementPickerScreen(Screen):
             self.app.open_engagement(self.app.workspace.find(self.selected_id()))
         except TacmuxError as exc:
             self.app.show_error(str(exc))
+
+    def action_actions(self) -> None:
+        try:
+            record = self.app.workspace.find(self.selected_id())
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
+            return
+        self.app.push_screen(
+            ActionMenu(
+                f"{record.engagement.client} / {record.engagement.name}",
+                [
+                    ("open", "Open engagement"),
+                    ("archive", "Create verified archive"),
+                    ("delete", "Permanently delete engagement"),
+                ],
+            ),
+            lambda action: self._engagement_action(record.engagement.id, action),
+        )
+
+    def _engagement_action(self, engagement_id: str, action: str | None) -> None:
+        if action == "open":
+            try:
+                self.app.open_engagement(self.app.workspace.find(engagement_id))
+            except TacmuxError as exc:
+                self.app.show_error(str(exc))
+        elif action == "archive":
+            self._archive_engagement(engagement_id)
+        elif action == "delete":
+            self._confirm_delete_engagement(engagement_id)
+
+    def _archive_engagement(self, engagement_id: str) -> None:
+        try:
+            archive = self.app.archive_engagement(engagement_id)
+            self.app.push_screen(
+                MessageModal("Engagement Archive Verified", str(archive))
+            )
+        except (TacmuxError, OSError) as exc:
+            self.app.show_error(str(exc))
+
+    def _confirm_delete_engagement(self, engagement_id: str) -> None:
+        try:
+            record = self.app.require_idle_engagement(
+                engagement_id, "deleting the engagement"
+            )
+        except (TacmuxError, OSError) as exc:
+            self.app.show_error(str(exc))
+            return
+        engagement = record.engagement
+        message = (
+            "This permanently deletes the complete live engagement directory, "
+            "including scope, targets, notes, findings, evidence, and completed "
+            "jobs.\n\n"
+            f"Client / Lab / Platform: {engagement.client}\n"
+            f"Engagement: {engagement.name}\n"
+            f"Stable ID: {engagement.id}\n"
+            f"Directory: {record.root}\n\n"
+            "Verified archives stored outside this directory are not deleted."
+        )
+        self.app.push_screen(
+            ConfirmModal(
+                "Permanently Delete Engagement",
+                message,
+                f"DELETE {engagement.id}",
+            ),
+            lambda confirmed: self._delete_engagement(engagement.id)
+            if confirmed
+            else None,
+        )
+
+    def _delete_engagement(self, engagement_id: str) -> None:
+        deleted_name = engagement_id
+        try:
+            record = self.app.require_idle_engagement(
+                engagement_id, "deleting the engagement"
+            )
+            deleted_name = (
+                f"{record.engagement.client} / {record.engagement.name}"
+            )
+            self.app.workspace.delete_engagement(engagement_id)
+            self.app.notify(f"Permanently deleted {deleted_name}")
+        except (TacmuxError, OSError) as exc:
+            self.app.show_error(str(exc))
+        finally:
+            query = self.query_one("#engagement-filter", Input).value
+            self.refresh_table(query)
+            self.query_one("#engagements", DataTable).focus()
 
     @on(DataTable.RowSelected, "#engagements")
     def row_selected(self) -> None:
@@ -1328,25 +1429,8 @@ class MainScreen(Screen):
                 self.app.page_file(path, terminal_output=kind == "evidence")
 
     def action_archive_engagement(self) -> None:
-        live = self.app.tmux.live_target_ids(self.engagement)
-        active_jobs = self.app.jobs.active(self.record.root)
-        if (
-            live
-            or active_jobs
-            or self.app.tmux.has_session(self.app.tmux.session_name(self.engagement))
-        ):
-            self.app.show_error(
-                "Stop all target, operations, and discovery sessions before archiving the engagement"
-            )
-            return
         try:
-            archive, _ = create_archive(
-                self.record.root,
-                self.app.settings.archive_dir,
-                kind="engagements",
-                engagement_id=self.engagement.id,
-                object_id=self.engagement.id,
-            )
+            archive = self.app.archive_engagement(self.engagement.id)
             self.app.push_screen(
                 MessageModal("Engagement Archive Verified", str(archive))
             )
@@ -1484,6 +1568,58 @@ class TacmuxApp(App[LaunchIntent | None]):
     def open_engagement(self, record: EngagementRecord) -> None:
         self.workspace.set_last_engagement(record.engagement.id)
         self.switch_screen(MainScreen(record))
+
+    def require_idle_engagement(
+        self, engagement_id: str, action: str
+    ) -> EngagementRecord:
+        record = self.workspace.find(engagement_id)
+        engagement = record.engagement
+        blockers: list[str] = []
+        target_sessions = self.tmux.live_target_ids(engagement)
+        if target_sessions:
+            blockers.append(f"{len(target_sessions)} target session(s)")
+
+        tmux_available = self.tmux.available()
+        if tmux_available and self.tmux.has_session(
+            self.tmux.session_name(engagement)
+        ):
+            blockers.append("operations session")
+
+        jobs = self.jobs.list(record.root)
+        active_job_ids = {
+            str(job["id"])
+            for job in jobs
+            if job.get("state") in {"queued", "running"}
+        }
+        if tmux_available:
+            active_job_ids.update(
+                str(job["id"])
+                for job in jobs
+                if self.tmux.has_session(
+                    self.tmux.job_session_name(engagement, str(job["id"]))
+                )
+            )
+        if active_job_ids:
+            blockers.append(f"{len(active_job_ids)} discovery job(s)")
+
+        if blockers:
+            raise ConflictError(
+                f"Stop or cancel active work before {action}: " + ", ".join(blockers)
+            )
+        return record
+
+    def archive_engagement(self, engagement_id: str) -> Path:
+        record = self.require_idle_engagement(
+            engagement_id, "archiving the engagement"
+        )
+        archive, _ = create_archive(
+            record.root,
+            self.settings.archive_dir,
+            kind="engagements",
+            engagement_id=record.engagement.id,
+            object_id=record.engagement.id,
+        )
+        return archive
 
     def show_error(self, message: str) -> None:
         self.notify(message, title="TACMUX", severity="error", timeout=8)

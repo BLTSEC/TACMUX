@@ -21,7 +21,7 @@ Run `tacmux`, choose the engagement and target, and work from menus. The public 
 - Python 3.11+ and Textual for a responsive terminal UI.
 - An image-derived BLTSEC dark theme plus a persistent, curated fuzzy theme selector.
 - One readable JSON manifest per engagement.
-- Human-facing **Client or Lab** and **Engagement Name** fields instead of provider/slug terminology.
+- Human-facing **Client, Lab, or Platform** and **Engagement Name** fields instead of provider/slug terminology.
 - External and internal scope groups, including IPs, CIDRs, unavailable internal networks, pivot relationships, dual-homed systems, and overlapping addresses qualified by scope.
 - Stable target IDs and directories. Renaming a display name never moves evidence.
 - Detached target, operations, and discovery sessions with engagement-wide stop controls.
@@ -81,7 +81,9 @@ tacmux
    editable Markdown or pages a read-only text file; `a` offers explicit View/Edit
    actions. Generated documents remain read-only.
 
-The command palette provides fuzzy access to the same actions without an fzf dependency.
+The `Ctrl+P` Command Palette provides fuzzy command search without an fzf
+dependency. Press `a` for the shorter contextual Actions menu, including
+engagement open/archive/delete choices from the picker.
 Press `t` from the cockpit or engagement picker to choose BLTSEC, Textual Dark,
 Nord, Dracula, Catppuccin Mocha, Tokyo Night, Gruvbox, Rose Pine Moon, or
 Solarized Dark. The choice applies only to TACMUX and is remembered across launches.
