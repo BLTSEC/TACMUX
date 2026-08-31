@@ -1237,12 +1237,3 @@ Created: {engagement.created_at}
     def get_last_engagement(self) -> str:
         value = self._read_state()
         return str(value.get("last_engagement_id", ""))
-
-    def set_theme(self, theme_name: str) -> None:
-        if not theme_name.strip():
-            raise ValidationError("theme name is required")
-        self._update_state(selected_theme=theme_name.strip())
-
-    def get_theme(self) -> str:
-        value = self._read_state().get("selected_theme", "")
-        return value if isinstance(value, str) else ""

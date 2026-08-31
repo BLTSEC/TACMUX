@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.2.0 — 2026-08-31
+
+### Added
+
+- A complete, contrast-checked BLTSEC operator palette and Nerd Font navigation
+  and lifecycle symbols paired with text labels.
+
+### Changed
+
+- The engagement picker, cockpit banner, tabs, tables, split panes, forms,
+  modals, and footer now share a responsive BLTSEC-inspired visual system.
+- Critical lifecycle and authorization state occupies a dedicated banner line
+  so it remains visible at the 80-column minimum.
+
 ## 2.1.0 — 2026-08-31
 
 ### Added
@@ -45,8 +59,7 @@ cockpit. It is a deliberate workflow reset, not an in-place manifest upgrade.
 - Terminal topology, generated SITREP, evidence preview/paging, and verified
   target or engagement archives with guarded restore and deletion.
 - In-pane `note`, `activity`, `sitrep`, and trusted `clip` commands.
-- BLTSEC, Nord, Dracula, Catppuccin Mocha, Tokyo Night, Gruvbox, Rose Pine Moon,
-  Solarized Dark, and Textual Dark themes.
+- A dedicated BLTSEC cockpit theme.
 - Optional read-only NOCAP timeline integration.
 
 ### Changed

@@ -302,14 +302,11 @@ def test_engagement_delete_removes_live_tree_and_preserves_archive(
         engagement_id=record.engagement.id,
         object_id=record.engagement.id,
     )
-    workspace.set_theme("nord")
-
     workspace.delete_engagement(record.engagement.id)
 
     assert not record.root.exists()
     assert workspace.list_engagements() == []
     assert workspace.get_last_engagement() == ""
-    assert workspace.get_theme() == "nord"
     assert archive.is_file() and manifest.is_file()
     assert not any((workspace.settings.workspace / ".tacmux/deleting").iterdir())
 
@@ -489,9 +486,7 @@ def test_ipv6_addresses_are_normalized_before_primary_validation(workspace, reco
     assert target.primary_endpoint == "2001:db8::1"
 
 
-def test_ui_state_updates_preserve_engagement_and_theme(workspace, record):
-    workspace.set_theme("nord")
-    assert workspace.get_theme() == "nord"
+def test_ui_state_updates_preserve_engagement_selection(workspace, record):
     assert workspace.get_last_engagement() == record.engagement.id
 
     workspace.set_last_engagement("E-0123456789ab")
@@ -499,25 +494,15 @@ def test_ui_state_updates_preserve_engagement_and_theme(workspace, record):
     assert state == {
         "last_engagement_id": "E-0123456789ab",
         "schema": "tacmux.state/v1",
-        "selected_theme": "nord",
     }
     assert mode(workspace.settings.state_file) == 0o600
     assert mode(workspace.settings.state_file.with_suffix(".lock")) == 0o600
 
 
-def test_ui_state_recovers_from_malformed_values(workspace):
+def test_ui_state_recovers_from_malformed_json(workspace):
     workspace.settings.state_file.write_text("not json")
-    workspace.set_theme("dracula")
-    assert workspace.get_theme() == "dracula"
-    assert workspace.get_last_engagement() == ""
-
-    workspace.settings.state_file.write_text(
-        json.dumps({"schema": "tacmux.state/v1", "selected_theme": ["nord"]})
-    )
-    assert workspace.get_theme() == ""
-
-    with pytest.raises(ValidationError, match="theme name"):
-        workspace.set_theme("   ")
+    workspace.set_last_engagement("E-0123456789ab")
+    assert workspace.get_last_engagement() == "E-0123456789ab"
 
 
 @pytest.mark.parametrize(
