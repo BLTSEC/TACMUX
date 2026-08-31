@@ -25,13 +25,17 @@ Run `tacmux`, choose the engagement and target, and work from menus. The public 
 - External and internal scope groups with IPs, CIDRs, domain patterns, per-entry exclusions, unavailable internal networks, pivot relationships, dual-homed systems, and overlapping addresses qualified by scope.
 - Stable target IDs and directories. Renaming a display name never moves evidence.
 - Detached target, operations, and discovery sessions with engagement-wide stop controls.
-- Fixed host-discovery scans using `nmap -sn --reason -oX` and declared exclusions, followed by mandatory Add/Merge/Ignore review. Domain scope is import-only and never resolved by TACMUX.
-- Import-only service inventory from operator-produced Nmap XML. TACMUX never launches a port or version scan.
+- Selectable detached Nmap discovery: host-only, or host discovery followed by
+  all-TCP-port identification and targeted `-sV`. Every stage is rebuilt from
+  declared scope and every result still requires Add/Merge/Ignore review.
+- Imported and TACMUX-discovered service inventory with retained XML provenance.
 - Structured authorization windows, active/closed lifecycle, Records view, and cleanup ledger.
 - In-pane `tacmux note`, `tacmux activity`, and `tacmux sitrep` capture commands.
 - Terminal-native topology and confirmed attack-path views. Optional Mermaid source is generated in `SITREP.md`.
 - Markdown and cleaned terminal-log previews, full-file paging through `$PAGER`,
   and editing through `$VISUAL`, `$EDITOR`, or `vi`.
+- Point-in-time Markdown handoffs containing structured state, authored notes,
+  findings, paths, and either an evidence index or bounded text evidence.
 - Optional, read-only NOCAP timeline integration. NOCAP remains a separate tool.
 
 TACMUX does not require fzf, AutoRecon, Obsidian, or shell completions.
@@ -66,7 +70,10 @@ Useful modes:
 ./install.sh --skip-tmux
 ```
 
-If `~/.tmux.conf` exists, the default installer adds only the TACMUX integration fragment. Otherwise it installs the optional complete configuration. Prefix + `E` opens TACMUX in a tmux popup.
+On the first install, an existing `~/.tmux.conf` receives only the TACMUX
+integration fragment; without one, TACMUX installs its complete configuration.
+Reinstalls preserve the TACMUX-managed mode instead of changing it merely
+because `~/.tmux.conf` now exists. Prefix + `E` opens TACMUX in a tmux popup.
 
 ## First engagement
 
@@ -76,7 +83,7 @@ tacmux
 
 1. Press `n` and enter the client/lab, engagement name, assessment type, and any scope known before testing.
 2. Open **Scope** to add or update network/domain scope and exclusions. Internal scope may begin unavailable and later become ready through a selected pivot target.
-3. Press `d` to run detached host discovery or import existing Nmap XML/pasted hosts or hostnames.
+3. Press `d` to run detached host-only or TCP-service discovery, or import existing Nmap XML/pasted hosts or hostnames.
 4. Review every result as **Add**, **Merge**, or **Ignore**. Detached target sessions are created by default for accepted hosts.
 5. Select a target and press Enter to attach. Press `a` for target actions.
 6. Use **Records** for access, activity, findings, attack paths, and cleanup. Use **Situation** for terminal-readable topology and confirmed attack paths.
@@ -102,6 +109,7 @@ Solarized Dark. The choice applies only to TACMUX and is remembered across launc
 ├── ENGAGEMENT.md
 ├── SITREP.md
 ├── findings/
+├── exports/
 ├── notes/
 │   ├── activity.md
 │   └── attack-path.md
@@ -127,6 +135,8 @@ tacmux note TEXT...            Append a note in the current target/ops session
 tacmux activity RESULT [--evidence PATH] TEXT...
                                Record activity in the current session
 tacmux sitrep                  Print the current engagement SITREP
+tacmux export [compact|evidence]
+                               Create a single-file Markdown handoff
 tacmux clip                    Copy stdin through the trusted clipboard path
 tacmux archive verify FILE     Verify the archive and every file hash
 tacmux version                 Print the version
@@ -165,6 +175,7 @@ No Markdown is moved or symlinked into another application. Set `$VISUAL` or `$E
 - Archiving creates a verified copy; it does not silently delete the live workspace.
 - Permanent target deletion is only for mistaken targets. It requires exact typed confirmation, refuses running sessions, and refuses structured references. The Records workflow can correct or remove mistaken records first.
 - Attack paths accept only confirmed activity, confirmed/closed findings, and recorded access. **Authenticated** is deliberately distinct from command execution or privilege.
+- Access metadata that resembles credential material triggers a warning before it is saved; TACMUX does not reject or rewrite authorized evidence.
 - Exclusions are enforced by validation, import review, and Nmap `--exclude`. Overlapping scope entries must be discovered in separate jobs.
 - Hostname-only targets must match declared domain scope when domain entries exist. `*.acme.test` excludes the apex; declare `acme.test` separately.
 - Starting sessions or discovery outside a configured authorization window requires confirmation. Closed engagements block operational changes until reopened.

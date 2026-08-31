@@ -11,6 +11,8 @@ from tacmux.discovery import (
     DiscoveryCandidate,
     DiscoveryJobs,
     Reconciliation,
+    ScanPace,
+    ScanProfile,
     apply_reconciliation,
     parse_host_lines,
     parse_nmap_xml,
@@ -450,6 +452,147 @@ def test_cancelled_job_does_not_start_if_runner_arrives_late(
     job_file = record.root / ".tacmux/jobs" / job["id"] / "job.json"
     assert run_job(settings, job_file) == 130
     assert jobs.list(record.root)[0]["state"] == "cancelled"
+
+
+def _nmap_xml(*hosts: tuple[str, list[int], str]) -> str:
+    body = []
+    for address, ports, product in hosts:
+        address_type = "ipv6" if ":" in address else "ipv4"
+        port_xml = "".join(
+            f"<port protocol='tcp' portid='{port}'><state state='open'/>"
+            f"<service name='{'ssh' if port == 22 else 'https'}' "
+            f"product='{product}' version='1.0'/></port>"
+            for port in ports
+        )
+        body.append(
+            "<host><status state='up' reason='echo-reply'/>"
+            f"<address addr='{address}' addrtype='{address_type}'/>"
+            f"<ports>{port_xml}</ports></host>"
+        )
+    return "<nmaprun>" + "".join(body) + "</nmaprun>"
+
+
+def test_enhanced_job_revalidates_hosts_and_targets_sv_to_discovered_ports(
+    monkeypatch, workspace, record, settings
+):
+    scope = record.engagement.add_scope(
+        "DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24"
+    )
+    workspace.save(record.root, record.engagement)
+    jobs = DiscoveryJobs(settings, RecordingTmux(), workspace)
+    monkeypatch.setattr("tacmux.discovery.shutil.which", lambda _name: "/usr/bin/nmap")
+    job = jobs.create(
+        record.root,
+        record.engagement,
+        [scope.id],
+        profile=ScanProfile.TCP_SERVICES,
+        pace=ScanPace.FAST,
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *, stdout, stderr, check):
+        calls.append(list(argv))
+        output = Path(argv[argv.index("-oX") + 1])
+        if output.name.startswith("host-discovery"):
+            output.write_text(
+                _nmap_xml(
+                    ("198.51.100.25", [], ""),
+                    ("203.0.113.99", [], ""),
+                )
+            )
+        elif output.name.startswith("tcp-ports"):
+            assert argv[-1:] == ["198.51.100.25"]
+            output.write_text(_nmap_xml(("198.51.100.25", [22, 443], "")))
+        else:
+            assert "-sV" in argv and argv[argv.index("-p") + 1] == "22,443"
+            assert argv[-1:] == ["198.51.100.25"]
+            output.write_text(_nmap_xml(("198.51.100.25", [22, 443], "OpenSSH")))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr("tacmux.discovery.subprocess.run", fake_run)
+    job_file = record.root / ".tacmux/jobs" / job["id"] / "job.json"
+    assert run_job(settings, job_file) == 0
+    assert len(calls) == 3
+    assert "-p-" in calls[1] and "-T4" in calls[1]
+    assert "-T4" in calls[2]
+    assert all("203.0.113.99" not in argv for argv in calls[1:])
+    status = jobs.list(record.root)[0]
+    assert status["state"] == "succeeded"
+    assert len(status["result_paths"]) == 3
+    candidates = jobs.candidates(record.root, job["id"])
+    accepted = next(item for item in candidates if "198.51.100.25" in item.addresses)
+    assert [(item.port, item.product) for item in accepted.services] == [
+        (22, "OpenSSH"),
+        (443, "OpenSSH"),
+    ]
+    decisions = reconcile_candidates(
+        record.engagement, candidates, allowed_scope_ids={scope.id}
+    )
+    rogue = next(item for item in decisions if item.candidate.addresses == ["203.0.113.99"])
+    assert rogue.allowed_actions == ("ignore",)
+
+
+def test_enhanced_job_preserves_partial_host_results_when_port_scan_fails(
+    monkeypatch, workspace, record, settings
+):
+    scope = record.engagement.add_scope(
+        "DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24"
+    )
+    workspace.save(record.root, record.engagement)
+    jobs = DiscoveryJobs(settings, RecordingTmux(), workspace)
+    monkeypatch.setattr("tacmux.discovery.shutil.which", lambda _name: "/usr/bin/nmap")
+    job = jobs.create(
+        record.root,
+        record.engagement,
+        [scope.id],
+        profile=ScanProfile.TCP_SERVICES,
+    )
+
+    def fake_run(argv, *, stdout, stderr, check):
+        output = Path(argv[argv.index("-oX") + 1])
+        if output.name.startswith("host-discovery"):
+            output.write_text(_nmap_xml(("198.51.100.25", [], "")))
+            return subprocess.CompletedProcess(argv, 0)
+        return subprocess.CompletedProcess(argv, 2)
+
+    monkeypatch.setattr("tacmux.discovery.subprocess.run", fake_run)
+    job_file = record.root / ".tacmux/jobs" / job["id"] / "job.json"
+    assert run_job(settings, job_file) == 2
+    status = jobs.list(record.root)[0]
+    assert status["state"] == "partial"
+    assert status["result_paths"] == ["host-discovery-ipv4.xml"]
+    assert jobs.candidates(record.root, job["id"])[0].addresses == ["198.51.100.25"]
+
+
+def test_enhanced_ipv6_job_uses_ipv6_mode_and_skips_sv_without_ports(
+    monkeypatch, workspace, record, settings
+):
+    scope = record.engagement.add_scope(
+        "IPv6 LAN", ScopeGroup.INTERNAL, "2001:db8::/64"
+    )
+    workspace.save(record.root, record.engagement)
+    jobs = DiscoveryJobs(settings, RecordingTmux(), workspace)
+    monkeypatch.setattr("tacmux.discovery.shutil.which", lambda _name: "/usr/bin/nmap")
+    job = jobs.create(
+        record.root,
+        record.engagement,
+        [scope.id],
+        profile=ScanProfile.TCP_SERVICES,
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *, stdout, stderr, check):
+        calls.append(list(argv))
+        output = Path(argv[argv.index("-oX") + 1])
+        output.write_text(_nmap_xml(("2001:db8::25", [], "")))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr("tacmux.discovery.subprocess.run", fake_run)
+    job_file = record.root / ".tacmux/jobs" / job["id"] / "job.json"
+    assert run_job(settings, job_file) == 0
+    assert len(calls) == 2
+    assert all("-6" in argv for argv in calls)
+    assert not any("-sV" in argv for argv in calls)
 
 
 def test_reconciliation_rolls_back_all_targets_when_commit_fails(

@@ -33,6 +33,7 @@ from tacmux.model import (
     Severity,
     TargetAddress,
     hostname_matches,
+    looks_like_credential,
     pattern_inside,
 )
 from tacmux.render import render_sitrep
@@ -550,7 +551,29 @@ def test_missing_evidence_is_reported_in_generated_sitrep(workspace, record):
     assert warnings == [
         "activity A0001 references missing evidence: notes/missing-proof.txt"
     ]
+    workspace.render_documents(record.root, record.engagement)
     assert warnings[0] in (record.root / "SITREP.md").read_text()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "0123456789abcdef0123456789abcdef:fedcba9876543210fedcba9876543210",
+        "-----BEGIN " + "OPENSSH PRIVATE KEY-----",
+        "QWxhZGRpbjpvcGVuIHNlc2FtZQ" * 2,
+        "a" * 64,
+    ],
+)
+def test_credential_shape_warning_is_narrow_and_non_blocking(value):
+    assert looks_like_credential(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["svc_deploy", "ACME\\operator", "Kerberos ticket", "SSH public key auth"],
+)
+def test_ordinary_access_metadata_does_not_trigger_credential_warning(value):
+    assert not looks_like_credential(value)
 
 
 class _HookTmux:

@@ -213,18 +213,24 @@ class ScopeDiscoveryPane(Static):
             )
         jobs_table = self.query_one("#jobs-table", DataTable)
         if not jobs_table.columns:
-            jobs_table.add_columns("Job", "State", "Scope", "Started", "Result")
+            jobs_table.add_columns(
+                "Job", "Profile", "State / phase", "Scope", "Started", "Results"
+            )
         jobs_table.clear()
         for job in jobs:
             state = str(job.get("state", ""))
             if job.get("imported_at"):
                 state += " / imported"
+            phase = str(job.get("phase") or "")
+            if phase and phase not in {"queued", "complete"}:
+                state += f" / {phase}"
             jobs_table.add_row(
                 str(job.get("id", "")),
+                str(job.get("profile", "hosts")),
                 state,
                 ", ".join(job.get("scope_ids", [])),
                 str(job.get("started_at") or "—")[:19],
-                str(job.get("xml_path", "")),
+                str(len(job.get("result_paths", []))),
                 key=str(job.get("id", "")),
             )
 
@@ -384,6 +390,13 @@ class DocumentsPane(Horizontal):
             )
             for item in record.engagement.targets
         )
+        exports = record.root / "exports"
+        if exports.is_dir() and not exports.is_symlink():
+            entries.extend(
+                (f"Handoff export / {path.name}", path, False, "generated")
+                for path in sorted(exports.glob("*.md"), reverse=True)
+                if path.is_file() and not path.is_symlink()
+            )
         return entries
 
     @staticmethod
@@ -463,9 +476,23 @@ class DocumentsPane(Horizontal):
                     status = json.loads((job_root / "status.json").read_text())
                 except (OSError, UnicodeError, json.JSONDecodeError):
                     continue
-                if status.get("state") not in {"succeeded", "failed", "cancelled"}:
+                if status.get("state") not in {
+                    "succeeded",
+                    "partial",
+                    "failed",
+                    "cancelled",
+                }:
                     continue
-                for filename in ("results.xml", "nmap.log"):
+                artifacts = status.get("artifacts", ["results.xml"])
+                filenames = ["nmap.log"]
+                if isinstance(artifacts, list):
+                    filenames.extend(
+                        item.get("path") if isinstance(item, dict) else item
+                        for item in artifacts
+                    )
+                for filename in dict.fromkeys(filenames):
+                    if not isinstance(filename, str) or Path(filename).name != filename:
+                        continue
                     add_entry(
                         f"Discovery {job_root.name} / {filename}",
                         job_root / filename,

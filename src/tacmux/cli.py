@@ -14,6 +14,7 @@ from .config import load_settings
 from .context import resolve
 from .discovery import DiscoveryJobs, run_job
 from .errors import ConflictError, TacmuxError
+from .export import create_handoff, parse_export_profile
 from .hooks import LogController, clipboard_copy, status_segment
 from .model import ActivityResult, EngagementStatus
 from .render import render_sitrep
@@ -30,6 +31,8 @@ Usage:
   tacmux activity RESULT [--evidence PATH] TEXT...
                                  Record confirmed, failed, or no-result activity
   tacmux sitrep                  Print the current engagement SITREP
+  tacmux export [compact|evidence]
+                                 Create a single-file Markdown handoff
   tacmux clip                    Copy stdin through the trusted clipboard path
   tacmux archive verify FILE     Verify an archive and every member hash
   tacmux version                 Print the version
@@ -106,7 +109,7 @@ def _health() -> int:
     )
     checks.append(
         (
-            "Nmap host discovery",
+            "Nmap discovery",
             shutil.which("nmap") is not None,
             shutil.which("nmap") or "optional; import remains available",
         )
@@ -137,7 +140,7 @@ def _health() -> int:
         if all(
             ok
             for label, ok, _ in checks
-            if label not in {"Nmap host discovery", "editor"}
+            if label not in {"Nmap discovery", "editor"}
         )
         else 1
     )
@@ -245,7 +248,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 target_id=target.id if target else "",
                 evidence=evidence,
             )
-            workspace.refresh_sitrep(
+            workspace.render_documents(
                 record.root,
                 record.engagement,
                 live_target_ids=tmux.live_target_ids(record.engagement),
@@ -268,6 +271,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 end="",
             )
+            return 0
+        if args and args[0] == "export" and len(args) <= 2:
+            settings = load_settings()
+            tmux = TmuxService(settings)
+            record, _ = resolve(settings, tmux)
+            profile = parse_export_profile(args[1] if len(args) == 2 else "compact")
+            workspace = Workspace(settings)
+            path = create_handoff(
+                record,
+                profile=profile,
+                live_target_ids=tmux.live_target_ids(record.engagement),
+                jobs=DiscoveryJobs(settings, tmux, workspace).list(record.root),
+                include_mermaid=settings.include_mermaid,
+            )
+            print(path)
             return 0
         if len(args) == 3 and args[:2] == ["archive", "verify"]:
             document = verify_archive(Path(args[2]))

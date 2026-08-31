@@ -16,6 +16,16 @@ from .errors import ConflictError, ValidationError
 
 SCHEMA = "tacmux.engagement/v2"
 _MISSING = object()
+_CREDENTIAL_SHAPES = (
+    re.compile(
+        r"(?i)(?<![0-9a-f])[0-9a-f]{32}:[0-9a-f]{32}(?![0-9a-f])"
+    ),
+    re.compile(r"-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----"),
+    re.compile(
+        r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])"
+    ),
+    re.compile(r"(?i)(?<![0-9a-f])[0-9a-f]{40,}(?![0-9a-f])"),
+)
 
 
 def _object(value: object, label: str) -> dict[str, Any]:
@@ -51,6 +61,12 @@ def utc_now() -> str:
     return (
         datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     )
+
+
+def looks_like_credential(value: str) -> bool:
+    """Flag high-confidence credential shapes without rejecting operator data."""
+
+    return any(pattern.search(value.strip()) for pattern in _CREDENTIAL_SHAPES)
 
 
 class AssessmentType(StrEnum):

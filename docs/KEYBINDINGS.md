@@ -40,9 +40,10 @@ Discovery review:
 | `m` | Choose the existing target for a merge |
 | `Ctrl+S` | Commit reviewed decisions |
 
-On the Documents tab, `a` offers **View full file in pager** and, for editable
-Markdown, **Edit with `$VISUAL` or `$EDITOR`**. TACMUX uses `$PAGER`, then
-`less -SR`, then `more` without adding an application dependency.
+On the Documents tab, `a` offers **Create engagement handoff**, **View full file
+in pager**, and, for editable Markdown, **Edit with `$VISUAL` or `$EDITOR`**.
+TACMUX uses `$PAGER`, then `less -SR`, then `more` without adding an application
+dependency.
 
 Attack-path builder:
 
@@ -79,8 +80,14 @@ These additional keys come only from the optional complete configuration:
 | `W` / `t` | Create / rename a window |
 | `1`–`9` | Select a window |
 | `r` | Reload `~/.tmux.conf` |
+| `q` | Stop logging for the current pane |
+| `L` | Show current-pane logging state and the last log path |
 
-It uses vi copy mode. `y` and mouse-drag copies pass through TACMUX's explicit trusted clipboard path. `set-clipboard external` prevents arbitrary pane applications from writing the host clipboard merely by emitting clipboard escape sequences.
+It uses vi copy mode. The `q` and `L` logging shortcuts intentionally replace
+tmux's stock display-panes and last-client bindings only in this opinionated
+mode. `y` and mouse-drag copies pass through TACMUX's explicit trusted clipboard
+path. `set-clipboard external` prevents arbitrary pane applications from
+writing the host clipboard merely by emitting clipboard escape sequences.
 
 To keep all existing tmux style, prefix, and navigation choices, source only:
 

@@ -49,6 +49,12 @@ enabled = false" > "$TACMUX_CONFIG"
 # Load hooks first so this covers startup ordering and the bootstrap guard.
 tmux new-session -d -s bootstrap -c "$TEST_ROOT" || exit 1
 tmux source-file "$ROOT/tmux/tacmux-integration.conf" || exit 1
+q_binding=$(tmux list-keys -T prefix | rg '^bind-key[[:space:]]+-T prefix q[[:space:]]')
+[[ "$q_binding" != *'_internal log stop'* ]] || \
+    fail "integration mode overrode prefix-q" || exit 1
+l_binding=$(tmux list-keys -T prefix | rg '^bind-key[[:space:]]+-T prefix L[[:space:]]')
+[[ "$l_binding" != *'Logging:'* ]] || \
+    fail "integration mode overrode prefix-L" || exit 1
 
 "$ROOT/.venv/bin/python" -c '
 from pathlib import Path
@@ -125,5 +131,13 @@ wait_for '[[ "$(tmux display-message -t "=plain:" -p "#{pane_pipe}")" == 1 ]]' |
     fail "explicit fallback logging did not start" || exit 1
 plain_log=$(tmux show-option -p -t '=plain:' -qv @tacmux_log_file)
 [[ "$plain_log" == "$TEST_ROOT/logs"/* ]] || fail "fallback log path was incorrect" || exit 1
+
+tmux source-file "$ROOT/tmux/tacmux.conf" || exit 1
+[[ "$(tmux show-option -gv prefix)" == C-Space ]] || \
+    fail "complete configuration did not restore the v1 prefix" || exit 1
+tmux list-keys -T prefix | rg -q '^bind-key[[:space:]]+-T prefix q[[:space:]].*_internal log stop' || \
+    fail "complete configuration did not restore prefix-q" || exit 1
+tmux list-keys -T prefix | rg -q '^bind-key[[:space:]]+-T prefix L[[:space:]].*Logging:' || \
+    fail "complete configuration did not restore prefix-L" || exit 1
 
 print -- '[PASS] v2 session context, bounded logging, scrollback, and clipboard'
