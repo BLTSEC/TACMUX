@@ -27,11 +27,27 @@ Unix permissions may not be enforced by VM shared folders, FAT filesystems, some
 
 Automatic pane logging is enabled for TACMUX-owned sessions by default and can capture credentials, tokens, personal data, and client evidence. Non-TACMUX sessions are ignored unless `behavior.log_outside_tacmux = true`. Disable logging in the engagement form or config when required. Stopping the TUI does not stop detached sessions or their logging.
 
+Structured access records warn when the principal, authority, or method resembles
+an NTLM pair, private key, or long encoded secret. This is a narrow warning, not a
+secret scanner or a hard block. Notes, evidence, imported files, and pane logs may
+legitimately contain sensitive material and are not inspected or rewritten.
+
+Handoff exports are owner-only Markdown snapshots but may aggregate all of that
+sensitive text into one convenient file. Compact exports index evidence;
+evidence-rich exports also embed bounded readable evidence. TACMUX does not
+redact either profile. Treat exports as client evidence and use an approved
+transfer and retention process.
+
 Archive manifests contain SHA-256 integrity metadata, not a digital signature. A party able to replace both archive and sidecar can replace the recorded hashes. Protect or sign both through the approved evidence-transfer process when independent authenticity is required.
 
 ## External tools and integrations
 
-- Nmap discovery is optional and limited by TACMUX to `-sn --reason -oX`, plus declared `--exclude` carve-outs. Domain scope is never resolved or scanned. Imported service data comes only from operator-produced Nmap XML. Discovery still generates network traffic.
+- Nmap is optional. Host-only jobs use `-sn --reason`; enhanced jobs may then
+  use `-Pn -p- --open --reason` and `-Pn -sV --open -p <discovered-ports>`.
+  Fast pace adds only `-T4`. Later-stage IPs are revalidated against the
+  selected ready network scope and exclusions, commands never use a shell, and
+  domain scope is never resolved or scanned. Enhanced discovery is noisier and
+  must be permitted by the rules of engagement.
 - NOCAP is disabled by default. When enabled, TACMUX invokes only documented JSON read commands and exports workspace context to target sessions; NOCAP has its own trust boundary.
 - `$VISUAL` / `$EDITOR` is executed as the current user. Configure only a trusted editor command.
 - Explicit clipboard actions, including `tacmux clip`, may forward data to the local workstation through tmux, desktop clipboard tools, or OSC 52. Verify the destination before copying sensitive material.

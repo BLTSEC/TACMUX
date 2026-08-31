@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import StrEnum
 import ipaddress
 from itertools import combinations
 import json
@@ -14,7 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Iterable, Sequence
+from typing import BinaryIO, Iterable, Sequence
 import xml.etree.ElementTree as ET
 
 from .config import Settings
@@ -42,6 +43,16 @@ from .tmux import TmuxService
 
 
 JOB_SCHEMA = "tacmux.discovery-job/v1"
+
+
+class ScanProfile(StrEnum):
+    HOSTS = "hosts"
+    TCP_SERVICES = "tcp-services"
+
+
+class ScanPace(StrEnum):
+    CAREFUL = "careful"
+    FAST = "fast"
 
 
 def _validated_scan_scopes(
@@ -74,14 +85,74 @@ def _validated_scan_scopes(
 
 
 def _scan_argv(
-    nmap: str, xml_path: Path, scopes: Sequence[ScopeEntry]
+    nmap: str,
+    xml_path: Path,
+    scopes: Sequence[ScopeEntry],
+    *,
+    ipv6: bool = False,
 ) -> list[str]:
     exclusions = sorted({item for scope in scopes for item in scope.exclusions})
-    argv = [nmap, "-sn", "--reason"]
+    argv = [nmap]
+    if ipv6:
+        argv.append("-6")
+    argv.extend(["-sn", "--reason"])
     if exclusions:
         argv.extend(["--exclude", ",".join(exclusions)])
     argv.extend(["-oX", str(xml_path), *[item.network for item in scopes]])
     return argv
+
+
+def _port_scan_argv(
+    nmap: str,
+    xml_path: Path,
+    addresses: Sequence[str],
+    pace: ScanPace,
+    *,
+    ipv6: bool = False,
+) -> list[str]:
+    argv = [nmap]
+    if ipv6:
+        argv.append("-6")
+    argv.extend(["-Pn", "-p-", "--open", "--reason"])
+    if pace == ScanPace.FAST:
+        argv.append("-T4")
+    argv.extend(["-oX", str(xml_path), *addresses])
+    return argv
+
+
+def _service_scan_argv(
+    nmap: str,
+    xml_path: Path,
+    addresses: Sequence[str],
+    ports: Sequence[int],
+    pace: ScanPace,
+    *,
+    ipv6: bool = False,
+) -> list[str]:
+    if not addresses or not ports:
+        raise ValidationError("service detection requires hosts and open TCP ports")
+    argv = [nmap]
+    if ipv6:
+        argv.append("-6")
+    argv.extend(["-Pn", "-sV", "--open", "-p", ",".join(map(str, ports))])
+    if pace == ScanPace.FAST:
+        argv.append("-T4")
+    argv.extend(["-oX", str(xml_path), *addresses])
+    return argv
+
+
+def _scan_profile(value: object) -> ScanProfile:
+    try:
+        return ScanProfile(str(value or ScanProfile.HOSTS.value))
+    except ValueError as exc:
+        raise ValidationError("unknown discovery scan profile") from exc
+
+
+def _scan_pace(value: object) -> ScanPace:
+    try:
+        return ScanPace(str(value or ScanPace.CAREFUL.value))
+    except ValueError as exc:
+        raise ValidationError("unknown discovery scan pace") from exc
 
 
 @dataclass(slots=True)
@@ -226,6 +297,51 @@ def parse_nmap_xml(path: Path, *, source: str = "") -> list[DiscoveryCandidate]:
                 )
             )
     return candidates
+
+
+def merge_discovery_candidates(
+    groups: Iterable[Iterable[DiscoveryCandidate]],
+) -> list[DiscoveryCandidate]:
+    """Overlay host, port, and service results that share an IP address."""
+
+    merged: list[DiscoveryCandidate] = []
+    for group in groups:
+        for candidate in group:
+            matching = [
+                item
+                for item in merged
+                if set(item.addresses) & set(candidate.addresses)
+            ]
+            if not matching:
+                merged.append(
+                    DiscoveryCandidate(
+                        addresses=list(candidate.addresses),
+                        hostnames=list(candidate.hostnames),
+                        reason=candidate.reason,
+                        services=list(candidate.services),
+                    )
+                )
+                continue
+            primary = matching[0]
+            primary.addresses = sorted(set(primary.addresses + candidate.addresses))
+            primary.hostnames = sorted(set(primary.hostnames + candidate.hostnames))
+            primary.services = merge_services(primary.services, candidate.services)
+            if not primary.reason:
+                primary.reason = candidate.reason
+            for duplicate in matching[1:]:
+                primary.addresses = sorted(set(primary.addresses + duplicate.addresses))
+                primary.hostnames = sorted(set(primary.hostnames + duplicate.hostnames))
+                primary.services = merge_services(primary.services, duplicate.services)
+                merged.remove(duplicate)
+    return sorted(merged, key=lambda item: tuple(item.addresses))
+
+
+def parse_nmap_results(
+    paths: Sequence[tuple[Path, str]],
+) -> list[DiscoveryCandidate]:
+    return merge_discovery_candidates(
+        parse_nmap_xml(path, source=source) for path, source in paths
+    )
 
 
 def parse_host_lines(text: str) -> list[DiscoveryCandidate]:
@@ -621,7 +737,32 @@ class DiscoveryJobs:
                 or any(not isinstance(item, str) for item in value["scope_ids"])
             ):
                 continue
-            value["xml_path"] = str(path.parent / "results.xml")
+            result_names = value.get("result_paths", ["results.xml"])
+            if (
+                not isinstance(result_names, list)
+                or any(
+                    not isinstance(item, str)
+                    or not item
+                    or Path(item).name != item
+                    for item in result_names
+                )
+            ):
+                continue
+            artifact_names = value.get("artifacts", result_names)
+            if not isinstance(artifact_names, list):
+                artifact_names = result_names
+            normalized_artifacts: list[str] = []
+            for item in artifact_names:
+                name = item.get("path") if isinstance(item, dict) else item
+                if isinstance(name, str) and name and Path(name).name == name:
+                    normalized_artifacts.append(name)
+            value["result_paths"] = result_names
+            value["artifact_paths"] = [
+                str(path.parent / item) for item in normalized_artifacts
+            ]
+            value["xml_path"] = str(
+                path.parent / (result_names[0] if result_names else "results.xml")
+            )
             value["log_path"] = str(path.parent / "nmap.log")
             jobs.append(value)
         return jobs
@@ -684,17 +825,41 @@ class DiscoveryJobs:
                 engagement_root / ".tacmux/jobs" / job_id / "status.json", job
             )
 
+    def candidates(
+        self, engagement_root: Path, job_id: str
+    ) -> list[DiscoveryCandidate]:
+        job = next(
+            (item for item in self.list(engagement_root) if item["id"] == job_id),
+            None,
+        )
+        if job is None:
+            raise ValidationError(f"unknown discovery job: {job_id}")
+        paths: list[tuple[Path, str]] = []
+        for name in job.get("result_paths", []):
+            path = engagement_root / ".tacmux/jobs" / job_id / str(name)
+            if not path.is_file() or path.is_symlink():
+                continue
+            paths.append((path, path.relative_to(engagement_root).as_posix()))
+        if not paths:
+            raise ValidationError(f"discovery job {job_id} has no importable results")
+        return parse_nmap_results(paths)
+
     def create(
         self,
         engagement_root: Path,
         engagement: Engagement,
         scope_ids: Sequence[str],
+        *,
+        profile: ScanProfile | str = ScanProfile.HOSTS,
+        pace: ScanPace | str = ScanPace.CAREFUL,
     ) -> dict:
         if not shutil.which("nmap"):
             raise ExternalToolError(
                 "Nmap is not installed; XML and pasted-host import remain available"
             )
         selected = _validated_scan_scopes(engagement, scope_ids)
+        selected_profile = _scan_profile(profile)
+        selected_pace = _scan_pace(pace)
         jobs_root = engagement_root / ".tacmux/jobs"
         with self.workspace.lock(engagement_root):
             current = self.workspace.load(engagement_root)
@@ -719,6 +884,9 @@ class DiscoveryJobs:
                 "id": job_id,
                 "engagement_id": engagement.id,
                 "scope_ids": list(scope_ids),
+                "profile": selected_profile.value,
+                "pace": selected_pace.value,
+                "phase": "queued",
                 "state": "queued",
                 "created_at": _utc_now(),
                 "started_at": None,
@@ -726,6 +894,12 @@ class DiscoveryJobs:
                 "exit_code": None,
                 "imported_at": None,
                 "argv": _scan_argv("nmap", xml_path, selected),
+                "result_paths": ["results.xml"]
+                if selected_profile == ScanProfile.HOSTS
+                else [],
+                "artifacts": ["results.xml"]
+                if selected_profile == ScanProfile.HOSTS
+                else [],
                 "xml_path": str(xml_path),
                 "log_path": str(log_path),
             }
@@ -811,6 +985,37 @@ def _current_job_status(
     )
 
 
+class _JobCancelled(Exception):
+    pass
+
+
+def _scope_families(scopes: Sequence[ScopeEntry]) -> dict[int, list[ScopeEntry]]:
+    families: dict[int, list[ScopeEntry]] = {4: [], 6: []}
+    for scope in scopes:
+        families[ipaddress.ip_network(scope.network).version].append(scope)
+    return {version: items for version, items in families.items() if items}
+
+
+def _validated_stage_addresses(
+    candidates: Iterable[DiscoveryCandidate], scopes: Sequence[ScopeEntry]
+) -> dict[int, list[str]]:
+    addresses: dict[int, set[str]] = {4: set(), 6: set()}
+    for candidate in candidates:
+        for raw_address in candidate.addresses:
+            try:
+                address = ipaddress.ip_address(raw_address)
+            except ValueError:
+                continue
+            matching = [scope for scope in scopes if scope.contains(address)]
+            if len(matching) == 1:
+                addresses[address.version].add(str(address))
+    return {
+        version: sorted(items, key=ipaddress.ip_address)
+        for version, items in addresses.items()
+        if items
+    }
+
+
 def run_job(settings: Settings, job_file: Path) -> int:
     engagement_root, job_root, job_id = _job_location(settings, job_file)
     workspace = Workspace(settings)
@@ -847,20 +1052,24 @@ def run_job(settings: Settings, job_file: Path) -> int:
             selected = _validated_scan_scopes(engagement, scope_ids)
         except ConflictError as exc:
             raise ValidationError(str(exc)) from exc
+        profile = _scan_profile(value.get("profile"))
+        pace = _scan_pace(value.get("pace"))
         nmap = shutil.which("nmap")
         if not nmap:
             raise ExternalToolError("Nmap is not installed")
-        xml_path = job_root / "results.xml"
         log_path = job_root / "nmap.log"
         value.update(
             {
                 "id": job_id,
                 "engagement_id": engagement.id,
                 "scope_ids": scope_ids,
+                "profile": profile.value,
+                "pace": pace.value,
+                "phase": "starting",
                 "session": TmuxService(settings).job_session_name(engagement, job_id),
-                "argv": _scan_argv(nmap, xml_path, selected),
-                "xml_path": str(xml_path),
                 "log_path": str(log_path),
+                "result_paths": [],
+                "artifacts": [],
                 "state": "running",
                 "started_at": _utc_now(),
                 "finished_at": None,
@@ -876,6 +1085,9 @@ def run_job(settings: Settings, job_file: Path) -> int:
             "scope_ids": value.get("scope_ids", [])
             if isinstance(value.get("scope_ids", []), list)
             else [],
+            "profile": value.get("profile", ScanProfile.HOSTS.value),
+            "pace": value.get("pace", ScanPace.CAREFUL.value),
+            "phase": "validation",
             "state": "failed",
             "finished_at": _utc_now(),
             "exit_code": 127,
@@ -901,18 +1113,187 @@ def run_job(settings: Settings, job_file: Path) -> int:
             )
         write_private_json(status_path, value)
 
+    def publish(phase: str, argv: list[str] | None = None) -> None:
+        value["phase"] = phase
+        if argv is not None:
+            value["argv"] = argv
+        with workspace.lock(engagement_root):
+            current = _current_job_status(
+                settings, workspace, engagement_root, job_id
+            )
+            if current is not None and current.get("state") == "cancelled":
+                raise _JobCancelled
+            write_private_json(status_path, value)
+
+    failures: list[str] = []
+    failure_code = 0
+
+    def execute(
+        phase: str, argv: list[str], artifact: str, log: BinaryIO
+    ) -> bool:
+        nonlocal failure_code
+        if artifact not in value["artifacts"]:
+            value["artifacts"].append(artifact)
+        publish(phase, argv)
+        log.write(f"\n=== {phase} ===\n$ {' '.join(argv)}\n".encode())
+        log.flush()
+        try:
+            result = subprocess.run(
+                argv, stdout=log, stderr=subprocess.STDOUT, check=False
+            )
+        except OSError as exc:
+            failure_code = 127
+            failures.append(f"{phase}: {exc}")
+            return False
+        if result.returncode:
+            failure_code = result.returncode
+            failures.append(f"{phase}: Nmap exited with {result.returncode}")
+            return False
+        return True
+
     try:
         descriptor = os.open(log_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
         with os.fdopen(descriptor, "wb") as log:
-            result = subprocess.run(
-                value["argv"], stdout=log, stderr=subprocess.STDOUT, check=False
-            )
-        value["exit_code"] = result.returncode
-        value["state"] = "succeeded" if result.returncode == 0 else "failed"
-    except OSError as exc:
-        value["state"] = "failed"
-        value["error"] = str(exc)
-        value["exit_code"] = 127
+            if profile == ScanProfile.HOSTS:
+                families = _scope_families(selected)
+                for version, scopes in families.items():
+                    name = (
+                        "results.xml"
+                        if len(families) == 1
+                        else f"results-{'ipv6' if version == 6 else 'ipv4'}.xml"
+                    )
+                    xml_path = job_root / name
+                    phase = (
+                        "host-discovery"
+                        if len(families) == 1
+                        else f"host-discovery-{'ipv6' if version == 6 else 'ipv4'}"
+                    )
+                    argv = _scan_argv(
+                        nmap, xml_path, scopes, ipv6=version == 6
+                    )
+                    if execute(phase, argv, name, log):
+                        value["result_paths"].append(name)
+            else:
+                host_candidates: list[DiscoveryCandidate] = []
+                for version, scopes in _scope_families(selected).items():
+                    suffix = "ipv6" if version == 6 else "ipv4"
+                    xml_path = job_root / f"host-discovery-{suffix}.xml"
+                    argv = _scan_argv(
+                        nmap, xml_path, scopes, ipv6=version == 6
+                    )
+                    if not execute(
+                        f"host-discovery-{suffix}", argv, xml_path.name, log
+                    ):
+                        continue
+                    try:
+                        parsed = parse_nmap_xml(
+                            xml_path,
+                            source=xml_path.relative_to(engagement_root).as_posix(),
+                        )
+                    except ValidationError as exc:
+                        failure_code = failure_code or 1
+                        failures.append(f"host-discovery-{suffix}: {exc}")
+                        continue
+                    host_candidates.extend(parsed)
+                    value["result_paths"].append(xml_path.name)
+
+                live_by_family = _validated_stage_addresses(
+                    host_candidates, selected
+                )
+                port_candidates: list[DiscoveryCandidate] = []
+                for version, addresses in live_by_family.items():
+                    suffix = "ipv6" if version == 6 else "ipv4"
+                    xml_path = job_root / f"tcp-ports-{suffix}.xml"
+                    argv = _port_scan_argv(
+                        nmap,
+                        xml_path,
+                        addresses,
+                        pace,
+                        ipv6=version == 6,
+                    )
+                    if not execute(f"tcp-ports-{suffix}", argv, xml_path.name, log):
+                        continue
+                    try:
+                        parsed = parse_nmap_xml(
+                            xml_path,
+                            source=xml_path.relative_to(engagement_root).as_posix(),
+                        )
+                    except ValidationError as exc:
+                        failure_code = failure_code or 1
+                        failures.append(f"tcp-ports-{suffix}: {exc}")
+                        continue
+                    port_candidates.extend(parsed)
+                    value["result_paths"].append(xml_path.name)
+
+                live = {
+                    address
+                    for addresses in live_by_family.values()
+                    for address in addresses
+                }
+                ports_by_host: dict[str, set[int]] = {item: set() for item in live}
+                for candidate in port_candidates:
+                    ports = {
+                        service.port
+                        for service in candidate.services
+                        if service.protocol == "tcp" and service.state == "open"
+                    }
+                    for address in candidate.addresses:
+                        if address in ports_by_host:
+                            ports_by_host[address].update(ports)
+
+                grouped: dict[tuple[int, tuple[int, ...]], list[str]] = {}
+                for address, ports in ports_by_host.items():
+                    if not ports:
+                        continue
+                    version = ipaddress.ip_address(address).version
+                    grouped.setdefault((version, tuple(sorted(ports))), []).append(address)
+                counters = {4: 0, 6: 0}
+                for (version, ports), addresses in sorted(grouped.items()):
+                    counters[version] += 1
+                    suffix = "ipv6" if version == 6 else "ipv4"
+                    name = f"service-detection-{suffix}-{counters[version]:03d}.xml"
+                    xml_path = job_root / name
+                    argv = _service_scan_argv(
+                        nmap,
+                        xml_path,
+                        sorted(addresses, key=ipaddress.ip_address),
+                        ports,
+                        pace,
+                        ipv6=version == 6,
+                    )
+                    if not execute(
+                        f"service-detection-{suffix}-{counters[version]:03d}",
+                        argv,
+                        name,
+                        log,
+                    ):
+                        continue
+                    try:
+                        parse_nmap_xml(xml_path)
+                    except ValidationError as exc:
+                        failure_code = failure_code or 1
+                        failures.append(f"{name}: {exc}")
+                        continue
+                    value["result_paths"].append(name)
+    except _JobCancelled:
+        return 130
+    except (OSError, ValidationError) as exc:
+        failure_code = failure_code or 127
+        failures.append(str(exc))
+
+    if failures:
+        value["error"] = "; ".join(failures)
+    else:
+        value.pop("error", None)
+    value["exit_code"] = failure_code
+    value["state"] = (
+        "succeeded"
+        if not failures
+        else "partial"
+        if value.get("result_paths")
+        else "failed"
+    )
+    value["phase"] = "complete"
     value["finished_at"] = _utc_now()
     with workspace.lock(engagement_root):
         current = _current_job_status(

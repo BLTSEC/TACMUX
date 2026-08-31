@@ -24,6 +24,7 @@ from tacmux.dialogs import (
     ConfirmModal,
     DiscoveryReview,
     EngagementForm,
+    ExportForm,
     MessageModal,
     ScanForm,
     TargetAddressForm,
@@ -31,6 +32,7 @@ from tacmux.dialogs import (
 )
 from tacmux.discovery import DiscoveryCandidate, Reconciliation
 from tacmux.errors import ConflictError
+from tacmux.export import ExportProfile
 from tacmux.model import (
     AccessLevel,
     AccessRecord,
@@ -304,6 +306,29 @@ async def test_scan_form_lists_only_ready_scope(settings, workspace, record):
         app.push_screen(ScanForm(record.engagement))
         await pilot.pause()
         assert app.screen.query_one(SelectionList).option_count == 1
+        assert app.screen.query_one("#profile", Select).value == "hosts"
+        assert app.screen.query_one("#pace", Select).value == "careful"
+
+
+@pytest.mark.asyncio
+async def test_export_form_and_main_action_create_handoff(
+    settings, workspace, record
+):
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        main.action_export()
+        await pilot.pause()
+        assert isinstance(app.screen, ExportForm)
+        await pilot.press("escape")
+        await pilot.pause()
+        main._create_handoff(ExportProfile.COMPACT)
+        await pilot.pause()
+        assert isinstance(app.screen, MessageModal)
+        assert len(list((record.root / "exports").glob("*.md"))) == 1
 
 
 @pytest.mark.asyncio
@@ -475,6 +500,49 @@ async def test_record_manager_is_visible_and_logging_uses_config_default(
         app.push_screen(EngagementForm(app.settings.auto_log))
         await pilot.pause()
         assert not app.screen.query_one("#logging", Checkbox).value
+
+
+@pytest.mark.asyncio
+async def test_access_credential_shape_warns_but_can_be_saved(
+    settings, workspace, record
+):
+    scope = record.engagement.add_scope(
+        "LAN", ScopeGroup.INTERNAL, "10.71.0.0/24"
+    )
+    target = workspace.create_target(
+        record.root,
+        record.engagement,
+        "host",
+        addresses=[TargetAddress("10.71.0.10", scope.id)],
+        primary_endpoint="10.71.0.10",
+    )
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    value = {
+        "principal": (
+            "0123456789abcdef0123456789abcdef:"
+            "fedcba9876543210fedcba9876543210"
+        ),
+        "authority": "ACME",
+        "method": "NTLM",
+        "level": AccessLevel.AUTHENTICATED,
+        "evidence": "",
+    }
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        main._record_access(target.id, value)
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        assert "principal" in app.screen.message
+        assert not main.engagement.access
+
+        app.screen.query_one("#confirm", Button).press()
+        await pilot.pause()
+        assert isinstance(app.screen, MainScreen)
+        assert main.engagement.access[0].principal == value["principal"]
 
 
 @pytest.mark.asyncio
@@ -657,7 +725,7 @@ async def test_failed_refresh_does_not_publish_partial_runtime_state(
         assert isinstance(main, MainScreen)
         original_record = main.record
         original_live = main.live_target_ids.copy()
-        original_states = main._job_states.copy()
+        original_statuses = main._job_statuses.copy()
         external = workspace.load(record.root)
         workspace.add_scope(
             record.root,
@@ -676,7 +744,7 @@ async def test_failed_refresh_does_not_publish_partial_runtime_state(
         )
         monkeypatch.setattr(
             app.workspace,
-            "refresh_sitrep",
+            "render_documents",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
         )
         errors: list[str] = []
@@ -685,7 +753,84 @@ async def test_failed_refresh_does_not_publish_partial_runtime_state(
         assert errors == ["disk full"]
         assert main.record is original_record
         assert main.live_target_ids == original_live
-        assert main._job_states == original_states
+        assert main._job_statuses == original_statuses
+
+
+@pytest.mark.asyncio
+async def test_job_phase_change_refreshes_without_completion_notice(
+    settings, workspace, record, monkeypatch
+):
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        main._job_statuses = {"J0001": ("running", "host-discovery-ipv4")}
+        monkeypatch.setattr(
+            app.jobs,
+            "list",
+            lambda _root: [
+                {
+                    "id": "J0001",
+                    "state": "running",
+                    "phase": "tcp-ports-ipv4",
+                }
+            ],
+        )
+        monkeypatch.setattr(app.tmux, "live_target_ids", lambda _engagement: set())
+        refreshed: list[bool] = []
+        monkeypatch.setattr(main, "refresh_all", lambda: refreshed.append(True))
+        notices: list[str] = []
+        monkeypatch.setattr(app, "notify", notices.append)
+
+        main._poll_external_state()
+
+        assert refreshed == [True]
+        assert notices == []
+
+
+@pytest.mark.asyncio
+async def test_user_mutation_renders_each_generated_document_once(
+    settings, workspace, record, monkeypatch
+):
+    from tacmux import store
+
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        generated_writes: list[str] = []
+        original_write = store.write_private_text
+
+        def tracked_write(path: Path, text: str) -> None:
+            relative = str(path.relative_to(record.root))
+            if relative in {
+                "notes/activity.md",
+                "notes/attack-path.md",
+                "SITREP.md",
+            }:
+                generated_writes.append(relative)
+            original_write(path, text)
+
+        monkeypatch.setattr(store, "write_private_text", tracked_write)
+        main._create_target(
+            {
+                "display_name": "unresolved host",
+                "address": "",
+                "scope_id": "",
+                "hostnames": [],
+            }
+        )
+        await pilot.pause()
+
+        assert generated_writes == [
+            "notes/activity.md",
+            "notes/attack-path.md",
+            "SITREP.md",
+        ]
 
 
 @pytest.mark.asyncio

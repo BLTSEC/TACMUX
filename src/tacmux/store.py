@@ -352,6 +352,7 @@ class Workspace:
                     _private_directory(root / relative)
                 self._seed_editable_documents(root, engagement)
                 self.save(root, engagement)
+                self.render_documents(root, engagement)
             except BaseException:
                 shutil.rmtree(root, ignore_errors=True)
                 raise
@@ -416,23 +417,6 @@ Created: {engagement.created_at}
         previous_revision = engagement.revision
         engagement.revision += 1
         try:
-            write_private_text(
-                root / "notes/activity.md", render_activity_markdown(engagement)
-            )
-            write_private_text(
-                root / "notes/attack-path.md",
-                render_attack_path_markdown(engagement),
-            )
-            write_private_text(
-                root / "SITREP.md",
-                render_sitrep(
-                    engagement,
-                    include_mermaid=self.settings.include_mermaid,
-                    warnings=self.missing_evidence(root, engagement),
-                ),
-            )
-            # The manifest is the commit point. Generated documents are recoverable;
-            # a manifest that references missing target files is not.
             write_private_json(manifest, engagement.to_dict())
         except BaseException:
             engagement.revision = previous_revision
@@ -843,7 +827,7 @@ Created: {engagement.created_at}
 
         return self._mutate_manifest(root, engagement, mutate)
 
-    def refresh_sitrep(
+    def render_documents(
         self,
         root: Path,
         engagement: Engagement,
@@ -853,6 +837,13 @@ Created: {engagement.created_at}
     ) -> int:
         with self.lock(root):
             self._assert_current_revision(root, engagement)
+            write_private_text(
+                root / "notes/activity.md", render_activity_markdown(engagement)
+            )
+            write_private_text(
+                root / "notes/attack-path.md",
+                render_attack_path_markdown(engagement),
+            )
             write_private_text(
                 root / "SITREP.md",
                 render_sitrep(

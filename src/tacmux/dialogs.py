@@ -26,8 +26,9 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from .discovery import Reconciliation
+from .discovery import Reconciliation, ScanPace, ScanProfile
 from .errors import ValidationError
+from .export import ExportProfile
 from .model import (
     AccessRecord,
     AccessLevel,
@@ -95,6 +96,45 @@ class MessageModal(BaseModal):
     @on(Button.Pressed)
     def close(self) -> None:
         self.dismiss(True)
+
+
+class ExportForm(BaseModal):
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label("Create Engagement Handoff", classes="title")
+            yield Static(
+                "Both profiles include every structured record and authored Markdown. "
+                "Evidence-rich also embeds bounded text logs and evidence; binary files "
+                "remain an indexed reference."
+            )
+            yield Label("Export Profile", classes="field-label")
+            yield Select(
+                [
+                    ("Compact — records, notes, and evidence index", ExportProfile.COMPACT.value),
+                    (
+                        "Evidence-rich — also embed bounded text evidence",
+                        ExportProfile.EVIDENCE.value,
+                    ),
+                ],
+                value=ExportProfile.COMPACT.value,
+                allow_blank=False,
+                id="profile",
+            )
+            yield Static(
+                "The generated Markdown may contain sensitive client data. It is a "
+                "handoff snapshot, not a verified evidence archive."
+            )
+            yield Static("", classes="error")
+            with Horizontal(classes="buttons"):
+                yield Button("Cancel", id="cancel")
+                yield Button("Export", id="export", variant="primary")
+
+    @on(Button.Pressed)
+    def pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        self.dismiss(str(self.query_one("#profile", Select).value))
 
 
 class PromptModal(BaseModal):
@@ -1248,7 +1288,27 @@ class ScanForm(BaseModal):
             for item in ready_scope
         ]
         with Vertical():
-            yield Label("Run Detached Host Discovery", classes="title")
+            yield Label("Run Detached Discovery", classes="title")
+            yield Label("Scan profile", classes="field-label")
+            yield Select(
+                [
+                    ("Host discovery only", ScanProfile.HOSTS.value),
+                    ("Hosts + all TCP ports + service versions", ScanProfile.TCP_SERVICES.value),
+                ],
+                value=ScanProfile.HOSTS.value,
+                allow_blank=False,
+                id="profile",
+            )
+            yield Label("Enhanced scan pace", classes="field-label")
+            yield Select(
+                [
+                    ("Careful — Nmap default timing", ScanPace.CAREFUL.value),
+                    ("Fast — use -T4", ScanPace.FAST.value),
+                ],
+                value=ScanPace.CAREFUL.value,
+                allow_blank=False,
+                id="pace",
+            )
             yield Static("", id="scan-profile")
             yield Static(
                 "Only ready network scope can be scanned. Domain scope is import-only."
@@ -1271,6 +1331,10 @@ class ScanForm(BaseModal):
     def selected_scope_changed(self) -> None:
         self._update_profile()
 
+    @on(Select.Changed)
+    def scan_option_changed(self) -> None:
+        self._update_profile()
+
     def _update_profile(self) -> None:
         selected = {
             str(item) for item in self.query_one("#scope", SelectionList).selected
@@ -1284,12 +1348,22 @@ class ScanForm(BaseModal):
             }
         )
         exclude = f" --exclude {','.join(exclusions)}" if exclusions else ""
-        self.query_one("#scan-profile", Static).update(
-            plain(
+        profile = str(self.query_one("#profile", Select).value)
+        pace = str(self.query_one("#pace", Select).value)
+        if profile == ScanProfile.TCP_SERVICES.value:
+            timing = " -T4" if pace == ScanPace.FAST.value else ""
+            description = (
+                "Stages: nmap -sn --reason"
+                f"{exclude} <scope> → nmap -Pn -p- --open --reason{timing} "
+                "<live IPs> → nmap -Pn -sV --open -p <open ports>"
+                f"{timing} <matching live IPs>"
+            )
+        else:
+            description = (
                 "Command profile: nmap -sn --reason"
                 f"{exclude} -oX <job>/results.xml <selected scope>"
             )
-        )
+        self.query_one("#scan-profile", Static).update(plain(description))
 
     @on(Button.Pressed)
     def pressed(self, event: Button.Pressed) -> None:
@@ -1302,7 +1376,13 @@ class ScanForm(BaseModal):
         if not selected:
             self.error("Select at least one scope entry")
             return
-        self.dismiss(selected)
+        self.dismiss(
+            {
+                "scope_ids": selected,
+                "profile": str(self.query_one("#profile", Select).value),
+                "pace": str(self.query_one("#pace", Select).value),
+            }
+        )
 
 
 class ImportDiscoveryForm(BaseModal):

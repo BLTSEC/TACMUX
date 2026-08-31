@@ -199,6 +199,14 @@ def test_in_pane_note_activity_and_sitrep(
     output = capsys.readouterr().out
     assert "# SITREP" in output and "Established route" in output
 
+    assert main(["export"]) == 0
+    export_path = Path(capsys.readouterr().out.strip())
+    assert export_path.is_file()
+    assert "Established route" in export_path.read_text()
+
+    assert main(["export", "not-a-profile"]) == 1
+    assert "compact or evidence" in capsys.readouterr().err
+
     workspace.set_status(record.root, loaded, EngagementStatus.CLOSED)
     assert main(["note", "late", "note"]) == 1
     assert main(["activity", "confirmed", "Late", "activity"]) == 1

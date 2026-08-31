@@ -70,20 +70,42 @@ After a foothold creates an approved route:
 
 TACMUX records the route relationship; it does not configure VPNs, SOCKS proxies, Ligolo, SSH forwarding, or firewall rules.
 
-## Host discovery and reconciliation
+## Discovery and reconciliation
 
 Press `d` and choose one of three inputs:
 
-1. **Run Nmap host discovery (detached)** — launches only:
+1. **Run Nmap discovery (detached)** — choose one profile:
+
+   **Host discovery only** preserves the small original profile:
 
    ```text
    nmap -sn --reason [--exclude <declared-carve-outs>] -oX <job>/results.xml <selected-ready-scope...>
    ```
 
-2. **Import XML or pasted hosts** — accepts Nmap XML, `IP [hostname]`, or one bare hostname per line.
-3. **Review a completed detached scan** — opens a successful job's XML.
+   **Hosts + all TCP ports + service versions** runs three bounded stages:
 
-Highlight a job and press Enter to import a successful result or cancel an active scan. Imported jobs remain visible and are marked as imported.
+   ```text
+   nmap -sn --reason [--exclude <declared-carve-outs>] <selected-ready-scope...>
+   nmap -Pn -p- --open --reason <scope-validated-live-IPs...>
+   nmap -Pn -sV --open -p <ports-open-on-this-host-group> <matching-live-IPs...>
+   ```
+
+   **Careful** uses Nmap's default timing. **Fast** adds `-T4` to the TCP-port
+   and service stages; TACMUX does not add `--min-rate`. IPv4 and IPv6 run
+   separately, with `-6` added for IPv6. UDP discovery remains import-only.
+
+2. **Import XML or pasted hosts** — accepts Nmap XML, `IP [hostname]`, or one bare hostname per line.
+3. **Review a completed detached scan** — opens a successful or partial job's results.
+
+Highlight a job and press Enter to import a successful or partial result, or
+cancel an active scan. A port-stage failure leaves discovered hosts reviewable;
+a service-stage failure leaves hosts and identified ports reviewable. Imported
+jobs remain visible and are marked as imported.
+
+Every later stage receives only literal IP addresses revalidated against the
+selected ready scope and its exclusions. Intermediate XML cannot authorize a
+new scan target. Service detection is grouped by the exact TCP-port set found
+open, so `-sV` does not expand back to all ports.
 
 Every candidate must be reviewed:
 
@@ -146,6 +168,9 @@ Record a principal, authority/realm, method, target, evidence, and the strongest
 4. **Privileged Execution** — the platform's highest relevant execution context demonstrated.
 
 Do not promote authenticated SMB access to execution merely because credentials work.
+If a principal, authority, or method resembles credential material, TACMUX warns
+before saving. The warning does not block an authorized operator from preserving
+necessary evidence.
 
 ### Findings
 
@@ -164,12 +189,13 @@ record itself before deleting a mistaken target.
 
 ### Service inventory
 
-TACMUX never launches a port or version scan. Run an authorized scan yourself,
-for example `nmap -sV -oX services.xml <in-scope-hosts>`, then import that XML
-through discovery. Observed `open` and UDP `open|filtered` services attach to
-scope-qualified targets during the normal Add/Merge/Ignore review. External XML
-is copied into `.tacmux/imports/` only after a confirmed import so the service
-snapshot retains provenance.
+The enhanced detached profile records open TCP ports and version details in the
+same Add/Merge/Ignore review used for hosts. Operator-produced Nmap XML remains
+supported for custom TCP or UDP work; for example, import an authorized
+`nmap -sV -oX services.xml <in-scope-hosts>` result through discovery. Observed
+TCP `open` and UDP `open` or `open|filtered` services attach to scope-qualified
+targets. External XML is copied into `.tacmux/imports/` only after a confirmed
+import so the service snapshot retains provenance.
 
 ## Building an attack path
 
@@ -206,6 +232,7 @@ tacmux note "shell as svc_deploy"
 tacmux activity confirmed --evidence targets/T0002-svc/recon/share.txt "Readable deployment share"
 tacmux activity no-result "LLMNR produced no usable authentication"
 tacmux sitrep
+tacmux export compact
 ```
 
 `--evidence` must appear immediately after the activity result. Notes append to
@@ -229,6 +256,24 @@ backspaces, and common cursor redraws. Evidence indexing stops at 500 files or a
 bounded directory-scan budget; use ordinary filesystem tools for larger
 collections. Generated Markdown is changed through its structured TACMUX record,
 not edited directly.
+
+### Single-file handoff export
+
+Choose **Export engagement handoff** from the Command Palette or Documents
+actions. TACMUX creates a private, timestamped Markdown snapshot under
+`exports/`:
+
+- **Compact** includes authorization, scope, topology, targets, services, every
+  structured record, all operator-authored Markdown, discovery history, an
+  evidence path/size/SHA-256 index, and the manifest JSON.
+- **Evidence-rich** adds cleaned non-binary text evidence, limited to 256 KiB
+  per file and 2 MiB total. Every truncation and skipped binary is labeled.
+
+Exports never follow symlinks or embed binary evidence. They may still contain
+credentials, client data, and other sensitive material. An export is intended
+for AI-assisted report drafting, human handoff, or manual copying into another
+notes system; it is not a verified archive. Use `tacmux export
+[compact|evidence]` inside a TACMUX session for the same workflow.
 
 ## Archives, restore, and permanent deletion
 

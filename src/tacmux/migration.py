@@ -63,5 +63,5 @@ def import_v1_workspace(
         else:
             shutil.copy2(item, destination, follow_symlinks=False)
     harden_private_tree(legacy_root)
-    workspace.save(record.root, record.engagement)
+    workspace.render_documents(record.root, record.engagement)
     return record

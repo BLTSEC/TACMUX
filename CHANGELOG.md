@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Compact and evidence-rich single-file Markdown handoffs for report drafting,
+  human transfer, or use in an external notes system.
+- Opt-in detached full-TCP discovery followed by `-sV` only for ports found
+  open, with careful/fast pacing, IPv4/IPv6 separation, and partial-result import.
+
+### Changed
+
+- Manifest commits and generated Markdown rendering now happen once per operator
+  action, with only affected cockpit panes refreshed afterward.
+- Structured access fields warn on likely credential material without blocking
+  authorized evidence capture.
+- Full tmux installs retain the v1 operator keymap, including logging shortcuts,
+  and reinstalling preserves the previously selected tmux mode.
+
 ## 2.0.0 — 2026-08-31
 
 TACMUX v2 replaces the v1 Zsh command suite with a Python/Textual operator

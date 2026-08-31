@@ -30,6 +30,28 @@ def mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
 
+def test_manifest_save_and_generated_document_render_are_separate(
+    workspace, record, monkeypatch
+):
+    from tacmux import store
+
+    writes: list[str] = []
+    original_write = store.write_private_text
+
+    def tracked_write(path: Path, text: str) -> None:
+        writes.append(str(path.relative_to(record.root)))
+        original_write(path, text)
+
+    monkeypatch.setattr(store, "write_private_text", tracked_write)
+    record.engagement.name = "Updated assessment"
+    workspace.save(record.root, record.engagement)
+    assert writes == [".tacmux/engagement.json"]
+
+    writes.clear()
+    workspace.render_documents(record.root, record.engagement)
+    assert writes == ["notes/activity.md", "notes/attack-path.md", "SITREP.md"]
+
+
 def test_engagement_creation_frontloads_scope_before_workspace_commit(workspace):
     record = workspace.create_engagement(
         "ACME",

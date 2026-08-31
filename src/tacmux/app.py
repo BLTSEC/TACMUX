@@ -51,6 +51,7 @@ from .dialogs import (
     CleanupForm,
     EngagementDetailsForm,
     EngagementForm,
+    ExportForm,
     FindingForm,
     ImportDiscoveryForm,
     LegacyImportForm,
@@ -70,6 +71,7 @@ from .discovery import (
     reconcile_candidates,
 )
 from .errors import ConflictError, TacmuxError, ValidationError
+from .export import ExportProfile, create_handoff, parse_export_profile
 from .migration import import_v1_workspace
 from .model import (
     AccessRecord,
@@ -84,9 +86,10 @@ from .model import (
     ScopeKind,
     Target,
     TargetAddress,
-    utc_now,
     classify_scope,
+    looks_like_credential,
     pattern_inside,
+    utc_now,
 )
 from .nocap import NocapReader
 from .panes import (
@@ -216,6 +219,11 @@ class EngagementPickerScreen(Screen):
 
     def on_mount(self) -> None:
         self.app.sub_title = ""
+        self.call_after_refresh(self._finish_mount)
+
+    def _finish_mount(self) -> None:
+        if self.app.screen is not self:
+            return
         self.refresh_table()
         self.query_one("#engagements", DataTable).focus()
 
@@ -327,7 +335,7 @@ class EngagementPickerScreen(Screen):
             self.app.workspace.update_engagement_details(
                 record.root, record.engagement, **value
             )
-            self.app.refresh_runtime_sitrep(record)
+            self.app.render_runtime_documents(record)
             self.refresh_table(self.query_one("#engagement-filter", Input).value)
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
@@ -359,7 +367,7 @@ class EngagementPickerScreen(Screen):
         try:
             record = self.app.workspace.find(engagement_id)
             self.app.workspace.set_status(record.root, record.engagement, status)
-            self.app.refresh_runtime_sitrep(record)
+            self.app.render_runtime_documents(record)
             self.refresh_table(self.query_one("#engagement-filter", Input).value)
             self.app.notify(f"Engagement {status.value}")
         except (TacmuxError, OSError) as exc:
@@ -617,9 +625,9 @@ class MainScreen(Screen):
         ),
         ("Add scope entry", "add_scope", "Declare an external or internal IP/CIDR"),
         (
-            "Run detached host discovery",
+            "Run detached discovery",
             "scan",
-            "Run the fixed Nmap host-discovery profile",
+            "Choose host-only or full TCP service discovery",
         ),
         (
             "Import discovery results",
@@ -667,6 +675,11 @@ class MainScreen(Screen):
             "Reconcile live tmux and detached-job state",
         ),
         (
+            "Export engagement handoff",
+            "export",
+            "Create one Markdown file containing records, notes, paths, and evidence context",
+        ),
+        (
             "Archive entire engagement",
             "archive_engagement",
             "Create and verify a private engagement archive",
@@ -685,7 +698,7 @@ class MainScreen(Screen):
         self.pending_job_id = ""
         self.live_target_ids: set[str] = set()
         self._manifest_mtime = 0
-        self._job_states: dict[str, str] = {}
+        self._job_statuses: dict[str, tuple[str, str]] = {}
         self.pending_service_copy: tuple[Path, Path] | None = None
         self.restore_options: list[Path] = []
         self._active_tab = "targets"
@@ -719,6 +732,37 @@ class MainScreen(Screen):
         )
         return False
 
+    def _confirm_potential_credentials(
+        self, value: dict, callback: Callable[[], None]
+    ) -> bool:
+        labels = {
+            "principal": "principal",
+            "authority": "authority / realm",
+            "method": "method",
+        }
+        suspicious = [
+            label
+            for field, label in labels.items()
+            if looks_like_credential(str(value.get(field, "")))
+        ]
+        if not suspicious:
+            return True
+        field_label = "field" if len(suspicious) == 1 else "fields"
+        verb = "looks" if len(suspicious) == 1 else "look"
+        pronoun = "it may" if len(suspicious) == 1 else "they may"
+        self.app.push_screen(
+            ConfirmModal(
+                "Potential Credential Material",
+                "The "
+                + ", ".join(suspicious)
+                + f" {field_label} {verb} like {pronoun} contain credential material. "
+                "Record the identity and access method, not the secret itself.\n\n"
+                "Save this record anyway?",
+            ),
+            lambda confirmed: callback() if confirmed else None,
+        )
+        return False
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Label(
@@ -742,8 +786,13 @@ class MainScreen(Screen):
     def on_mount(self) -> None:
         self.app.title = "TACMUX"
         self.app.sub_title = f"{self.engagement.client}: {self.engagement.name}"
-        self.refresh_all()
+        self.call_after_refresh(self._finish_mount)
         self.set_interval(3.0, self._poll_external_state)
+
+    def _finish_mount(self) -> None:
+        if self.app.screen is not self:
+            return
+        self.refresh_all()
         self.query_one("#target-table", DataTable).focus()
 
     def on_resize(self, event: events.Resize) -> None:
@@ -832,10 +881,14 @@ class MainScreen(Screen):
             )
             live = self.app.tmux.live_target_ids(record.engagement)
             jobs = self.app.jobs.list(record.root)
-            states = {
-                str(item.get("id")): str(item.get("state")) for item in jobs
+            statuses = {
+                str(item.get("id")): (
+                    str(item.get("state")),
+                    str(item.get("phase", "")),
+                )
+                for item in jobs
             }
-            manifest_mtime = self.app.workspace.refresh_sitrep(
+            manifest_mtime = self.app.workspace.render_documents(
                 record.root,
                 record.engagement,
                 live_target_ids=live,
@@ -844,35 +897,71 @@ class MainScreen(Screen):
             self.record = record
             self.live_target_ids = live
             self._manifest_mtime = manifest_mtime
-            self._job_states = states
-            active = self.query_one("#workspace-tabs", TabbedContent).active
-            query = self.query_one("#target-filter", Input).value
-            self.query_one(TargetsPane).populate(
-                self.engagement,
-                live,
-                query if active == "targets" else "",
-            )
-            self.query_one(ScopeDiscoveryPane).populate(self.engagement, jobs)
-            self.query_one(RecordsPane).populate(
-                self.engagement,
-                query if active == "records" else "",
-                root=self.record.root,
-            )
-            self.query_one(SituationPane).populate(self.engagement)
-            self.query_one(DocumentsPane).populate(
-                self.record,
-                query if active == "documents" else "",
-                include_evidence=(
-                    active == "documents"
-                ),
-            )
-            self.query_one("#engagement-banner", Label).update(
-                self._status_line(jobs)
+            self._job_statuses = statuses
+            self._populate_panes(
+                {"targets", "scope", "records", "situation", "documents"}, jobs
             )
             return True
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
             return False
+
+    def after_mutation(self, *panes: str) -> bool:
+        try:
+            live = self.app.tmux.live_target_ids(self.engagement)
+            jobs = self.app.jobs.list(self.record.root)
+            manifest_mtime = self.app.workspace.render_documents(
+                self.record.root,
+                self.engagement,
+                live_target_ids=live,
+                jobs=jobs,
+            )
+            self.live_target_ids = live
+            self._manifest_mtime = manifest_mtime
+            self._job_statuses = {
+                str(item.get("id")): (
+                    str(item.get("state")),
+                    str(item.get("phase", "")),
+                )
+                for item in jobs
+            }
+            selected = set(panes)
+            if self.query_one("#workspace-tabs", TabbedContent).active == "documents":
+                selected.add("documents")
+            self._populate_panes(selected, jobs)
+            return True
+        except (TacmuxError, OSError, ValueError) as exc:
+            self.app.show_error(
+                f"State was saved, but generated documents could not be refreshed: {exc}"
+            )
+            return False
+
+    def _populate_panes(self, panes: set[str], jobs: list[dict]) -> None:
+        active = self.query_one("#workspace-tabs", TabbedContent).active
+        query = self.query_one("#target-filter", Input).value
+        if "targets" in panes:
+            self.query_one(TargetsPane).populate(
+                self.engagement,
+                self.live_target_ids,
+                query if active == "targets" else "",
+            )
+        if "scope" in panes:
+            self.query_one(ScopeDiscoveryPane).populate(self.engagement, jobs)
+        if "records" in panes:
+            self.query_one(RecordsPane).populate(
+                self.engagement,
+                query if active == "records" else "",
+                root=self.record.root,
+            )
+        if "situation" in panes:
+            self.query_one(SituationPane).populate(self.engagement)
+        if "documents" in panes:
+            self.query_one(DocumentsPane).populate(
+                self.record,
+                query if active == "documents" else "",
+                include_evidence=active == "documents",
+            )
+        self.query_one("#engagement-banner", Label).update(self._status_line(jobs))
 
     def _poll_external_state(self) -> None:
         if self.app.screen is not self:
@@ -882,15 +971,28 @@ class MainScreen(Screen):
                 self.record.root / ".tacmux/engagement.json"
             ).stat().st_mtime_ns
             jobs = self.app.jobs.list(self.record.root)
-            states = {str(item.get("id")): str(item.get("state")) for item in jobs}
+            statuses = {
+                str(item.get("id")): (
+                    str(item.get("state")),
+                    str(item.get("phase", "")),
+                )
+                for item in jobs
+            }
             live = self.app.tmux.live_target_ids(self.engagement)
             changed_jobs = [
-                (job_id, state)
-                for job_id, state in states.items()
-                if self._job_states.get(job_id) != state
-                and state in {"succeeded", "failed", "cancelled"}
+                (job_id, status[0])
+                for job_id, status in statuses.items()
+                if (
+                    self._job_statuses.get(job_id, ("", ""))[0]
+                    != status[0]
+                )
+                and status[0] in {"succeeded", "partial", "failed", "cancelled"}
             ]
-            if mtime != self._manifest_mtime or states != self._job_states or live != self.live_target_ids:
+            if (
+                mtime != self._manifest_mtime
+                or statuses != self._job_statuses
+                or live != self.live_target_ids
+            ):
                 self.refresh_all()
             for job_id, state in changed_jobs:
                 self.app.notify(f"Discovery {job_id} {state} — press d to import")
@@ -1023,7 +1125,7 @@ class MainScreen(Screen):
                 hostnames=value["hostnames"],
                 primary_endpoint=primary,
             )
-            self.refresh_all()
+            self.after_mutation("targets", "situation")
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
 
@@ -1037,7 +1139,7 @@ class MainScreen(Screen):
             self.app.workspace.add_scope(
                 self.record.root, self.engagement, **value
             )
-            self.refresh_all()
+            self.after_mutation("scope", "targets", "situation")
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
 
@@ -1083,7 +1185,7 @@ class MainScreen(Screen):
             self.app.workspace.update_scope(
                 self.record.root, self.engagement, scope_id, **value
             )
-            self.refresh_all()
+            self.after_mutation("scope", "targets", "situation")
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
 
@@ -1104,7 +1206,7 @@ class MainScreen(Screen):
     def _delete_scope(self, scope_id: str) -> None:
         try:
             self.app.workspace.delete_scope(self.record.root, self.engagement, scope_id)
-            self.refresh_all()
+            self.after_mutation("scope", "targets", "situation")
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
@@ -1143,7 +1245,7 @@ class MainScreen(Screen):
     def action_stop_ops(self) -> None:
         try:
             self.app.tmux.stop_ops(self.engagement)
-            self.refresh_all()
+            self.after_mutation()
             self.app.notify("Engagement operations session stopped")
         except TacmuxError as exc:
             self.app.show_error(str(exc))
@@ -1152,7 +1254,7 @@ class MainScreen(Screen):
         try:
             jobs = self.app.jobs.cancel_all(self.record.root, self.engagement)
             sessions = self.app.tmux.stop_engagement_sessions(self.engagement)
-            self.refresh_all()
+            self.after_mutation("targets", "scope")
             self.app.notify(
                 f"Stopped {sessions} target/operations session(s) and "
                 f"cancelled {jobs} discovery job(s)"
@@ -1274,7 +1376,7 @@ class MainScreen(Screen):
                 value["scope_id"],
                 primary=value["primary"],
             )
-            self.refresh_all()
+            self.after_mutation("targets", "situation")
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
 
@@ -1301,7 +1403,7 @@ class MainScreen(Screen):
             self.app.workspace.remove_target_address(
                 self.record.root, self.engagement, target_id, int(index)
             )
-            self.refresh_all()
+            self.after_mutation("targets", "situation")
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
 
@@ -1323,7 +1425,7 @@ class MainScreen(Screen):
             self.app.workspace.replace_target_hostnames(
                 self.record.root, self.engagement, target_id, value.split(",")
             )
-            self.refresh_all()
+            self.after_mutation("targets", "situation")
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
 
@@ -1356,7 +1458,7 @@ class MainScreen(Screen):
             self.app.workspace.set_primary_endpoint(
                 self.record.root, self.engagement, target_id, endpoint
             )
-            self.refresh_all()
+            self.after_mutation("targets", "situation")
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
 
@@ -1364,7 +1466,7 @@ class MainScreen(Screen):
         try:
             target = self.selected_target()
             self.app.tmux.stop_target(self.engagement, target)
-            self.refresh_all()
+            self.after_mutation("targets")
         except TacmuxError as exc:
             self.app.show_error(str(exc))
 
@@ -1382,7 +1484,7 @@ class MainScreen(Screen):
             warning = self.app.workspace.rename_target(
                 self.record.root, self.engagement, target_id, value
             )
-            self.refresh_all()
+            self.after_mutation("targets", "records", "situation")
             if warning:
                 self.app.notify(warning, severity="warning")
         except (TacmuxError, OSError) as exc:
@@ -1416,7 +1518,7 @@ class MainScreen(Screen):
             self.app.workspace.clear_services(
                 self.record.root, self.engagement, target_id
             )
-            self.refresh_all()
+            self.after_mutation("targets")
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
@@ -1437,7 +1539,7 @@ class MainScreen(Screen):
             self.app.workspace.create_cleanup_item(
                 self.record.root, self.engagement, **value
             )
-            self.refresh_all()
+            self.after_mutation("records")
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
 
@@ -1452,14 +1554,27 @@ class MainScreen(Screen):
         except TacmuxError as exc:
             self.app.show_error(str(exc))
 
-    def _record_access(self, target_id: str, value: dict | None) -> None:
+    def _record_access(
+        self,
+        target_id: str,
+        value: dict | None,
+        *,
+        credential_checked: bool = False,
+    ) -> None:
         if value is None:
+            return
+        if not credential_checked and not self._confirm_potential_credentials(
+            value,
+            lambda: self._record_access(
+                target_id, value, credential_checked=True
+            ),
+        ):
             return
         try:
             self.app.workspace.create_access(
                 self.record.root, self.engagement, target_id, **value
             )
-            self.refresh_all()
+            self.after_mutation("targets", "records", "situation")
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
 
@@ -1481,7 +1596,7 @@ class MainScreen(Screen):
             self.app.workspace.create_activity(
                 self.record.root, self.engagement, **value
             )
-            self.refresh_all()
+            self.after_mutation("targets", "records")
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
 
@@ -1504,7 +1619,7 @@ class MainScreen(Screen):
                 self.record.root, self.engagement, **value
             )
             self.app.edit_file(self.record.root / finding.document)
-            self.refresh_all()
+            self.after_mutation("records")
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
@@ -1527,7 +1642,7 @@ class MainScreen(Screen):
                 value["name"],
                 value["steps"],
             )
-            self.refresh_all()
+            self.after_mutation("records", "situation")
             self.action_tab("situation")
         except (TacmuxError, OSError, ValueError) as exc:
             self.app.show_error(str(exc))
@@ -1580,7 +1695,7 @@ class MainScreen(Screen):
             self.app.workspace.mark_cleanup_removed(
                 self.record.root, self.engagement, item_id
             )
-            self.refresh_all()
+            self.after_mutation("records")
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
@@ -1636,8 +1751,26 @@ class MainScreen(Screen):
         except TacmuxError as exc:
             self.app.show_error(str(exc))
 
-    def _save_record(self, kind: str, record_id: str, value: dict | None) -> None:
+    def _save_record(
+        self,
+        kind: str,
+        record_id: str,
+        value: dict | None,
+        *,
+        credential_checked: bool = False,
+    ) -> None:
         if value is None:
+            return
+        if (
+            kind == "access"
+            and not credential_checked
+            and not self._confirm_potential_credentials(
+                value,
+                lambda: self._save_record(
+                    kind, record_id, value, credential_checked=True
+                ),
+            )
+        ):
             return
         try:
             record = self.app.workspace.update_record(
@@ -1654,14 +1787,14 @@ class MainScreen(Screen):
                     f"Finding metadata saved, but its Markdown header was not updated: {exc}",
                     severity="warning",
                 )
-        self.refresh_all()
+        self.after_mutation("targets", "records", "situation")
 
     def _delete_record(self, kind: str, record_id: str) -> None:
         try:
             self.app.workspace.delete_record(
                 self.record.root, self.engagement, kind, record_id
             )
-            self.refresh_all()
+            self.after_mutation("targets", "records", "situation")
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
@@ -1725,7 +1858,7 @@ class MainScreen(Screen):
             self.app.workspace.delete_target(
                 self.record.root, self.engagement, target_id
             )
-            self.refresh_all()
+            self.after_mutation("targets", "situation")
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
@@ -1741,7 +1874,7 @@ class MainScreen(Screen):
             ActionMenu(
                 "Host Discovery",
                 [
-                    ("scan", "Run Nmap host discovery (detached)"),
+                    ("scan", "Run Nmap discovery (detached)"),
                     ("import_discovery", "Import XML or pasted hosts"),
                     ("import_completed", "Review a completed detached scan"),
                 ],
@@ -1750,22 +1883,33 @@ class MainScreen(Screen):
         )
 
     def _start_scan(
-        self, scope_ids: list[str] | None, *, window_checked: bool = False
+        self, value: dict | list[str] | None, *, window_checked: bool = False
     ) -> None:
+        if not value:
+            return
+        if isinstance(value, list):
+            scan = {"scope_ids": value, "profile": "hosts", "pace": "careful"}
+        else:
+            scan = value
+        scope_ids = list(scan.get("scope_ids", []))
         if not scope_ids:
             return
         try:
             self._require_active()
             if not window_checked and not self._confirm_window(
-                lambda: self._start_scan(scope_ids, window_checked=True)
+                lambda: self._start_scan(scan, window_checked=True)
             ):
                 return
-            job = self.app.jobs.create(self.record.root, self.engagement, scope_ids)
+            job = self.app.jobs.create(
+                self.record.root,
+                self.engagement,
+                scope_ids,
+                profile=str(scan.get("profile", "hosts")),
+                pace=str(scan.get("pace", "careful")),
+            )
             self.app.notify(f"Discovery {job['id']} started in detached mode")
             self.action_tab("scope")
-            self.query_one(ScopeDiscoveryPane).populate(
-                self.engagement, self.app.jobs.list(self.record.root)
-            )
+            self.after_mutation("scope")
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
@@ -1777,7 +1921,8 @@ class MainScreen(Screen):
         jobs = [
             item
             for item in self.app.jobs.list(self.record.root)
-            if item.get("state") == "succeeded" and not item.get("imported_at")
+            if item.get("state") in {"succeeded", "partial"}
+            and not item.get("imported_at")
         ]
         if not jobs:
             self.app.show_error("No completed discovery jobs are available")
@@ -1801,11 +1946,11 @@ class MainScreen(Screen):
         job = next((item for item in jobs if str(item.get("id")) == job_id), None)
         if (
             job is None
-            or job.get("state") != "succeeded"
+            or job.get("state") not in {"succeeded", "partial"}
             or job.get("imported_at")
         ):
             self.app.show_error(
-                "Only a successful, not-yet-imported discovery job can be imported"
+                "Only a successful or partial, not-yet-imported discovery job can be imported"
             )
             return
         self._open_job_import([job], job_id)
@@ -1828,7 +1973,7 @@ class MainScreen(Screen):
             self.app.show_error("The selected discovery job no longer exists")
             return
         actions = []
-        if job.get("state") == "succeeded" and not job.get("imported_at"):
+        if job.get("state") in {"succeeded", "partial"} and not job.get("imported_at"):
             actions.append(("import", "Review and import results"))
         if job.get("state") in {"queued", "running"}:
             actions.append(("cancel", "Cancel detached scan"))
@@ -1847,7 +1992,7 @@ class MainScreen(Screen):
         elif action == "cancel":
             try:
                 self.app.jobs.cancel(self.record.root, self.engagement, job_id)
-                self.refresh_all()
+                self.after_mutation("scope")
                 self.app.notify(f"Discovery {job_id} cancelled")
             except (TacmuxError, OSError) as exc:
                 self.app.show_error(str(exc))
@@ -1861,14 +2006,13 @@ class MainScreen(Screen):
             self.app.show_error("The selected discovery job no longer exists")
             return
         self.pending_job_id = job_id
-        self.app.push_screen(
-            ImportDiscoveryForm(
-                self.engagement,
-                xml_path=str(job["xml_path"]),
-                selected_scope_ids=list(job.get("scope_ids", [])),
-            ),
-            self._prepare_import,
-        )
+        try:
+            candidates = self.app.jobs.candidates(self.record.root, job_id)
+            self.pending_service_copy = None
+            self._review_candidates(candidates, list(job.get("scope_ids", [])))
+        except (TacmuxError, OSError) as exc:
+            self.pending_job_id = ""
+            self.app.show_error(str(exc))
 
     def _prepare_import(self, value: dict | None) -> None:
         if value is None:
@@ -1900,26 +2044,30 @@ class MainScreen(Screen):
                     )
             else:
                 candidates = parse_host_lines(value["pasted"])
-            decisions = reconcile_candidates(
-                self.engagement, candidates, allowed_scope_ids=set(value["scope_ids"])
-            )
-            merge_targets = [
-                (
-                    target.id,
-                    f"{target.display_name} — {', '.join(item.value for item in target.addresses) or 'no address'}",
-                )
-                for target in self.engagement.targets
-            ]
-            self.app.push_screen(
-                DiscoveryReview(
-                    decisions,
-                    merge_targets,
-                    allowed_scope_ids=value["scope_ids"],
-                ),
-                self._commit_import,
-            )
+            self._review_candidates(candidates, list(value["scope_ids"]))
         except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
+
+    def _review_candidates(self, candidates: list, scope_ids: list[str]) -> None:
+        decisions = reconcile_candidates(
+            self.engagement, candidates, allowed_scope_ids=set(scope_ids)
+        )
+        merge_targets = [
+            (
+                target.id,
+                f"{target.display_name} — "
+                f"{', '.join(item.value for item in target.addresses) or 'no address'}",
+            )
+            for target in self.engagement.targets
+        ]
+        self.app.push_screen(
+            DiscoveryReview(
+                decisions,
+                merge_targets,
+                allowed_scope_ids=scope_ids,
+            ),
+            self._commit_import,
+        )
 
     def _commit_import(
         self,
@@ -1973,7 +2121,7 @@ class MainScreen(Screen):
                 warnings.append(
                     "sessions not started for " + "; ".join(failed_sessions)
                 )
-        self.refresh_all()
+        self.after_mutation("targets", "scope", "situation")
         self.action_tab("targets")
         count = len(targets)
         message = f"Accepted {count} discovery {'result' if count == 1 else 'results'}"
@@ -2009,10 +2157,13 @@ class MainScreen(Screen):
     def document_actions(self) -> None:
         selected = self.query_one(DocumentsPane).selected_document()
         if selected is None:
-            self.app.show_error("No document or evidence file is selected")
+            self.action_export()
             return
         path, editable, _ = selected
-        actions = [("view", "View full file in pager")]
+        actions = [
+            ("export", "Create engagement handoff"),
+            ("view", "View full file in pager"),
+        ]
         if editable:
             actions.append(("edit", "Edit with $VISUAL or $EDITOR"))
         self.app.push_screen(
@@ -2020,13 +2171,55 @@ class MainScreen(Screen):
         )
 
     def _document_action(self, action: str | None) -> None:
-        if action == "edit":
+        if action == "export":
+            self.action_export()
+        elif action == "edit":
             self.edit_selected_document()
         elif action == "view":
             selected = self.query_one(DocumentsPane).selected_document()
             if selected is not None:
                 path, _, kind = selected
                 self.app.page_file(path, terminal_output=kind == "evidence")
+
+    def action_export(self) -> None:
+        self.app.push_screen(ExportForm(), self._choose_export_profile)
+
+    def _choose_export_profile(self, value: str | None) -> None:
+        if not value:
+            return
+        try:
+            profile = parse_export_profile(value)
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
+            return
+        if profile == ExportProfile.EVIDENCE:
+            self.app.push_screen(
+                ConfirmModal(
+                    "Export Text Evidence",
+                    "This profile embeds readable logs and evidence and may contain "
+                    "credentials, tokens, or other sensitive client data. Continue?",
+                ),
+                lambda confirmed: self._create_handoff(profile) if confirmed else None,
+            )
+        else:
+            self._create_handoff(profile)
+
+    def _create_handoff(self, profile: ExportProfile) -> None:
+        try:
+            current = EngagementRecord(
+                self.record.root, self.app.workspace.load(self.record.root)
+            )
+            path = create_handoff(
+                current,
+                profile=profile,
+                live_target_ids=self.app.tmux.live_target_ids(current.engagement),
+                jobs=self.app.jobs.list(current.root),
+                include_mermaid=self.app.settings.include_mermaid,
+            )
+            self.query_one(DocumentsPane).populate(current)
+            self.app.push_screen(MessageModal("Engagement Handoff Created", str(path)))
+        except (TacmuxError, OSError, ValueError) as exc:
+            self.app.show_error(str(exc))
 
     def action_archive_engagement(self) -> None:
         try:
@@ -2173,7 +2366,7 @@ class TacmuxApp(App[LaunchIntent | None]):
                 severity="warning",
             )
             self._save_theme(DEFAULT_THEME)
-        self.call_after_refresh(self.bootstrap)
+        self.bootstrap()
 
     def _persist_theme(self, theme: Theme) -> None:
         self._save_theme(theme.name)
@@ -2245,7 +2438,7 @@ class TacmuxApp(App[LaunchIntent | None]):
             )
         return record
 
-    def refresh_runtime_sitrep(
+    def render_runtime_documents(
         self,
         record: EngagementRecord,
         *,
@@ -2257,7 +2450,7 @@ class TacmuxApp(App[LaunchIntent | None]):
             else live_target_ids
         )
         jobs = self.jobs.list(record.root)
-        return self.workspace.refresh_sitrep(
+        return self.workspace.render_documents(
             record.root,
             record.engagement,
             live_target_ids=live,
@@ -2268,7 +2461,7 @@ class TacmuxApp(App[LaunchIntent | None]):
         record = self.require_idle_engagement(
             engagement_id, "archiving the engagement"
         )
-        self.refresh_runtime_sitrep(record, live_target_ids=set())
+        self.render_runtime_documents(record, live_target_ids=set())
         archive, _ = create_archive(
             record.root,
             self.settings.archive_dir,

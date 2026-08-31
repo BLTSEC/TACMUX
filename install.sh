@@ -102,6 +102,25 @@ install_block() {
     printf '\n%s\n%s\n%s\n' "$start" "$body" "$end" >> "$file"
 }
 
+managed_tmux_mode() {
+    local file="$1"
+    [[ -f "$file" ]] || return 1
+    awk '
+        $0 == "# >>> TACMUX >>>" { inside=1; next }
+        $0 == "# <<< TACMUX <<<" { inside=0; next }
+        inside && $0 ~ /\/tmux\/tacmux-integration\.conf"?[[:space:]]*$/ {
+            mode="integration"
+        }
+        inside && $0 ~ /\/tmux\/tacmux\.conf"?[[:space:]]*$/ {
+            mode="full"
+        }
+        END {
+            if (!mode) exit 1
+            print mode
+        }
+    ' "$file"
+}
+
 validate_block "$HOME/.zshrc" '# >>> TACMUX >>>' '# <<< TACMUX <<<'
 validate_block "$HOME/.bashrc" '# >>> TACMUX >>>' '# <<< TACMUX <<<'
 if [[ "$TMUX_MODE" != skip ]]; then
@@ -163,7 +182,17 @@ if [[ "$TMUX_MODE" == skip ]]; then
     warn "Skipped ~/.tmux.conf"
 else
     if [[ "$TMUX_MODE" == auto ]]; then
-        [[ -f "$HOME/.tmux.conf" ]] && TMUX_MODE=integration || TMUX_MODE=full
+        # A TACMUX-created ~/.tmux.conf exists after the first install. Preserve
+        # the managed source choice instead of treating its existence as proof
+        # that the operator supplied a custom configuration.
+        previous_tmux_mode=$(managed_tmux_mode "$HOME/.tmux.conf" || true)
+        if [[ -n "$previous_tmux_mode" ]]; then
+            TMUX_MODE="$previous_tmux_mode"
+        elif [[ -f "$HOME/.tmux.conf" ]]; then
+            TMUX_MODE=integration
+        else
+            TMUX_MODE=full
+        fi
     fi
     if [[ "$TMUX_MODE" == full ]]; then
         tmux_source="source-file \"$INSTALL_DIR/tmux/tacmux.conf\""
