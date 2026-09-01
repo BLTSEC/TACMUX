@@ -34,10 +34,12 @@ secret scanner or a hard block. Notes, evidence, imported files, and pane logs m
 legitimately contain sensitive material and are not inspected or rewritten.
 
 Handoff exports are owner-only Markdown snapshots but may aggregate all of that
-sensitive text into one convenient file. Compact exports index evidence;
-evidence-rich exports also embed bounded readable evidence. TACMUX does not
-redact either profile. Treat exports as client evidence and use an approved
-transfer and retention process.
+sensitive text into one convenient file. Handoff exports index evidence; full-
+context exports also embed prioritized, bounded readable evidence. The exact
+engagement root is replaced with `<ENGAGEMENT_ROOT>` inside excerpts, but
+TACMUX does not redact credentials, tokens, identities, other paths, or client
+content. Embedded evidence is untrusted quoted data. Treat exports as client
+evidence and use an approved transfer and retention process.
 
 Archive manifests contain SHA-256 integrity metadata, not a digital signature. A party able to replace both archive and sidecar can replace the recorded hashes. Protect or sign both through the approved evidence-transfer process when independent authenticity is required.
 

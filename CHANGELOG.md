@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- Single-file exports now use purpose-led Handoff and Full context profiles,
+  render authored Markdown inline without duplicating SITREP tables, and place
+  exact manifest JSON before any evidence excerpts.
+- Full-context exports prioritize cited evidence, normalize the local engagement
+  root, report evidence coverage, and limit excerpts to 128 KiB per file and
+  1 MiB total. The former profile names remain accepted as CLI aliases.
+
 ## 2.4.1 — 2026-08-31
 
 ### Changed

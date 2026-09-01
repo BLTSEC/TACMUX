@@ -25,7 +25,8 @@ Run `tacmux`, choose the engagement and target, and work from menus. The public 
 - Reconciles every discovered host through Add/Merge/Ignore review and retains XML provenance for observed services.
 - Records activity, access, findings, cleanup, and confirmed attack paths without treating authentication as compromise.
 - Keeps Records recent-first with a kind filter so the current operational timeline remains easy to review.
-- Renders terminal topology, SITREP, Markdown and log previews, pager/editor handoff, and compact or evidence-rich single-file exports.
+- Renders terminal topology, SITREP, Markdown and log previews, pager/editor
+  handoff, and readable or evidence-backed single-file exports.
 - Creates hash-verified archives and optionally reads NOCAP timelines without merging the two tools.
 
 TACMUX does not require fzf, AutoRecon, Obsidian, or shell completions.
@@ -134,7 +135,7 @@ tacmux note TEXT...            Append a note in the current target/ops session
 tacmux activity RESULT [--evidence PATH] TEXT...
                                Record activity in the current session
 tacmux sitrep                  Print the current engagement SITREP
-tacmux export [compact|evidence]
+tacmux export [handoff|full]
                                Create a single-file Markdown handoff
 tacmux clip                    Copy stdin through the trusted clipboard path
 tacmux archive verify FILE     Verify the archive and every file hash
@@ -144,6 +145,12 @@ tacmux version                 Print the version
 `tacmux clip` is useful over SSH when ordinary clipboard tools are unavailable.
 Fast logging and status hooks used by tmux remain behind a private `_internal`
 interface; they are not an operator workflow to memorize.
+
+Use `handoff` for a readable operator transfer, AI-assisted report draft, or
+external notes snapshot. Use `full` only when the recipient also needs
+prioritized text evidence; it keeps cited proof ahead of supporting logs, caps
+excerpts at 1 MiB total, and leaves all source files in the SHA-256 inventory.
+Neither profile replaces a verified archive or redacts sensitive client data.
 
 ## Configuration
 

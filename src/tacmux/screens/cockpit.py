@@ -1970,12 +1970,14 @@ class MainScreen(Screen):
         except TacmuxError as exc:
             self.app.show_error(str(exc))
             return
-        if profile == ExportProfile.EVIDENCE:
+        if profile == ExportProfile.FULL:
             self.app.push_screen(
                 ConfirmModal(
-                    "Export Text Evidence",
-                    "This profile embeds readable logs and evidence and may contain "
-                    "credentials, tokens, or other sensitive client data. Continue?",
+                    "Export Full Context",
+                    "This profile embeds cited evidence and useful readable logs, "
+                    "limited to 128 KiB per file and 1 MiB total. TACMUX normalizes "
+                    "the local engagement path but does not redact credentials, "
+                    "tokens, identities, or client data. Continue?",
                 ),
                 lambda confirmed: self._create_handoff(profile) if confirmed else None,
             )
