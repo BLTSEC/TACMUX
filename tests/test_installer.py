@@ -52,7 +52,7 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
             capture_output=True,
             check=True,
         ).stdout.strip()
-        == "tacmux 2.5.0"
+        == "tacmux 2.5.1"
     )
     installed_source = home / ".local/share/tacmux/app/src"
     assert not list(installed_source.rglob("*.pyc"))

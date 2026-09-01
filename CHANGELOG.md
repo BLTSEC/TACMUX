@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 2.5.1 — 2026-09-01
+
+### Added
+
+- A reproducible cockpit tour: a VHS tape and renderer build the animated tour
+  and the Targets still from the repository's public synthetic fixture, so the
+  README shows the current interface without any engagement data.
+
+### Changed
+
+- The operator guide calls the cockpit's five surfaces views, matching the
+  release notes and the downstream operator documentation.
+
 ## 2.5.0 — 2026-09-01
 
 ### Changed
