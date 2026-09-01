@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.4.1 — 2026-08-31
+
 ### Changed
 
 - Engagement creation can front-load authorization metadata and optional UTC
