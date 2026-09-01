@@ -27,15 +27,20 @@ Known `/32` hosts, networks, and web domains can be entered before testing. Scop
 
 ## Cockpit workflow
 
-The five tabs answer different operator questions:
+The five views answer different operator questions:
 
-| Tab | Operator question |
+| View | Operator question |
 |---|---|
 | Targets | What host am I working on, is its session live, and what access is confirmed? |
 | Scope | What may I touch, what is excluded, and what discovery jobs/results need review? |
 | Records | What happened most recently, and what access, activity, findings, paths, or cleanup obligations are recorded? |
 | Situation | What does the network look like, and what confirmed chain has been demonstrated? |
 | Documents | Where are the narrative, findings, notes, logs, and evidence? |
+
+![The TACMUX Targets view listing synthetic targets with session state and confirmed access](../assets/tacmux-v2-targets.png)
+
+Targets opens first. The still above and the tour in the README are rendered
+from the public synthetic fixture by `scripts/render-demo.sh`.
 
 Press `a` for the contextual Actions menu. Press `Ctrl+P` for Textual's Command
 Palette (fuzzy command search). The palette exposes the same actions as the
