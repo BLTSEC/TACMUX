@@ -77,10 +77,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
+          git fetch origin main:refs/remotes/origin/main
+          uv run python scripts/release-preflight.py \
+            --version "$VERSION" \
+            --require-head-main
+
           git config user.name "BLTSEC"
           git config user.email "27690059+BLTSEC@users.noreply.github.com"
           git tag -a "v$VERSION" -m "TACMUX $VERSION"
           git push origin "refs/tags/v$VERSION"
+
+          # A merge that landed during the test job must not leave a release
+          # pointing behind main. Recheck after the tag push and roll it back
+          # before publishing if main advanced in that narrow window.
+          git fetch origin main:refs/remotes/origin/main
+          if ! uv run python scripts/release-preflight.py \
+            --version "$VERSION" \
+            --require-head-main; then
+            git push --delete origin "v$VERSION"
+            exit 1
+          fi
+
           if ! gh release create "v$VERSION" \
             --verify-tag \
             --title "TACMUX $VERSION" \
