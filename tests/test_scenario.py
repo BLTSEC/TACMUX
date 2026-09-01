@@ -10,9 +10,9 @@ from tacmux.render import attack_paths_text, render_sitrep, topology_text
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def test_sanitized_recap_is_a_complete_offline_acceptance_fixture():
+def test_synthetic_example_is_a_complete_offline_acceptance_fixture():
     engagement = Engagement.from_dict(
-        json.loads((FIXTURES / "recap_sanitized.json").read_text())
+        json.loads((FIXTURES / "external_internal_example.json").read_text())
     )
 
     assert len(engagement.targets) == 4
@@ -25,9 +25,9 @@ def test_sanitized_recap_is_a_complete_offline_acceptance_fixture():
     topology = topology_text(engagement)
     path = attack_paths_text(engagement)
     sitrep = render_sitrep(engagement)
-    assert "Internet Perimeter" in topology and "Corporate LAN" in topology
-    assert "MAIL" in topology and "TPM-DC" in topology
-    assert "LLMNR" not in path
+    assert "Public Services" in topology and "Application Network" in topology
+    assert "EDGE-WEB" in topology and "DB01" in topology
+    assert "Delegation review" not in path
     assert "only as authenticated access" in path
     assert "```mermaid" in sitrep
-    assert "Readable deployment share" in sitrep
+    assert "Artifact repository permitted unintended reads" in sitrep

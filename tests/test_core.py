@@ -18,14 +18,21 @@ from tacmux.model import (
     Authorization,
     AttackPath,
     AttackPathStep,
+    CleanupKind,
     FindingState,
     EngagementStatus,
     ScopeAvailability,
     ScopeGroup,
+    Service,
     Severity,
     TargetAddress,
 )
-from tacmux.render import attack_paths_text, mermaid_topology, topology_text
+from tacmux.render import (
+    attack_paths_text,
+    mermaid_topology,
+    render_activity_markdown,
+    topology_text,
+)
 
 
 def mode(path: Path) -> int:
@@ -78,6 +85,36 @@ def test_unchanged_generated_document_replaces_a_symlink(workspace, record):
     assert mode(sitrep) == 0o600
 
 
+def test_generated_documents_refuse_a_linked_parent(workspace, record, tmp_path):
+    original_notes = record.root / "notes-original"
+    (record.root / "notes").rename(original_notes)
+    outside = tmp_path / "outside-notes"
+    outside.mkdir()
+    (record.root / "notes").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SafetyError, match="linked, or external parent"):
+        workspace.render_documents(record.root, record.engagement)
+
+    assert not (outside / "activity.md").exists()
+    assert not (outside / "attack-path.md").exists()
+
+
+def test_manifest_write_refuses_a_linked_control_directory(
+    workspace, record, tmp_path
+):
+    outside = tmp_path / "outside-control"
+    (record.root / ".tacmux").rename(outside)
+    manifest = outside / "engagement.json"
+    before = manifest.read_bytes()
+    (record.root / ".tacmux").symlink_to(outside, target_is_directory=True)
+
+    record.engagement.name = "Must not be written"
+    with pytest.raises(SafetyError, match="linked private directory"):
+        workspace.save(record.root, record.engagement)
+
+    assert manifest.read_bytes() == before
+
+
 def test_engagement_creation_frontloads_scope_before_workspace_commit(workspace):
     record = workspace.create_engagement(
         "ACME",
@@ -93,7 +130,7 @@ def test_engagement_creation_frontloads_scope_before_workspace_commit(workspace)
             (
                 "Corporate LAN",
                 ScopeGroup.INTERNAL,
-                "10.77.10.0/24",
+                "10.55.10.0/24",
                 ScopeAvailability.UNAVAILABLE,
             ),
         ],
@@ -124,6 +161,104 @@ def test_engagement_creation_frontloads_scope_before_workspace_commit(workspace)
     assert {item.root for item in workspace.list_engagements()} == before
 
 
+def test_engagement_creation_frontloads_authorization(workspace):
+    authorization = Authorization(
+        authorized_by="ACME Security",
+        reference="SOW-42",
+        window_start="2026-09-01T13:00:00Z",
+        window_end="2026-09-05T23:00:00Z",
+        emergency_contact="SOC bridge",
+    )
+    record = workspace.create_engagement(
+        "ACME",
+        "Authorized assessment",
+        AssessmentType.BOTH,
+        authorization=authorization,
+    )
+
+    assert workspace.load(record.root).authorization == authorization
+
+
+def test_all_persisted_timestamps_are_validated(workspace, record):
+    target = workspace.create_target(record.root, record.engagement, "host")
+    target.services.append(Service(port=443, protocol="tcp", name="https"))
+    workspace.save(record.root, record.engagement)
+    access = workspace.create_access(
+        record.root,
+        record.engagement,
+        target.id,
+        principal="operator",
+        authority="ACME",
+        method="SSH",
+        level=AccessLevel.USER_EXECUTION,
+        evidence="",
+    )
+    activity = workspace.create_activity(
+        record.root,
+        record.engagement,
+        summary="Validated access",
+        result=ActivityResult.CONFIRMED,
+        target_id=target.id,
+        evidence="",
+    )
+    finding = workspace.create_finding(
+        record.root,
+        record.engagement,
+        title="Confirmed issue",
+        severity=Severity.HIGH,
+        state=FindingState.CONFIRMED,
+        target_ids=[target.id],
+    )
+    path = workspace.create_attack_path(
+        record.root,
+        record.engagement,
+        "Initial access",
+        [("activity", activity.id, "Execution confirmed")],
+    )
+    cleanup = workspace.create_cleanup_item(
+        record.root,
+        record.engagement,
+        target_id=target.id,
+        kind=CleanupKind.FILE,
+        location="/tmp/operator-marker",
+    )
+
+    timestamp_fields = [
+        (record.engagement, "created_at"),
+        (target, "created_at"),
+        (target.services[0], "observed_at"),
+        (access, "observed_at"),
+        (activity, "occurred_at"),
+        (finding, "created_at"),
+        (path, "created_at"),
+        (cleanup, "created_at"),
+        (cleanup, "removed_at"),
+    ]
+    for item, attribute in timestamp_fields:
+        previous = getattr(item, attribute)
+        setattr(item, attribute, "not-a-time")
+        with pytest.raises(ValidationError, match="invalid UTC timestamp"):
+            record.engagement.validate()
+        setattr(item, attribute, previous)
+
+
+def test_activity_markdown_escapes_evidence_table_delimiters(workspace, record):
+    target = workspace.create_target(record.root, record.engagement, "host")
+    activity = workspace.create_activity(
+        record.root,
+        record.engagement,
+        summary="Collected proof",
+        result=ActivityResult.CONFIRMED,
+        target_id=target.id,
+        evidence="targets/T0001-host/recon/a|b.log",
+    )
+
+    rendered = render_activity_markdown(record.engagement)
+
+    assert activity.evidence not in rendered
+    assert "a\\|b.log" in rendered
+
+
 def test_private_front_loaded_workspace_and_stable_target_identity(workspace, record):
     external = record.engagement.add_scope(
         "Internet perimeter", ScopeGroup.EXTERNAL, "198.51.100.0/24"
@@ -131,7 +266,7 @@ def test_private_front_loaded_workspace_and_stable_target_identity(workspace, re
     internal = record.engagement.add_scope(
         "Corporate LAN",
         ScopeGroup.INTERNAL,
-        "10.77.10.0/24",
+        "10.55.10.0/24",
         ScopeAvailability.UNAVAILABLE,
     )
     workspace.save(record.root, record.engagement)
@@ -141,7 +276,7 @@ def test_private_front_loaded_workspace_and_stable_target_identity(workspace, re
         "MAIL01",
         addresses=[
             TargetAddress("198.51.100.25", external.id),
-            TargetAddress("10.77.10.5", internal.id),
+            TargetAddress("10.55.10.5", internal.id),
         ],
         hostnames=["mail01.acme.test"],
         primary_endpoint="mail01.acme.test",
@@ -233,15 +368,15 @@ def test_confirmed_records_drive_access_and_attack_paths(workspace, record):
         primary_endpoint="10.20.0.20",
     )
     failed = Activity(
-        "A0001", "LLMNR responder attempt", ActivityResult.FAILED, target.id
+        "A0001", "Delegation review attempt", ActivityResult.FAILED, target.id
     )
     confirmed = Activity(
-        "A0002", "Read deployment share", ActivityResult.CONFIRMED, target.id
+        "A0002", "Read artifact repository", ActivityResult.CONFIRMED, target.id
     )
     access = AccessRecord(
         "AR0001",
-        "svc_deploy",
-        "ACME",
+        "build_reader",
+        "NORTHSTAR",
         target.id,
         "SMB",
         AccessLevel.AUTHENTICATED,
@@ -269,7 +404,7 @@ def test_confirmed_records_drive_access_and_attack_paths(workspace, record):
     assert record.engagement.strongest_access(target.id) == AccessLevel.AUTHENTICATED
     path_text = attack_paths_text(record.engagement)
     assert "Authenticated" in path_text
-    assert "LLMNR" not in path_text
+    assert "Delegation review" not in path_text
 
 
 def test_finding_documents_generated_records_and_target_delete_guard(workspace, record):
@@ -470,7 +605,7 @@ def test_terminal_topology_separates_network_map_and_attack_path(workspace, reco
     internal = record.engagement.add_scope(
         "Corp LAN",
         ScopeGroup.INTERNAL,
-        "10.77.10.0/24",
+        "10.55.10.0/24",
         ScopeAvailability.READY,
         via_target_id=pivot.id,
     )
@@ -478,8 +613,8 @@ def test_terminal_topology_separates_network_map_and_attack_path(workspace, reco
         record.root,
         record.engagement,
         "dc01",
-        addresses=[TargetAddress("10.77.10.10", internal.id)],
-        primary_endpoint="10.77.10.10",
+        addresses=[TargetAddress("10.55.10.10", internal.id)],
+        primary_endpoint="10.55.10.10",
     )
     workspace.save(record.root, record.engagement)
     topology = topology_text(record.engagement)

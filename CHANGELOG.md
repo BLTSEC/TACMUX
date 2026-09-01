@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Engagement creation can front-load authorization metadata and optional UTC
+  testing windows alongside known scope.
+- New findings default to Draft so an incomplete narrative is never presented
+  as confirmed by the creation form.
+- The offline external-to-internal acceptance example is now independently
+  synthetic and uses new reserved-address identities and narratives.
+
+### Fixed
+
+- Generated documents, manifest updates, discovery artifacts, deletion staging,
+  evidence inspection, and handoff exports consistently refuse linked parent
+  paths that leave the engagement boundary.
+- All persisted engagement, target, service, activity, access, finding,
+  attack-path, and cleanup timestamps are validated when present.
+- Evidence paths containing Markdown table delimiters no longer corrupt
+  generated activity or SITREP tables.
+
 ## 2.4.0 — 2026-08-31
 
 ### Added

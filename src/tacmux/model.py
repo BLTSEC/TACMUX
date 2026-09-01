@@ -856,6 +856,7 @@ class Engagement:
             raise ValidationError(
                 "engagement requires a stable ID, client/lab, and name"
             )
+        parse_utc(self.created_at)
         start = (
             parse_utc(self.authorization.window_start)
             if self.authorization.window_start
@@ -946,6 +947,7 @@ class Engagement:
             if target.directory in used_directories:
                 raise ValidationError(f"duplicate target directory: {target.directory}")
             used_directories.add(target.directory)
+            parse_utc(target.created_at)
             values = self._validate_target_addresses(
                 target, scope_by_id, used_addresses
             )
@@ -962,6 +964,7 @@ class Engagement:
                     raise ValidationError(f"invalid service state on target {target.id}")
                 if not _safe_reference(service.source):
                     raise ValidationError(f"unsafe service source on target {target.id}")
+                parse_utc(service.observed_at)
             for hostname in target.hostnames:
                 if normalize_hostname(hostname) != hostname:
                     raise ValidationError(f"target {target.id} hostname is not normalized")
@@ -1042,6 +1045,7 @@ class Engagement:
                 raise ValidationError(f"access {record.id} references missing target")
             if not record.principal.strip() or not _safe_reference(record.evidence):
                 raise ValidationError(f"invalid access record: {record.id}")
+            parse_utc(record.observed_at)
         for activity in self.activities:
             if activity.target_id and activity.target_id not in target_ids:
                 raise ValidationError(
@@ -1049,6 +1053,7 @@ class Engagement:
                 )
             if not activity.summary.strip() or not _safe_reference(activity.evidence):
                 raise ValidationError(f"invalid activity: {activity.id}")
+            parse_utc(activity.occurred_at)
         for finding in self.findings:
             if (
                 not finding.title.strip()
@@ -1068,6 +1073,9 @@ class Engagement:
                 raise ValidationError(f"invalid cleanup item: {item.id}")
             if item.sha256 and not re.fullmatch(r"[0-9a-fA-F]{64}", item.sha256):
                 raise ValidationError(f"invalid cleanup SHA-256: {item.id}")
+            parse_utc(item.created_at)
+            if item.removed_at:
+                parse_utc(item.removed_at)
 
     def _validate_attack_paths(self) -> None:
         for path in self.attack_paths:

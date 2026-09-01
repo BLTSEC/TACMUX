@@ -2,7 +2,7 @@
 
 ## Operating model
 
-An engagement is the authorization, reporting, retention, and evidence boundary. External and internal networks stay in the same engagement when they belong to the same assessment. Create separate engagements for a real client operation, HTB, OffSec, PNPT, or another academy so their context and evidence cannot be confused.
+An engagement is the authorization, reporting, retention, and evidence boundary. External and internal networks stay in the same engagement when they belong to the same assessment. Create separate engagements for a real client operation, CTF, certification lab, or other training environment so their context and evidence cannot be confused.
 
 TACMUX keeps one `tacmux.engagement/v2` JSON manifest as durable state. The TUI is transient: closing it does not stop detached tmux sessions or discovery jobs.
 
@@ -14,6 +14,9 @@ Run `tacmux`, press `n`, and supply:
   certification environment, or training platform that owns the work.
 - **Engagement Name:** a recognizable assessment, project, lab, or exercise name.
 - **Assessment Type:** External, Internal, External + Internal, or Single-machine Lab.
+- **Authorization:** optional authorizing party, SOW/ticket/contract reference,
+  UTC start/end window, and emergency contact. Front-load what is known; the
+  same fields remain editable from the cockpit.
 - **External/Internal scope:** optional IPs, CIDRs, or domain patterns already known. Use `Label=value` when a friendly label helps.
 - **Internal scope reachability:** whether the internal scope is reachable now
   through a direct, on-site, or VPN connection, or requires later access and a
@@ -188,7 +191,10 @@ necessary evidence.
 
 Create a finding only after selecting affected targets. TACMUX records title, severity, state, targets, and evidence, then opens a Markdown narrative with Summary, Evidence, Impact, and Recommendation sections.
 
-Use **Draft** when validation or reporting language remains incomplete, **Confirmed** when evidence supports it, and **Closed** for a resolved/retested record. Draft findings cannot be attack-path steps.
+New findings default to **Draft**. Keep that state while validation or reporting
+language remains incomplete, use **Confirmed** when evidence supports the
+finding, and use **Closed** for a resolved/retested record. Draft findings
+cannot be attack-path steps.
 
 Open **Records** to correct or delete access, activity, finding, attack-path, and cleanup records. A record used by an attack path must be removed from that path first. Scope entries can likewise be fully edited or deleted when no target address uses them.
 The Records Actions menu also creates activity, findings, cleanup items, and
@@ -226,7 +232,8 @@ Each step may only reference structured confirmed state. The generated `notes/at
 
 ## Authorization window and engagement lifecycle
 
-From the engagement picker, or from **Situation** inside the cockpit, choose
+Authorization can be entered while creating the engagement. From the engagement
+picker, or from **Situation** inside the cockpit, choose
 **Edit engagement details and authorization** to record the authorizing party,
 reference, emergency contact, and optional UTC start/end times. The banner
 distinguishes an unconfigured, start-only, end-only, bounded, or currently
@@ -253,9 +260,9 @@ TACMUX target and operations sessions export stable context, so a small CLI can
 capture facts without leaving the shell:
 
 ```text
-tacmux note "shell as svc_deploy"
-tacmux activity confirmed --evidence targets/T0002-svc/recon/share.txt "Readable deployment share"
-tacmux activity no-result "LLMNR produced no usable authentication"
+tacmux note "shell as web_operator"
+tacmux activity confirmed --evidence targets/T0002-app/recon/artifacts.txt "Artifact repository was readable"
+tacmux activity no-result "Delegation review did not establish another path"
 tacmux sitrep
 tacmux export compact
 ```
@@ -265,7 +272,7 @@ the current target's `NOTES.md`, or the engagement operator notes in an
 operations session. Structured activity appears in the cockpit automatically;
 press `r` after appending a note if its document preview is already open.
 
-## ACME external-to-internal example
+## Synthetic external-to-internal example
 
 This example uses documentation-only addresses and mirrors a realistic flow without performing network actions.
 
@@ -274,67 +281,67 @@ This example uses documentation-only addresses and mirrors a realistic flow with
 Create:
 
 ```text
-Client, Lab, or Platform: ACME
-Engagement Name: 2026 External and Internal Assessment
+Client, Lab, or Platform: Northstar Example
+Engagement Name: Synthetic External and Internal Assessment
 Assessment Type: External + Internal
-External: Internet Perimeter=198.51.100.0/24
-Internal: Corporate LAN=10.77.10.0/24
+External: Public Services=203.0.113.0/24
+Internal: Application Network=10.44.20.0/24
 Internal scope reachability: Not reachable yet (requires access or pivot)
 ```
 
 Run detached discovery against the external entry. Review two results:
 
 ```text
-ADD  mail.acme.test  198.51.100.25
-ADD  vpn.acme.test   198.51.100.40
+ADD  edge.northstar.example  203.0.113.25
+ADD  vpn.northstar.example   203.0.113.40
 ```
 
 TACMUX creates `T0001` and `T0002` plus detached sessions.
 
 ### 2. Record initial access
 
-On MAIL, preserve proof under `exploitation/`, then create:
+On EDGE-WEB, preserve proof under `exploitation/`, then create:
 
 ```text
-Finding F0001: Initial access control weakness
+Finding F0001: Internet-exposed administrative console
 Severity: High
 State: Confirmed
-Targets: MAIL
+Targets: EDGE-WEB
 
 Access AR0001:
-Principal: operator
-Authority: ACME
-Method: confirmed initial access
+Principal: assessor
+Authority: NORTHSTAR
+Method: authorized web console
 Level: User Execution
 
 Activity A0001 (Confirmed):
-Established the approved route from MAIL to the corporate LAN
+Established the approved route from EDGE-WEB to the application network
 ```
 
-Update **Corporate LAN** to Reachable now via MAIL. The terminal topology now
+Update **Application Network** to Reachable now via EDGE-WEB. The terminal topology now
 reads conceptually:
 
 ```text
 EXTERNAL
-└─ Internet Perimeter: 198.51.100.0/24
-  └─ MAIL [T0001] — User Execution (198.51.100.25)
+└─ Public Services: 203.0.113.0/24
+  └─ EDGE-WEB [T0001] — User Execution (203.0.113.25)
 INTERNAL
-└─ Corporate LAN: 10.77.10.0/24 via MAIL
+└─ Application Network: 10.44.20.0/24 via EDGE-WEB
   └─ No identified hosts
 ```
 
 ### 3. Identify internal hosts
 
-Run discovery on Corporate LAN through the operator-established route, or import externally produced XML. Review:
+Run discovery on Application Network through the operator-established route, or import externally produced XML. Review:
 
 ```text
-MERGE  mail.acme.test      10.77.10.5   -> MAIL
-ADD    svc.acme.test       10.77.10.20  -> SVC
-ADD    passback.acme.test  10.77.10.30  -> PASSBACK
-ADD    tpm-dc.acme.test    10.77.10.10  -> TPM-DC
+MERGE  edge.northstar.example    10.44.20.5   -> EDGE-WEB
+ADD    jump01.northstar.example  10.44.20.10  -> JUMP01
+ADD    app01.northstar.example   10.44.20.20  -> APP01
+ADD    db01.northstar.example    10.44.20.30  -> DB01
 ```
 
-MAIL is now correctly dual-homed. The other hosts receive independent evidence/session contexts.
+EDGE-WEB is now correctly dual-homed. The other hosts receive independent evidence/session contexts.
 
 ### 4. Preserve negative and positive results accurately
 
@@ -342,14 +349,14 @@ Record:
 
 ```text
 Activity A0002 (No Result):
-LLMNR responder attempt produced no usable authentication
+Delegation review did not establish an additional access path
 
 Finding F0002 (Confirmed, Medium):
-Readable deployment share exposed configuration material
-Targets: SVC, PASSBACK
+Artifact repository permitted unintended reads
+Targets: JUMP01, APP01
 
 Access AR0002:
-ACME\svc_deploy authenticated to PASSBACK through SMB
+NORTHSTAR\build_reader authenticated to APP01 through the artifact portal
 Level: Authenticated
 ```
 
@@ -357,17 +364,19 @@ AR0002 does not claim command execution. A0002 remains visible in activity but i
 
 ### 5. Order the demonstrated chain
 
-Create **External foothold to internal authenticated access** in this order:
+Create **Public console to internal authenticated access** in this order:
 
-1. F0001 — validated initial-access weakness.
-2. AR0001 — user execution on MAIL.
+1. F0001 — validated public administrative console.
+2. AR0001 — user execution on EDGE-WEB.
 3. A0001 — approved internal route established.
-4. F0002 — readable deployment share.
-5. AR0002 — authenticated SMB access on PASSBACK.
+4. F0002 — unintended artifact-repository read access.
+5. AR0002 — authenticated portal access on APP01.
 
-The topology still shows all identified systems, including TPM-DC. The attack path shows only the demonstrated chain. No administrative or privileged compromise is inferred.
+The topology still shows all identified systems, including DB01. The attack path shows only the demonstrated chain. No administrative or privileged compromise is inferred.
 
-The repository includes this state as `tests/fixtures/recap_sanitized.json`; it is offline, uses reserved mock addresses, and contains no credentials or live-lab dependency.
+The repository includes this independently authored state as
+`tests/fixtures/external_internal_example.json`; it is offline, uses reserved
+mock addresses, and contains no credentials or live-environment dependency.
 
 ## Documents and evidence
 

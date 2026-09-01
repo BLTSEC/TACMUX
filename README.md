@@ -75,7 +75,9 @@ choose another first-install location. Prefix + `E` opens TACMUX in a tmux popup
 tacmux
 ```
 
-1. Press `n` and enter the client/lab, engagement name, assessment type, and any scope known before testing.
+1. Press `n` and enter the client/lab, engagement name, assessment type,
+   authorization reference/window, and any scope known before testing. Only the
+   client/lab and engagement name are required; the rest can be completed later.
 2. Open **Scope** to add or update network/domain scope and exclusions. Internal scope may begin unavailable and later become ready through a selected pivot target.
 3. Press `d` to run detached host-only or TCP-service discovery, or import existing Nmap XML/pasted hosts or hostnames.
 4. Review every result as **Add**, **Merge**, or **Ignore**. Detached target sessions are created by default for up to ten accepted hosts; larger imports default them off to avoid session floods.
@@ -177,6 +179,8 @@ No Markdown is moved or symlinked into another application. Set `$VISUAL` or `$E
 - Hostname-only targets must match declared domain scope when domain entries exist. `*.acme.test` excludes the apex; declare `acme.test` separately.
 - Starting sessions or discovery outside a configured authorization window requires confirmation. Closed engagements are review-only: reopen explicitly before changing scope, targets, notes, records, documents, or discovery state.
 - Authored documents, evidence, editor/pager handoffs, and session log directories are contained to the active TACMUX workspace and engagement; unsafe links are refused.
+- Generated documents, discovery artifacts, deletion staging, and exports also
+  refuse linked parent directories instead of writing through them.
 - Automatic logging is limited to TACMUX-owned tmux sessions unless explicitly widened in config.
 
 See the [operator guide](docs/USAGE.md), [keybindings](docs/KEYBINDINGS.md), and [security policy](SECURITY.md).

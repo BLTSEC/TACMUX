@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.widgets import (
     Button,
     Checkbox,
@@ -82,6 +82,7 @@ async def test_data_entry_modals_scroll_to_actions_at_minimum_size(
     settings, workspace, record
 ):
     forms = [
+        EngagementForm(),
         ScopeForm(record.engagement),
         TargetForm(record.engagement),
         AccessForm("web"),
@@ -113,7 +114,8 @@ async def test_data_entry_modals_scroll_to_actions_at_minimum_size(
         for form in forms:
             app.push_screen(form)
             await pilot.pause()
-            body = app.screen.query_one(Vertical)
+            scrolling = list(app.screen.query(VerticalScroll))
+            body = scrolling[0] if scrolling else app.screen.query_one(Vertical)
             assert str(body.styles.overflow_y) == "auto"
             buttons = list(app.screen.query(Button))
             assert buttons
@@ -341,6 +343,10 @@ async def test_new_engagement_copy_explains_grouping_and_internal_reachability(
         external = app.screen.query_one("#external", TextArea)
         internal = app.screen.query_one("#internal", TextArea)
         reachability = app.screen.query_one("#internal-availability", Select)
+        authorized_by = app.screen.query_one("#authorized-by", Input)
+        reference = app.screen.query_one("#reference", Input)
+        window_start = app.screen.query_one("#window-start", Input)
+        window_end = app.screen.query_one("#window-end", Input)
         labels = {str(label.render()) for label in app.screen.query(Label)}
 
         assert client.placeholder == "Who this work belongs to"
@@ -348,11 +354,29 @@ async def test_new_engagement_copy_explains_grouping_and_internal_reachability(
         assert "External DMZ = 198.51.100.0/24" in str(external.placeholder)
         assert "Domain Controller = 10.20.0.10/32" in str(internal.placeholder)
         assert "Internal scope reachability" in labels
+        assert "Authorization (optional)" in labels
+        assert "Testing window (UTC, optional)" in labels
+        assert authorized_by.placeholder == "Authorizing party"
+        assert reference.placeholder == "SOW, ticket, or contract reference"
+        assert window_start.placeholder == "Start: 2026-09-01 13:00"
+        assert window_end.placeholder == "End: 2026-09-05 23:00"
         assert reachability._options == [
             ("Reachable now (direct, on-site, or VPN)", "ready"),
             ("Not reachable yet (requires access or pivot)", "unavailable"),
         ]
         assert reachability.value == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_new_findings_default_to_draft(settings, workspace, record):
+    target = workspace.create_target(record.root, record.engagement, "host")
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        app.push_screen(FindingForm(record.engagement, target.id))
+        await pilot.pause()
+
+        assert app.screen.query_one("#state", Select).value == FindingState.DRAFT.value
 
 
 @pytest.mark.asyncio
@@ -525,15 +549,15 @@ async def test_main_cockpit_is_responsive_and_lists_evidence(
     scope = record.engagement.add_scope(
         "Internal LAN",
         ScopeGroup.INTERNAL,
-        "10.77.10.0/24",
+        "10.72.30.0/24",
         ScopeAvailability.UNAVAILABLE,
     )
     target = workspace.create_target(
         record.root,
         record.engagement,
         "mail01",
-        addresses=[TargetAddress("10.77.10.5", scope.id)],
-        primary_endpoint="10.77.10.5",
+        addresses=[TargetAddress("10.72.30.5", scope.id)],
+        primary_endpoint="10.72.30.5",
     )
     evidence = record.root / "targets" / target.directory / "recon/scan.txt"
     evidence.write_text("\x1b[32mhost is up\x1b[0m\n")

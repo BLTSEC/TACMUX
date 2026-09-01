@@ -256,6 +256,28 @@ class EngagementForm(BaseModal):
                 value=self.logging_default,
                 id="logging",
             )
+            yield Label("Authorization (optional)", classes="field-label")
+            yield Input(
+                placeholder="Authorizing party",
+                id="authorized-by",
+            )
+            yield Input(
+                placeholder="SOW, ticket, or contract reference",
+                id="reference",
+            )
+            yield Label("Testing window (UTC, optional)", classes="field-label")
+            yield Input(
+                placeholder="Start: 2026-09-01 13:00",
+                id="window-start",
+            )
+            yield Input(
+                placeholder="End: 2026-09-05 23:00",
+                id="window-end",
+            )
+            yield Input(
+                placeholder="Emergency contact",
+                id="emergency-contact",
+            )
             yield Label(
                 "Known external scope (optional, one IP/CIDR or domain per line)",
                 classes="field-label",
@@ -315,6 +337,11 @@ class EngagementForm(BaseModal):
         if not client or not name:
             self.error("Client/Lab and Engagement Name are required")
             return
+        try:
+            authorization = _authorization_from_form(self)
+        except ValidationError as exc:
+            self.error(str(exc))
+            return
         self.dismiss(
             {
                 "client": client,
@@ -323,6 +350,7 @@ class EngagementForm(BaseModal):
                     str(self.query_one("#assessment", Select).value)
                 ),
                 "logging_enabled": self.query_one("#logging", Checkbox).value,
+                "authorization": authorization,
                 "external": self.query_one("#external", TextArea).text,
                 "internal": self.query_one("#internal", TextArea).text,
                 "internal_availability": ScopeAvailability(
@@ -350,6 +378,24 @@ def _window_value(value: str) -> str:
     except ValueError as exc:
         raise ValidationError("Use a valid UTC date and time") from exc
     return parsed.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _authorization_from_form(form: BaseModal) -> Authorization:
+    authorization = Authorization(
+        authorized_by=form.query_one("#authorized-by", Input).value.strip(),
+        reference=form.query_one("#reference", Input).value.strip(),
+        window_start=_window_value(form.query_one("#window-start", Input).value),
+        window_end=_window_value(form.query_one("#window-end", Input).value),
+        emergency_contact=form.query_one("#emergency-contact", Input).value.strip(),
+    )
+    if authorization.window_start and authorization.window_end:
+        if parse_utc(authorization.window_start) > parse_utc(
+            authorization.window_end
+        ):
+            raise ValidationError(
+                "Authorization window start must not be after its end"
+            )
+    return authorization
 
 
 class EngagementDetailsForm(BaseModal):
@@ -421,16 +467,7 @@ class EngagementDetailsForm(BaseModal):
             self.error("Client/Lab and Engagement Name are required")
             return
         try:
-            authorization = Authorization(
-                authorized_by=self.query_one("#authorized-by", Input).value.strip(),
-                reference=self.query_one("#reference", Input).value.strip(),
-                window_start=_window_value(self.query_one("#window-start", Input).value),
-                window_end=_window_value(self.query_one("#window-end", Input).value),
-                emergency_contact=self.query_one("#emergency-contact", Input).value.strip(),
-            )
-            if authorization.window_start and authorization.window_end:
-                if parse_utc(authorization.window_start) > parse_utc(authorization.window_end):
-                    raise ValidationError("Authorization window start must not be after its end")
+            authorization = _authorization_from_form(self)
         except ValidationError as exc:
             self.error(str(exc))
             return
@@ -835,7 +872,7 @@ class AccessForm(BaseModal):
             yield Label("Principal", classes="field-label")
             yield Input(
                 value=self.record.principal if self.record else "",
-                placeholder="svc_deploy",
+                placeholder="web_operator",
                 id="principal",
             )
             yield Label("Authority / realm (optional)", classes="field-label")
@@ -1027,7 +1064,7 @@ class FindingForm(BaseModal):
                 [(item.value.title(), item.value) for item in FindingState],
                 value=self.finding.state.value
                 if self.finding
-                else FindingState.CONFIRMED.value,
+                else FindingState.DRAFT.value,
                 allow_blank=False,
                 id="state",
             )

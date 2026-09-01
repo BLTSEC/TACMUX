@@ -17,7 +17,7 @@ The following inputs are trusted local operator inputs:
 - imported Nmap XML, restored archives, and NOCAP JSON;
 - commands and output inside tmux panes.
 
-Treat a workspace copied from another person as untrusted until reviewed. TACMUX previews text and Markdown but does not execute evidence files. Symlinks are skipped by the evidence browser and refused by editor/pager handoff. Archive restore rejects absolute/traversal paths, unsafe links, special entries, multiple roots, collisions, and mismatched target metadata.
+Treat a workspace copied from another person as untrusted until reviewed. TACMUX previews text and Markdown but does not execute evidence files. Symlinks are skipped by the evidence browser and refused by editor/pager handoff. Manifest and authored-file reads require regular non-linked paths; generated documents, discovery artifacts, deletion staging, and exports refuse linked parent directories. Archive restore rejects absolute/traversal paths, unsafe links, special entries, multiple roots, collisions, and mismatched target metadata.
 
 ## Sensitive data
 

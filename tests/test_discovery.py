@@ -19,7 +19,7 @@ from tacmux.discovery import (
     reconcile_candidates,
     run_job,
 )
-from tacmux.errors import ConflictError, ValidationError
+from tacmux.errors import ConflictError, SafetyError, ValidationError
 from tacmux.model import (
     EngagementStatus,
     ScopeAvailability,
@@ -59,7 +59,7 @@ def test_nmap_xml_and_pasted_hosts_are_strictly_parsed():
         "198.51.100.25",
         "198.51.100.40",
     ]
-    assert candidates[0].hostnames == ["mail.acme.test"]
+    assert candidates[0].hostnames == ["edge.example.test"]
     pasted = parse_host_lines(
         "10.0.0.1 host-a\n10.0.0.1 duplicate\n# comment\n10.0.0.2"
     )
@@ -152,24 +152,69 @@ def test_nmap_xml_encoding_errors_are_wrapped_and_utf16_provenance_is_exact(
     assert destination.read_bytes() == source.read_bytes()
 
 
+def test_service_import_refuses_a_linked_provenance_directory(
+    tmp_path, workspace, record
+):
+    scope = workspace.add_scope(
+        record.root,
+        record.engagement,
+        "DMZ",
+        ScopeGroup.EXTERNAL,
+        "198.51.100.0/24",
+    )
+    source = tmp_path / "services.xml"
+    source.write_text("<nmaprun/>")
+    candidate = DiscoveryCandidate(
+        ["198.51.100.25"],
+        services=[
+            Service(
+                port=443,
+                protocol="tcp",
+                source=".tacmux/imports/services.xml",
+            )
+        ],
+    )
+    decisions = reconcile_candidates(
+        record.engagement, [candidate], allowed_scope_ids={scope.id}
+    )
+    imports = record.root / ".tacmux/imports"
+    imports.rename(record.root / ".tacmux/imports-original")
+    outside = tmp_path / "outside-imports"
+    outside.mkdir()
+    imports.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SafetyError, match="linked private directory"):
+        apply_reconciliation(
+            workspace,
+            record.root,
+            record.engagement,
+            decisions,
+            allowed_scope_ids={scope.id},
+            source_copy=(source, imports / "services.xml"),
+        )
+
+    assert not (outside / "services.xml").exists()
+    assert record.engagement.targets == []
+
+
 def test_reconciliation_requires_review_and_supports_second_interface_merge(
     workspace, record
 ):
     external = record.engagement.add_scope(
         "DMZ", ScopeGroup.EXTERNAL, "198.51.100.0/24"
     )
-    internal = record.engagement.add_scope("LAN", ScopeGroup.INTERNAL, "10.77.10.0/24")
+    internal = record.engagement.add_scope("LAN", ScopeGroup.INTERNAL, "10.66.30.0/24")
     host = workspace.create_target(
         record.root,
         record.engagement,
         "MAIL",
         addresses=[TargetAddress("198.51.100.25", external.id)],
-        hostnames=["mail.acme.test"],
-        primary_endpoint="mail.acme.test",
+        hostnames=["edge.example.test"],
+        primary_endpoint="edge.example.test",
     )
     decisions = reconcile_candidates(
         record.engagement,
-        [DiscoveryCandidate(["10.77.10.5"], ["mail.acme.test"], "echo-reply")],
+        [DiscoveryCandidate(["10.66.30.5"], ["edge.example.test"], "echo-reply")],
         allowed_scope_ids={internal.id},
     )
     assert decisions[0].action == "add"
@@ -186,7 +231,7 @@ def test_reconciliation_requires_review_and_supports_second_interface_merge(
     assert changed == [host]
     assert {(item.scope_id, item.value) for item in host.addresses} == {
         (external.id, "198.51.100.25"),
-        (internal.id, "10.77.10.5"),
+        (internal.id, "10.66.30.5"),
     }
 
 

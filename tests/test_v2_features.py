@@ -46,14 +46,14 @@ def test_scope_exclusions_are_enforced_in_model_and_discovery(workspace, record)
         record.engagement,
         "Corporate LAN",
         ScopeGroup.INTERNAL,
-        "10.77.10.0/24",
-        exclusions=["10.77.10.250/32"],
+        "10.88.40.0/24",
+        exclusions=["10.88.40.250/32"],
     )
-    assert scope.contains(ipaddress.ip_address("10.77.10.20"))
-    assert not scope.contains(ipaddress.ip_address("10.77.10.250"))
+    assert scope.contains(ipaddress.ip_address("10.88.40.20"))
+    assert not scope.contains(ipaddress.ip_address("10.88.40.250"))
     decision = reconcile_candidates(
         record.engagement,
-        [DiscoveryCandidate(["10.77.10.250"])],
+        [DiscoveryCandidate(["10.88.40.250"])],
         allowed_scope_ids={scope.id},
     )[0]
     assert decision.allowed_actions == ("ignore",)
@@ -63,8 +63,8 @@ def test_scope_exclusions_are_enforced_in_model_and_discovery(workspace, record)
             record.root,
             record.engagement,
             "production-db",
-            addresses=[TargetAddress("10.77.10.250", scope.id)],
-            primary_endpoint="10.77.10.250",
+            addresses=[TargetAddress("10.88.40.250", scope.id)],
+            primary_endpoint="10.88.40.250",
         )
 
 
@@ -513,7 +513,7 @@ def test_documents_include_owned_provenance_without_internal_json(
         primary_endpoint="198.51.100.25",
     )
     imported = record.root / ".tacmux/imports/services.xml"
-    imported.parent.mkdir()
+    imported.parent.mkdir(exist_ok=True)
     imported.write_text("<nmaprun/>")
     target.services = [Service(443, "tcp", state="open", source=".tacmux/imports/services.xml")]
     workspace.save(record.root, record.engagement)
@@ -570,7 +570,7 @@ def test_credential_shape_warning_is_narrow_and_non_blocking(value):
 
 @pytest.mark.parametrize(
     "value",
-    ["svc_deploy", "ACME\\operator", "Kerberos ticket", "SSH public key auth"],
+    ["build_reader", "EXAMPLE\\operator", "Kerberos ticket", "SSH public key auth"],
 )
 def test_ordinary_access_metadata_does_not_trigger_credential_warning(value):
     assert not looks_like_credential(value)
