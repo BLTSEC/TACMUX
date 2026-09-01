@@ -6,8 +6,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tacmux.archive import create_archive
 from tacmux.cli import main
+from tacmux.context import resolve
+from tacmux.errors import ValidationError
 from tacmux.hooks import clipboard_copy
 from tacmux.model import EngagementStatus, ScopeGroup, TargetAddress
 
@@ -17,11 +21,43 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_version_help_unknown_and_non_tty(capsys, monkeypatch):
     assert main(["version"]) == 0
-    assert capsys.readouterr().out.strip() == "tacmux 2.2.0"
+    assert capsys.readouterr().out.strip() == "tacmux 2.3.0"
     assert main(["help"]) == 0
     assert "interactive operator cockpit" in capsys.readouterr().out
     assert main(["not-a-command"]) == 2
     assert "Usage:" in capsys.readouterr().err
+    assert main(["activity", "maybe", "attempted", "access"]) == 1
+    assert "confirmed, failed, no-result" in capsys.readouterr().err
+
+
+def test_context_prefers_tmux_pane_metadata_and_rejects_stale_environment(
+    settings, workspace, record, monkeypatch
+):
+    class PaneContext:
+        def __init__(self, value):
+            self.value = value
+
+        def current_context(self):
+            return self.value
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux,1,0")
+    monkeypatch.setenv("TACMUX_ENGAGEMENT_ID", record.engagement.id)
+    resolved, target = resolve(settings, PaneContext((record.engagement.id, "")))
+    assert resolved.engagement.id == record.engagement.id
+    assert target is None
+
+    monkeypatch.setenv("TACMUX_ENGAGEMENT_ID", "E-stale")
+    with pytest.raises(ValidationError, match="disagrees"):
+        resolve(settings, PaneContext((record.engagement.id, "")))
+
+    monkeypatch.setenv("TACMUX_ENGAGEMENT_ID", record.engagement.id)
+    with pytest.raises(ValidationError, match="not owned"):
+        resolve(settings, PaneContext(("", "")))
+
+    monkeypatch.delenv("TMUX")
+    resolved, target = resolve(settings, PaneContext(("", "")))
+    assert resolved.engagement.id == record.engagement.id
+    assert target is None
 
 
 def test_public_clip_and_ssh_tty_fallback(settings, monkeypatch):
@@ -82,7 +118,7 @@ def test_repository_wrapper_reports_v2():
         check=False,
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == "tacmux 2.2.0"
+    assert result.stdout.strip() == "tacmux 2.3.0"
 
 
 def test_cli_import_does_not_load_textual():

@@ -1,5 +1,44 @@
 # Changelog
 
+## 2.3.0 — 2026-08-31
+
+### Added
+
+- In-cockpit keyboard reference, keyboard-scrollable read panes, readable job
+  scope/profile labels, job-log paging, and originating-target selection.
+- Regression coverage for mixed IPv4/IPv6 discovery, closed lifecycle guards,
+  literal operator text, refresh selection, contextual tmux identity, and
+  installer ownership.
+
+### Changed
+
+- Closed engagements are review-only until explicitly reopened.
+- Discovery job JSON is portable and contains neither executable command lines
+  nor TACMUX-generated absolute paths. Commands remain rebuilt from current
+  ready scope at execution time.
+- Discovery imports accepting more than ten targets default detached-session
+  creation off.
+- Generated Markdown is written only when its content changes, and cockpit
+  refreshes retain the highlighted object.
+- Reinstalls honor configured data paths, preserve skip-tmux mode, and refuse
+  unrelated command links before replacing the application; ignored developer
+  bytecode is excluded from the staged install.
+- The Python requirement is now 3.11.4 or newer.
+
+### Fixed
+
+- Mixed IPv4/IPv6 scope handling is explicitly family-safe, and authored files
+  referenced as evidence no longer collide in the Documents table.
+- Submitting a cockpit filter no longer opens or attaches the highlighted row.
+- Operator strings containing Rich markup characters remain literal.
+- Editor suspension failures, target cleanup failures, and invalid CLI activity
+  results now surface as operator-facing errors.
+- Contextual CLI commands reject stale inherited session identity.
+
+### Removed
+
+- The obsolete workspace import and migration surface.
+
 ## 2.2.0 — 2026-08-31
 
 ### Added
@@ -29,7 +68,7 @@
   action, with only affected cockpit panes refreshed afterward.
 - Structured access fields warn on likely credential material without blocking
   authorized evidence capture.
-- Full tmux installs retain the v1 operator keymap, including logging shortcuts,
+- Full tmux installs retain the complete operator keymap, including logging shortcuts,
   and reinstalling preserves the previously selected tmux mode.
 - Critical lifecycle state now leads the cockpit banner, narrow footer labels are
   shorter, and closed engagements hide active-only shortcuts and commands.
@@ -41,7 +80,7 @@
 
 ## 2.0.0 — 2026-08-31
 
-TACMUX v2 replaces the v1 Zsh command suite with a Python/Textual operator
+TACMUX v2 replaces the original Zsh command suite with a Python/Textual operator
 cockpit. It is a deliberate workflow reset, not an in-place manifest upgrade.
 
 ### Added
@@ -65,7 +104,7 @@ cockpit. It is a deliberate workflow reset, not an in-place manifest upgrade.
 ### Changed
 
 - Installation uses `uv` and Python 3.11 or newer.
-- The TUI and contextual action menus replace v1's flag-heavy and fzf flows;
+- The TUI and contextual action menus replace the original flag-heavy and fzf flows;
   fzf is no longer required.
 - Automatic pane logging is limited to TACMUX-owned sessions by default.
 - Markdown stays in the engagement workspace and opens through `$VISUAL`,
@@ -73,14 +112,8 @@ cockpit. It is a deliberate workflow reset, not an in-place manifest upgrade.
 
 ### Removed
 
-- AutoRecon integration, shell completions, and the v1 Zsh core.
-- The v1 `logview` and `logrender` commands. v2 provides cleaned previews and
+- AutoRecon integration, shell completions, and the original Zsh core.
+- The former `logview` and `logrender` commands. v2 provides cleaned previews and
   full-file pager handoff inside the Documents tab.
 - Course or academy lesson management. Training exercises remain ordinary,
   separate engagements.
-
-### Migration
-
-Use **Import v1 workspace** from the engagement picker. Import is copy-only and
-preserves the original workspace. Review imported targets and add structured
-scope and records manually; TACMUX does not infer security facts from notes.

@@ -43,11 +43,7 @@ remove_block() {
     rm -f "$temporary"
 }
 
-validate_block "$HOME/.zshrc"
-validate_block "$HOME/.bashrc"
 validate_block "$HOME/.tmux.conf"
-remove_block "$HOME/.zshrc"
-remove_block "$HOME/.bashrc"
 remove_block "$HOME/.tmux.conf"
 
 if [[ -L "$BIN" ]] && \

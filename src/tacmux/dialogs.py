@@ -54,22 +54,6 @@ from .ui import plain
 
 
 class BaseModal(ModalScreen[Any]):
-    DEFAULT_CSS = """
-    BaseModal { align: center middle; background: $background 70%; }
-    BaseModal > Vertical, BaseModal > VerticalScroll {
-        width: 86; max-width: 94%; height: auto; max-height: 92%;
-        border: round $accent; background: $surface; padding: 1 2;
-    }
-    BaseModal .title { text-style: bold; color: $accent; margin-bottom: 1; }
-    BaseModal .field-label { margin-top: 1; color: $text-muted; }
-    BaseModal .buttons { height: auto; margin-top: 1; align-horizontal: right; }
-    BaseModal Button { margin-left: 1; }
-    BaseModal .error { color: $error; height: auto; margin-top: 1; }
-    BaseModal TextArea { height: 8; border: tall $panel; }
-    BaseModal SelectionList { height: 12; border: tall $panel; }
-    BaseModal DataTable { height: 18; }
-    BaseModal .compact-list { height: 10; border: tall $panel; }
-    """
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [("escape", "cancel", "Cancel")]
 
     def action_cancel(self) -> None:
@@ -86,7 +70,7 @@ class MessageModal(BaseModal):
         self.message = message
 
     def compose(self) -> ComposeResult:
-        with Vertical():
+        with VerticalScroll():
             yield Label(plain(self.modal_title), classes="title")
             yield Static(plain(self.message))
             yield Static("", classes="error")
@@ -199,6 +183,13 @@ class ConfirmModal(BaseModal):
         if event.button.id == "cancel":
             self.dismiss(False)
             return
+        self._confirm()
+
+    @on(Input.Submitted, "#confirmation")
+    def submitted(self) -> None:
+        self._confirm()
+
+    def _confirm(self) -> None:
         if self.required_text:
             value = self.query_one("#confirmation", Input).value
             if value != self.required_text:
@@ -223,6 +214,7 @@ class ActionMenu(BaseModal):
                 ),
                 id="actions",
             )
+            yield Static("Esc cancels", classes="menu-hint")
             yield Static("", classes="error")
 
     @on(OptionList.OptionSelected)
@@ -387,13 +379,33 @@ class EngagementDetailsForm(BaseModal):
                 id="logging",
             )
             yield Label("Authorization", classes="field-label")
-            yield Input(value=auth.authorized_by, placeholder="Authorizing party", id="authorized-by")
-            yield Input(value=auth.reference, placeholder="SOW, ticket, or contract reference", id="reference")
+            yield Input(
+                value=auth.authorized_by,
+                placeholder="Authorizing party",
+                id="authorized-by",
+            )
+            yield Input(
+                value=auth.reference,
+                placeholder="SOW, ticket, or contract reference",
+                id="reference",
+            )
             yield Label("Window start (UTC)", classes="field-label")
-            yield Input(value=_window_input(auth.window_start), placeholder="2026-09-01 13:00", id="window-start")
+            yield Input(
+                value=_window_input(auth.window_start),
+                placeholder="2026-09-01 13:00",
+                id="window-start",
+            )
             yield Label("Window end (UTC)", classes="field-label")
-            yield Input(value=_window_input(auth.window_end), placeholder="2026-09-05 23:00", id="window-end")
-            yield Input(value=auth.emergency_contact, placeholder="Emergency contact", id="emergency-contact")
+            yield Input(
+                value=_window_input(auth.window_end),
+                placeholder="2026-09-05 23:00",
+                id="window-end",
+            )
+            yield Input(
+                value=auth.emergency_contact,
+                placeholder="Emergency contact",
+                id="emergency-contact",
+            )
             yield Static("", classes="error")
             with Horizontal(classes="buttons"):
                 yield Button("Cancel", id="cancel")
@@ -427,7 +439,9 @@ class EngagementDetailsForm(BaseModal):
             {
                 "client": client,
                 "name": name,
-                "assessment_type": AssessmentType(str(self.query_one("#assessment", Select).value)),
+                "assessment_type": AssessmentType(
+                    str(self.query_one("#assessment", Select).value)
+                ),
                 "logging_enabled": self.query_one("#logging", Checkbox).value,
                 "authorization": authorization,
             }
@@ -448,11 +462,20 @@ class CleanupForm(BaseModal):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label("Edit Cleanup Item" if self.item else "Record Cleanup Item", classes="title")
+            yield Label(
+                "Edit Cleanup Item" if self.item else "Record Cleanup Item",
+                classes="title",
+            )
             yield Label("Target", classes="field-label")
             yield Select(
-                [(target.display_name, target.id) for target in self.engagement.targets],
-                value=(self.item.target_id if self.item else self.target.id if self.target else Select.NULL),
+                [(plain(target.display_name), target.id) for target in self.engagement.targets],
+                value=(
+                    self.item.target_id
+                    if self.item
+                    else self.target.id
+                    if self.target
+                    else Select.NULL
+                ),
                 allow_blank=self.target is None and self.item is None,
                 id="target",
             )
@@ -530,68 +553,21 @@ class ServicesModal(BaseModal):
         )
         for item in self.target.services:
             table.add_row(
-                str(item.port), item.protocol, item.state, item.name or "—",
-                " ".join(value for value in (item.product, item.version, item.extra) if value) or "—",
-                item.observed_at[:16], item.source or "—",
+                plain(item.port), plain(item.protocol), plain(item.state), plain(item.name or "—"),
+                plain(
+                    " ".join(
+                        value
+                        for value in (item.product, item.version, item.extra)
+                        if value
+                    )
+                    or "—"
+                ),
+                plain(item.observed_at[:16]), plain(item.source or "—"),
             )
 
     @on(Button.Pressed)
     def pressed(self, event: Button.Pressed) -> None:
         self.dismiss("clear" if event.button.id == "clear" else None)
-
-
-class LegacyImportForm(BaseModal):
-    def compose(self) -> ComposeResult:
-        with VerticalScroll():
-            yield Label("Import v1 Workspace", classes="title")
-            yield Label(
-                "Existing engagement or flat workspace directory", classes="field-label"
-            )
-            yield Input(placeholder="~/legacy-engagement", id="source")
-            yield Label("Client, Lab, or Platform", classes="field-label")
-            yield Input(placeholder="Who this work belongs to", id="client")
-            yield Label("New Engagement Name", classes="field-label")
-            yield Input(
-                placeholder="Assessment name, project code, or lab name", id="name"
-            )
-            yield Label("Assessment Type", classes="field-label")
-            yield Select(
-                [
-                    (item.value.replace("_", " ").title(), item.value)
-                    for item in AssessmentType
-                ],
-                value=AssessmentType.BOTH.value,
-                allow_blank=False,
-                id="assessment",
-            )
-            yield Static("", classes="error")
-            with Horizontal(classes="buttons"):
-                yield Button("Cancel", id="cancel")
-                yield Button("Import", id="import", variant="primary")
-
-    @on(Button.Pressed)
-    def pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.dismiss(None)
-            return
-        source = self.query_one("#source", Input).value.strip()
-        client = self.query_one("#client", Input).value.strip()
-        name = self.query_one("#name", Input).value.strip()
-        if not source or not client or not name:
-            self.error(
-                "Source, who the work belongs to, and Engagement Name are required"
-            )
-            return
-        self.dismiss(
-            {
-                "source": Path(source),
-                "client": client,
-                "name": name,
-                "assessment_type": AssessmentType(
-                    str(self.query_one("#assessment", Select).value)
-                ),
-            }
-        )
 
 
 class ScopeForm(BaseModal):
@@ -602,7 +578,7 @@ class ScopeForm(BaseModal):
 
     def compose(self) -> ComposeResult:
         target_options = [
-            (item.display_name, item.id) for item in self.engagement.targets
+            (plain(item.display_name), item.id) for item in self.engagement.targets
         ]
         with Vertical():
             yield Label(
@@ -710,7 +686,7 @@ class TargetAddressForm(BaseModal):
             yield Label("Network / scope", classes="field-label")
             yield Select(
                 [
-                    (f"{item.group.value}: {item.label} ({item.network})", item.id)
+                    (plain(f"{item.group.value}: {item.label} ({item.network})"), item.id)
                     for item in self.engagement.network_entries
                 ],
                 prompt="Select scope",
@@ -779,7 +755,7 @@ class TargetForm(BaseModal):
             yield Label("Scope entry for this address", classes="field-label")
             yield Select(
                 [
-                    (f"{item.group.value}: {item.label} ({item.network})", item.id)
+                    (plain(f"{item.group.value}: {item.label} ({item.network})"), item.id)
                     for item in self.engagement.network_entries
                 ],
                 prompt="Select scope when entering an IP",
@@ -935,7 +911,7 @@ class ActivityForm(BaseModal):
         self.activity = activity
 
     def compose(self) -> ComposeResult:
-        options = [(item.display_name, item.id) for item in self.engagement.targets]
+        options = [(plain(item.display_name), item.id) for item in self.engagement.targets]
         with Vertical():
             yield Label(
                 "Edit Activity" if self.activity else "Record Activity",
@@ -1020,7 +996,7 @@ class FindingForm(BaseModal):
     def compose(self) -> ComposeResult:
         selections = [
             (
-                item.display_name,
+                plain(item.display_name),
                 item.id,
                 item.id in self.finding.target_ids
                 if self.finding
@@ -1139,7 +1115,8 @@ class AttackPathForm(BaseModal):
             self.eligible.append(
                 (
                     f"access:{record.id}",
-                    f"Access {record.id}: {record.principal} → {target.display_name} ({record.level.value})",
+                    f"Access {record.id}: {record.principal} → "
+                    f"{target.display_name} ({record.level.value})",
                 )
             )
         for finding in self.engagement.findings:
@@ -1162,7 +1139,7 @@ class AttackPathForm(BaseModal):
                 "Available confirmed records (Enter adds)", classes="field-label"
             )
             yield OptionList(
-                *(Option(label, id=identifier) for identifier, label in self.eligible),
+                *(Option(plain(label), id=identifier) for identifier, label in self.eligible),
                 id="eligible-steps",
                 classes="compact-list",
             )
@@ -1213,7 +1190,7 @@ class AttackPathForm(BaseModal):
         table = self.query_one("#chosen-steps", DataTable)
         table.clear()
         for index, identifier in enumerate(self.chosen, 1):
-            table.add_row(str(index), labels[identifier], key=identifier)
+            table.add_row(plain(index), plain(labels[identifier]), key=identifier)
         if cursor_row is not None and self.chosen:
             table.move_cursor(row=max(0, min(cursor_row, len(self.chosen) - 1)))
 
@@ -1281,7 +1258,7 @@ class ScanForm(BaseModal):
         ]
         selections = [
             (
-                f"{item.group.value}: {item.label} — {item.network}",
+                plain(f"{item.group.value}: {item.label} — {item.network}"),
                 item.id,
                 False,
             )
@@ -1425,7 +1402,7 @@ class ImportDiscoveryForm(BaseModal):
             yield SelectionList(
                 *[
                     (
-                        f"{item.group.value}: {item.label} — {item.spec}",
+                        plain(f"{item.group.value}: {item.label} — {item.spec}"),
                         item.id,
                         not self.selected_scope_ids
                         or item.id in self.selected_scope_ids,
@@ -1480,19 +1457,32 @@ class DiscoveryReview(BaseModal):
         self.allowed_scope_ids = frozenset(allowed_scope_ids)
 
     def compose(self) -> ComposeResult:
+        accepted = sum(
+            decision.action in {"add", "merge"} for decision in self.decisions
+        )
+        bulk = accepted > 10
         with Vertical():
             yield Label("Review Discovery Results", classes="title")
             yield Static(
-                "Space cycles Add / Merge / Ignore. Press m to select an existing host for a second interface. "
+                "Space cycles Add / Merge / Ignore. Press m to select an "
+                "existing host for a second interface. "
                 "No target changes occur until Commit."
             )
             yield Static("", id="review-tally")
             yield DataTable(id="review", cursor_type="row", zebra_stripes=True)
             yield Checkbox(
                 "Create detached sessions for accepted targets",
-                value=True,
+                value=not bulk,
                 id="sessions",
             )
+            if bulk:
+                yield Static(
+                    plain(
+                        f"{accepted} targets are currently accepted. Detached sessions "
+                        "default off above 10; enable the checkbox deliberately if needed."
+                    ),
+                    classes="warning",
+                )
             yield Static("", classes="error")
             with Horizontal(classes="buttons"):
                 yield Button("Cancel", id="cancel")
@@ -1505,11 +1495,15 @@ class DiscoveryReview(BaseModal):
         self.reason_column = columns[4]
         for index, decision in enumerate(self.decisions):
             table.add_row(
-                decision.action.upper(),
-                decision.candidate.display_name,
-                ", ".join(item.value for item in decision.addresses) or "—",
-                str(len(decision.candidate.services)) if decision.candidate.services else "—",
-                decision.note or decision.candidate.reason,
+                plain(decision.action.upper()),
+                plain(decision.candidate.display_name),
+                plain(", ".join(item.value for item in decision.addresses) or "—"),
+                plain(
+                    str(len(decision.candidate.services))
+                    if decision.candidate.services
+                    else "—"
+                ),
+                plain(decision.note or decision.candidate.reason),
                 key=str(index),
             )
         self._update_tally()
@@ -1548,7 +1542,7 @@ class DiscoveryReview(BaseModal):
             if decision.action not in allowed
             else allowed[(allowed.index(decision.action) + 1) % len(allowed)]
         )
-        table.update_cell(row_key, self.action_column, decision.action.upper())
+        table.update_cell(row_key, self.action_column, plain(decision.action.upper()))
         self._update_tally()
 
     def action_choose_merge(self) -> None:
@@ -1579,8 +1573,8 @@ class DiscoveryReview(BaseModal):
         decision.note = f"operator-selected merge into {target_name}"
         table = self.query_one("#review", DataTable)
         row_key = str(index)
-        table.update_cell(row_key, self.action_column, "MERGE")
-        table.update_cell(row_key, self.reason_column, decision.note)
+        table.update_cell(row_key, self.action_column, plain("MERGE"))
+        table.update_cell(row_key, self.reason_column, plain(decision.note))
         self._update_tally()
 
     def action_commit(self) -> None:

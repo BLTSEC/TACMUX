@@ -6,6 +6,7 @@ import pytest
 from textual.widgets import (
     Button,
     Checkbox,
+    DataTable,
     Input,
     Label,
     OptionList,
@@ -44,7 +45,10 @@ from tacmux.model import (
     ScopeGroup,
     TargetAddress,
     CleanupKind,
+    FindingState,
+    Severity,
 )
+from tacmux.panes import DocumentsPane, RecordsPane, ScopeDiscoveryPane, TargetsPane
 from tacmux.themes import BLTSEC_THEME, DEFAULT_THEME
 
 
@@ -61,6 +65,50 @@ async def test_picker_is_usable_at_minimum_terminal_size(settings, workspace, re
         assert "Theme" not in {
             command.title for command in app.get_system_commands(app.screen)
         }
+
+
+@pytest.mark.asyncio
+async def test_operator_markup_is_literal_in_picker_records_and_options(
+    settings, workspace, record
+):
+    record.engagement.client = "[ACME]"
+    record.engagement.name = "Assessment [Q3]"
+    workspace.save(record.root, record.engagement)
+    target = workspace.create_target(
+        record.root, record.engagement, "[prod] host"
+    )
+    workspace.create_finding(
+        record.root,
+        record.engagement,
+        title="[prod] finding",
+        severity=Severity.MEDIUM,
+        state=FindingState.CONFIRMED,
+        target_ids=[target.id],
+    )
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, EngagementPickerScreen)
+        row = picker.query_one("#engagements", DataTable).get_row(
+            record.engagement.id
+        )
+        assert str(row[0]) == "[ACME]"
+        assert str(row[1]) == "Assessment [Q3]"
+
+        app.open_engagement(workspace.find(record.engagement.id))
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        main.action_tab("records")
+        records = main.query_one("#records-table", DataTable)
+        finding = record.engagement.findings[0]
+        row = records.get_row(f"finding:{finding.id}")
+        assert str(row[3]) == "[prod] finding"
+
+        app.push_screen(ActionMenu("[prod] menu", [("open", "[prod] host")]))
+        await pilot.pause()
+        assert str(app.screen.query_one(OptionList).get_option_at_index(0).prompt) == "[prod] host"
 
 
 @pytest.mark.asyncio
@@ -759,9 +807,10 @@ async def test_closed_engagement_blocks_operational_entry_points(
         main = app.screen
         assert isinstance(main, MainScreen)
         assert main._status_line([]).plain.startswith("  CLOSED  /  ")
+        assert main.check_action("default_action", ()) is True
         assert all(
             main.check_action(action, ()) is False
-            for action in ("default_action", "new_target", "discovery")
+            for action in ("new_target", "discovery")
         )
         assert all(
             not main.operator_command_available(action)
@@ -777,7 +826,6 @@ async def test_closed_engagement_blocks_operational_entry_points(
             for index in range(menu.option_count)
         }
         assert prompts == {
-            "Edit target notes",
             "View services",
             "Archive target",
         }
@@ -907,11 +955,7 @@ async def test_user_mutation_renders_each_generated_document_once(
         )
         await pilot.pause()
 
-        assert generated_writes == [
-            "notes/activity.md",
-            "notes/attack-path.md",
-            "SITREP.md",
-        ]
+        assert generated_writes == ["SITREP.md"]
 
 
 @pytest.mark.asyncio
@@ -965,3 +1009,236 @@ async def test_discovery_post_commit_failures_do_not_report_a_rollback(
         assert messages and messages[-1][1] == "warning"
         assert "already committed" in messages[-1][0]
         assert "sessions not started" in messages[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_filter_submit_only_applies_filter_and_scope_find_stays_put(
+    settings, workspace, record, monkeypatch
+):
+    workspace.create_target(record.root, record.engagement, "mail host")
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        opened: list[bool] = []
+        monkeypatch.setattr(
+            main, "action_default_action", lambda: opened.append(True)
+        )
+        main.action_filter()
+        field = main.query_one("#target-filter", Input)
+        field.value = "mail"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert opened == []
+        assert app.screen is main
+        assert not field.display
+
+        main.action_tab("scope")
+        main.action_filter()
+        assert main.query_one("#workspace-tabs", TabbedContent).active == "scope"
+        assert not field.display
+
+        main.action_help()
+        await pilot.pause()
+        assert isinstance(app.screen, MessageModal)
+        assert "Discovery review" in app.screen.message
+
+
+@pytest.mark.asyncio
+async def test_table_selection_survives_refresh_by_stable_identity(
+    settings, workspace, record, monkeypatch
+):
+    first_scope = workspace.add_scope(
+        record.root,
+        record.engagement,
+        "External [prod]",
+        ScopeGroup.EXTERNAL,
+        "198.51.100.0/24",
+    )
+    second_scope = workspace.add_scope(
+        record.root,
+        record.engagement,
+        "Internal",
+        ScopeGroup.INTERNAL,
+        "10.80.0.0/24",
+    )
+    first_target = workspace.create_target(
+        record.root, record.engagement, "first"
+    )
+    second_target = workspace.create_target(
+        record.root, record.engagement, "second"
+    )
+    workspace.create_activity(
+        record.root,
+        record.engagement,
+        summary="first activity",
+        result=ActivityResult.NO_RESULT,
+        target_id=first_target.id,
+        evidence="",
+    )
+    second_activity = workspace.create_activity(
+        record.root,
+        record.engagement,
+        summary="second activity",
+        result=ActivityResult.CONFIRMED,
+        target_id=second_target.id,
+        evidence="",
+    )
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        assert main.query_one("#target-detail", Static).can_focus
+        assert main.query_one("#situation-view", Static).can_focus
+        assert main.query_one("#document-preview", Static).can_focus
+
+        targets = main.query_one(TargetsPane)
+        assert targets.select_target(second_target.id)
+        scope_pane = main.query_one(ScopeDiscoveryPane)
+        scope_table = main.query_one("#scope-table", DataTable)
+        scope_table.move_cursor(row=scope_table.get_row_index(second_scope.id))
+        records_table = main.query_one("#records-table", DataTable)
+        records_table.move_cursor(
+            row=records_table.get_row_index(f"activity:{second_activity.id}")
+        )
+        documents = main.query_one(DocumentsPane)
+        document_table = main.query_one("#documents-table", DataTable)
+        target_document = next(
+            key
+            for key, (path, _, _) in documents.document_paths.items()
+            if second_target.directory in str(path)
+        )
+        document_table.move_cursor(row=document_table.get_row_index(target_document))
+        await pilot.pause()
+        preview_updates: list[object] = []
+        monkeypatch.setattr(
+            main.query_one("#document-preview", Static),
+            "update",
+            preview_updates.append,
+        )
+
+        jobs = [
+            {
+                "id": "J0001",
+                "profile": "hosts",
+                "state": "running",
+                "scope_ids": [first_scope.id],
+                "result_paths": [],
+            },
+            {
+                "id": "J0002",
+                "profile": "tcp-services",
+                "state": "queued",
+                "scope_ids": [second_scope.id],
+                "result_paths": [],
+            },
+        ]
+        scope_pane.populate(main.engagement, jobs)
+        jobs_table = main.query_one("#jobs-table", DataTable)
+        jobs_table.move_cursor(row=jobs_table.get_row_index("J0002"))
+        job_row = jobs_table.get_row("J0002")
+        assert str(job_row[1]) == "TCP services"
+        assert str(job_row[3]) == "Internal"
+
+        targets.populate(main.engagement, set())
+        scope_pane.populate(main.engagement, jobs)
+        main.query_one(RecordsPane).populate(main.engagement, root=record.root)
+        documents.populate(main.record)
+        await pilot.pause()
+
+        assert targets.selected_target_id() == second_target.id
+        assert scope_pane.selected_scope_id() == second_scope.id
+        assert scope_pane.selected_job_id() == "J0002"
+        assert main.query_one(RecordsPane).selected_record() == (
+            "activity",
+            second_activity.id,
+        )
+        assert documents.selected_document()[0].name == "NOTES.md"
+        assert preview_updates == []
+
+
+@pytest.mark.asyncio
+async def test_documents_deduplicate_authored_files_referenced_as_evidence(
+    settings, workspace, record
+):
+    target = workspace.create_target(record.root, record.engagement, "mail")
+    finding = workspace.create_finding(
+        record.root,
+        record.engagement,
+        title="Mail finding",
+        severity=Severity.MEDIUM,
+        state=FindingState.CONFIRMED,
+        target_ids=[target.id],
+    )
+    finding.evidence = [finding.document]
+    workspace.save(record.root, record.engagement)
+    workspace.set_last_engagement(record.engagement.id)
+
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        documents = main.query_one(DocumentsPane)
+        documents.populate(main.record, include_evidence=True)
+        table = main.query_one("#documents-table", DataTable)
+
+        assert list(documents.document_paths).count(finding.document) == 1
+        assert table.row_count == len(documents.document_paths)
+
+
+@pytest.mark.asyncio
+async def test_typed_confirmation_enter_and_bulk_session_default(
+    settings, workspace
+):
+    app = TacmuxApp(settings)
+    confirmed: list[bool] = []
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        app.push_screen(
+            ConfirmModal("Delete", "Confirm deletion", "DELETE T0001"),
+            confirmed.append,
+        )
+        await pilot.pause()
+        app.screen.query_one("#confirmation", Input).value = "DELETE T0001"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert confirmed == [True]
+
+        decisions = [
+            Reconciliation(
+                DiscoveryCandidate([f"198.51.100.{index}"]),
+                [TargetAddress(f"198.51.100.{index}", "S0001")],
+                "add",
+            )
+            for index in range(1, 12)
+        ]
+        app.push_screen(DiscoveryReview(decisions, allowed_scope_ids={"S0001"}))
+        await pilot.pause()
+        assert not app.screen.query_one("#sessions", Checkbox).value
+        assert "default off above 10" in str(
+            app.screen.query_one(".warning", Static).render()
+        )
+
+
+@pytest.mark.asyncio
+async def test_tmux_bootstrap_reselects_originating_target(
+    settings, workspace, record, monkeypatch
+):
+    workspace.create_target(record.root, record.engagement, "first")
+    target = workspace.create_target(record.root, record.engagement, "origin")
+    app = TacmuxApp(settings)
+    monkeypatch.setattr(
+        app.tmux,
+        "current_context",
+        lambda: (record.engagement.id, target.id),
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, MainScreen)
+        assert app.screen.query_one(TargetsPane).selected_target_id() == target.id

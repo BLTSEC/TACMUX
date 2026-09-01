@@ -43,6 +43,38 @@ from .tmux import TmuxService
 
 
 JOB_SCHEMA = "tacmux.discovery-job/v1"
+JOB_SPEC_FIELDS = (
+    "schema",
+    "id",
+    "engagement_id",
+    "scope_ids",
+    "profile",
+    "pace",
+    "created_at",
+    "session",
+)
+JOB_STATUS_FIELDS = (
+    *JOB_SPEC_FIELDS,
+    "phase",
+    "state",
+    "started_at",
+    "finished_at",
+    "exit_code",
+    "imported_at",
+    "result_paths",
+    "artifacts",
+    "error",
+)
+
+
+def _job_document(value: dict, fields: Sequence[str]) -> dict:
+    """Return the portable subset allowed in a discovery JSON document."""
+
+    return {key: value[key] for key in fields if key in value}
+
+
+def _write_job_status(path: Path, value: dict) -> None:
+    write_private_json(path, _job_document(value, JOB_STATUS_FIELDS))
 
 
 class ScanProfile(StrEnum):
@@ -76,7 +108,12 @@ def _validated_scan_scopes(
     if unavailable:
         raise ConflictError("scope is unavailable: " + ", ".join(unavailable))
     for left, right in combinations(selected, 2):
-        if ipaddress.ip_network(left.network).overlaps(ipaddress.ip_network(right.network)):
+        left_network = ipaddress.ip_network(left.network)
+        right_network = ipaddress.ip_network(right.network)
+        if (
+            left_network.version == right_network.version
+            and left_network.overlaps(right_network)
+        ):
             raise ValidationError(
                 "overlapping scope entries must be discovered in separate jobs: "
                 f"{left.label}, {right.label}"
@@ -498,12 +535,13 @@ def reconcile_candidates(
                 raise ValidationError(
                     f"discovery candidate contains an invalid IP address: {raw_address}"
                 ) from exc
-            matching = [
-                item
-                for item in scopes
-                if item.kind == ScopeKind.NETWORK
-                and address in ipaddress.ip_network(item.network)
-            ]
+            matching: list[ScopeEntry] = []
+            for item in scopes:
+                if item.kind != ScopeKind.NETWORK:
+                    continue
+                network = ipaddress.ip_network(item.network)
+                if address.version == network.version and address in network:
+                    matching.append(item)
             if not matching:
                 unmatched.append(str(address))
                 continue
@@ -578,7 +616,10 @@ def reconcile_candidates(
                         addresses=addresses,
                         action="add",
                         merge_target_id=existing_hostname_matches[0],
-                        note="possible second interface: matching hostname; operator must choose Add or Merge",
+                        note=(
+                            "possible second interface: matching hostname; "
+                            "operator must choose Add or Merge"
+                        ),
                     )
                 )
             else:
@@ -599,6 +640,7 @@ def apply_reconciliation(
     allowed_scope_ids: set[str],
     source_copy: tuple[Path, Path] | None = None,
 ) -> list[Target]:
+    workspace.require_active(engagement)
     if not allowed_scope_ids:
         raise ValidationError("discovery commit requires at least one scope entry")
     for scope_id in allowed_scope_ids:
@@ -611,6 +653,7 @@ def apply_reconciliation(
     try:
         with workspace.lock(engagement_root):
             workspace._assert_current_revision(engagement_root, engagement)
+            workspace.require_active(engagement)
             for requested in decisions:
                 canonical = reconcile_candidates(
                     engagement,
@@ -756,15 +799,16 @@ class DiscoveryJobs:
                 name = item.get("path") if isinstance(item, dict) else item
                 if isinstance(name, str) and name and Path(name).name == name:
                     normalized_artifacts.append(name)
-            value["result_paths"] = result_names
-            value["artifact_paths"] = [
+            job = _job_document(value, JOB_STATUS_FIELDS)
+            job["result_paths"] = result_names
+            job["artifact_paths"] = [
                 str(path.parent / item) for item in normalized_artifacts
             ]
-            value["xml_path"] = str(
+            job["xml_path"] = str(
                 path.parent / (result_names[0] if result_names else "results.xml")
             )
-            value["log_path"] = str(path.parent / "nmap.log")
-            jobs.append(value)
+            job["log_path"] = str(path.parent / "nmap.log")
+            jobs.append(job)
         return jobs
 
     def active(self, engagement_root: Path) -> list[dict]:
@@ -797,7 +841,7 @@ class DiscoveryJobs:
             job["state"] = "cancelled"
             job["finished_at"] = _utc_now()
             job["exit_code"] = None
-            write_private_json(
+            _write_job_status(
                 engagement_root / ".tacmux/jobs" / job_id / "status.json", job
             )
             return True
@@ -810,6 +854,7 @@ class DiscoveryJobs:
 
     def mark_imported(self, engagement_root: Path, job_id: str) -> None:
         with self.workspace.lock(engagement_root):
+            self.workspace.require_active(self.workspace.load(engagement_root))
             job = next(
                 (
                     item
@@ -821,7 +866,7 @@ class DiscoveryJobs:
             if job is None:
                 raise ValidationError(f"unknown discovery job: {job_id}")
             job["imported_at"] = _utc_now()
-            write_private_json(
+            _write_job_status(
                 engagement_root / ".tacmux/jobs" / job_id / "status.json", job
             )
 
@@ -853,6 +898,7 @@ class DiscoveryJobs:
         profile: ScanProfile | str = ScanProfile.HOSTS,
         pace: ScanPace | str = ScanPace.CAREFUL,
     ) -> dict:
+        self.workspace.require_active(engagement)
         if not shutil.which("nmap"):
             raise ExternalToolError(
                 "Nmap is not installed; XML and pasted-host import remain available"
@@ -867,6 +913,7 @@ class DiscoveryJobs:
                 raise ConflictError(
                     "engagement changed in another TACMUX process; refresh and retry"
                 )
+            self.workspace.require_active(current)
             _private_directory(jobs_root)
             existing = [
                 int(path.name[1:])
@@ -877,8 +924,6 @@ class DiscoveryJobs:
             job_root = jobs_root / job_id
             job_root.mkdir(mode=0o700)
             os.chmod(job_root, 0o700)
-            xml_path = job_root / "results.xml"
-            log_path = job_root / "nmap.log"
             value = {
                 "schema": JOB_SCHEMA,
                 "id": job_id,
@@ -893,24 +938,18 @@ class DiscoveryJobs:
                 "finished_at": None,
                 "exit_code": None,
                 "imported_at": None,
-                "argv": _scan_argv("nmap", xml_path, selected),
                 "result_paths": ["results.xml"]
                 if selected_profile == ScanProfile.HOSTS
                 else [],
                 "artifacts": ["results.xml"]
                 if selected_profile == ScanProfile.HOSTS
                 else [],
-                "log_path": str(log_path),
             }
-            if selected_profile == ScanProfile.HOSTS:
-                value["xml_path"] = str(xml_path)
             job_file = job_root / "job.json"
             session = self.tmux.job_session_name(engagement, job_id)
             value["session"] = session
-            write_private_json(
-                job_file, {key: item for key, item in value.items() if key != "argv"}
-            )
-            write_private_json(job_root / "status.json", value)
+            write_private_json(job_file, _job_document(value, JOB_SPEC_FIELDS))
+            _write_job_status(job_root / "status.json", value)
         command = [
             sys.executable,
             "-m",
@@ -928,9 +967,11 @@ class DiscoveryJobs:
             value["error"] = str(exc)
             value["finished_at"] = _utc_now()
             with self.workspace.lock(engagement_root):
-                write_private_json(job_root / "status.json", value)
+                _write_job_status(job_root / "status.json", value)
             raise
-        return value
+        return next(
+            item for item in self.list(engagement_root) if item["id"] == job_id
+        )
 
 
 def _utc_now() -> str:
@@ -1039,6 +1080,7 @@ def run_job(settings: Settings, job_file: Path) -> int:
         if value.get("id") != job_id:
             raise ValidationError("discovery job ID does not match its directory")
         engagement = workspace.load(engagement_root)
+        workspace.require_active(engagement)
         if value.get("engagement_id") != engagement.id:
             raise ValidationError("discovery job belongs to a different engagement")
         scope_ids = value.get("scope_ids")
@@ -1068,7 +1110,6 @@ def run_job(settings: Settings, job_file: Path) -> int:
                 "pace": pace.value,
                 "phase": "starting",
                 "session": TmuxService(settings).job_session_name(engagement, job_id),
-                "log_path": str(log_path),
                 "result_paths": [],
                 "artifacts": [],
                 "state": "running",
@@ -1078,7 +1119,7 @@ def run_job(settings: Settings, job_file: Path) -> int:
             }
         )
         value.pop("error", None)
-    except (ExternalToolError, ValidationError) as exc:
+    except (ConflictError, ExternalToolError, ValidationError) as exc:
         failure = {
             "schema": JOB_SCHEMA,
             "id": job_id,
@@ -1099,7 +1140,7 @@ def run_job(settings: Settings, job_file: Path) -> int:
                 settings, workspace, engagement_root, job_id
             )
             if current is not None and current.get("state") == "queued":
-                write_private_json(status_path, failure)
+                _write_job_status(status_path, failure)
         raise
 
     with workspace.lock(engagement_root):
@@ -1112,19 +1153,17 @@ def run_job(settings: Settings, job_file: Path) -> int:
             raise ConflictError(
                 f"discovery job {job_id} is not queued and will not be started"
             )
-        write_private_json(status_path, value)
+        _write_job_status(status_path, value)
 
-    def publish(phase: str, argv: list[str] | None = None) -> None:
+    def publish(phase: str) -> None:
         value["phase"] = phase
-        if argv is not None:
-            value["argv"] = argv
         with workspace.lock(engagement_root):
             current = _current_job_status(
                 settings, workspace, engagement_root, job_id
             )
             if current is not None and current.get("state") == "cancelled":
                 raise _JobCancelled
-            write_private_json(status_path, value)
+            _write_job_status(status_path, value)
 
     failures: list[str] = []
     failure_code = 0
@@ -1135,7 +1174,7 @@ def run_job(settings: Settings, job_file: Path) -> int:
         nonlocal failure_code
         if artifact not in value["artifacts"]:
             value["artifacts"].append(artifact)
-        publish(phase, argv)
+        publish(phase)
         log.write(f"\n=== {phase} ===\n$ {' '.join(argv)}\n".encode())
         log.flush()
         try:
@@ -1302,5 +1341,5 @@ def run_job(settings: Settings, job_file: Path) -> int:
         )
         if current is not None and current.get("state") == "cancelled":
             return 130
-        write_private_json(status_path, value)
+        _write_job_status(status_path, value)
     return int(value["exit_code"] or 0)

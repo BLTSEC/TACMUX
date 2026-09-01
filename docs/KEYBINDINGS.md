@@ -14,10 +14,11 @@ Press the tmux prefix, release it, then press `E`. The complete TACMUX tmux conf
 | `d` | Host discovery actions |
 | `e` | Return to the engagement picker (`g` remains a hidden alias) |
 | `/` | Filter the active Targets, Records, or Documents table |
+| `?` | Open the in-cockpit keyboard reference |
 | `r` | Refresh sessions, jobs, topology, and SITREP |
 | `1`–`5` | Targets, Scope, Records, Situation, Documents |
 | `Ctrl+P` | Command Palette (fuzzy command search) |
-| `Escape` | Close a modal/cancel an entry |
+| `Escape` | Close a filter, modal, or menu and cancel an entry |
 | `q` | Quit the cockpit; detached sessions continue |
 
 The TACMUX cockpit uses its dedicated BLTSEC palette. A Nerd Font renders the
@@ -26,6 +27,8 @@ interface icons as intended.
 From the engagement picker, `a` opens the engagement menu: open, edit details,
 close/reopen, archive, or guarded delete. The Command Palette is the global
 searchable command launcher; contextual Actions menus remain the primary flow.
+Closed engagements expose review, export/archive, reopen, and guarded deletion;
+editing actions remain hidden until the engagement is reopened.
 Press `r` in the picker to choose a verified engagement archive to restore; the
 same key works when no live engagements remain.
 

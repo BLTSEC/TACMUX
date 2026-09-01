@@ -12,6 +12,7 @@ CONFIG_FILE="$CONFIG_DIR/config.toml"
 STATE_FILE="$CONFIG_DIR/install-state"
 WORKSPACE_OVERRIDE=""
 TMUX_MODE="auto"
+TMUX_MODE_EXPLICIT=0
 
 BOLD=$'\e[1m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; RED=$'\e[31m'; RESET=$'\e[0m'
 info() { printf '%s[+]%s %s\n' "$GREEN" "$RESET" "$*"; }
@@ -23,7 +24,7 @@ usage() {
     cat <<'EOF'
 Usage: ./install.sh [options]
 
-  --workspace PATH  Set the v2 workspace directory
+  --workspace PATH  Set the workspace directory on first install
   --full-tmux       Source TACMUX's opinionated complete tmux configuration
   --skip-tmux       Do not change ~/.tmux.conf
   --unattended      Accepted for provisioning compatibility; never prompts
@@ -35,8 +36,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --workspace) [[ $# -ge 2 ]] || die "--workspace requires a path"; WORKSPACE_OVERRIDE="$2"; shift 2 ;;
         --workspace=*) WORKSPACE_OVERRIDE="${1#*=}"; shift ;;
-        --full-tmux) TMUX_MODE="full"; shift ;;
-        --skip-tmux) TMUX_MODE="skip"; shift ;;
+        --full-tmux) TMUX_MODE="full"; TMUX_MODE_EXPLICIT=1; shift ;;
+        --skip-tmux) TMUX_MODE="skip"; TMUX_MODE_EXPLICIT=1; shift ;;
         --unattended) shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown option: $1" ;;
@@ -52,22 +53,60 @@ if [[ -e "$INSTALL_DIR" ]] && {
 fi
 INSTALL_DIR_EXISTED=0
 [[ ! -e "$INSTALL_DIR" ]] || INSTALL_DIR_EXISTED=1
+MANAGED_COMMAND="$APP_DIR/.venv/bin/tacmux"
+if [[ -e "$BIN_DIR/tacmux" || -L "$BIN_DIR/tacmux" ]]; then
+    if [[ ! -L "$BIN_DIR/tacmux" ]] || [[ "$(readlink "$BIN_DIR/tacmux")" != "$MANAGED_COMMAND" ]]; then
+        die "Refusing to replace unrelated command: $BIN_DIR/tacmux"
+    fi
+fi
 
 for command_name in tmux python3 uv; do
     command -v "$command_name" >/dev/null 2>&1 || die "Required command not found: $command_name"
 done
-python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' || \
-    die "TACMUX requires Python 3.11 or newer"
+python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11, 4))' || \
+    die "TACMUX requires Python 3.11.4 or newer"
 
-if [[ -n "$WORKSPACE_OVERRIDE" ]]; then
-    WORKSPACE="$WORKSPACE_OVERRIDE"
-elif [[ -d /workspace && -w /workspace ]]; then
-    WORKSPACE=/workspace
-else
-    WORKSPACE="$HOME/workspace"
+if [[ "$TMUX_MODE_EXPLICIT" == 0 && -f "$STATE_FILE" ]]; then
+    previous_state=$(<"$STATE_FILE")
+    case "$previous_state" in
+        TMUX_MODE=skip) TMUX_MODE=skip ;;
+        TMUX_MODE=full) TMUX_MODE=full ;;
+        TMUX_MODE=integration) TMUX_MODE=integration ;;
+        *) warn "Ignoring invalid install state: $STATE_FILE" ;;
+    esac
 fi
-ARCHIVE_DIR="$HOME/archives"
-[[ "$WORKSPACE" == /workspace ]] && ARCHIVE_DIR=/workspace/.tacmux/archives
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    CONFIG_PATHS_FILE=$(mktemp)
+    if ! PYTHONPATH="$SCRIPT_DIR/src" TACMUX_CONFIG="$CONFIG_FILE" python3 -c \
+        'from tacmux.config import load_settings; value=load_settings(); print(value.workspace); print(value.archive_dir); print(value.log_dir)' \
+        > "$CONFIG_PATHS_FILE"; then
+        rm -f "$CONFIG_PATHS_FILE"
+        die "Cannot read existing TACMUX paths from $CONFIG_FILE"
+    fi
+    mapfile -t CONFIG_PATHS < "$CONFIG_PATHS_FILE"
+    rm -f "$CONFIG_PATHS_FILE"
+    [[ "${#CONFIG_PATHS[@]}" == 3 ]] || die "Existing TACMUX config returned invalid paths"
+    WORKSPACE="${CONFIG_PATHS[0]}"
+    ARCHIVE_DIR="${CONFIG_PATHS[1]}"
+    LOG_DIR="${CONFIG_PATHS[2]}"
+    if [[ -n "$WORKSPACE_OVERRIDE" ]]; then
+        WORKSPACE_OVERRIDE_RESOLVED=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$WORKSPACE_OVERRIDE")
+        [[ "$WORKSPACE_OVERRIDE_RESOLVED" == "$WORKSPACE" ]] || \
+            die "--workspace disagrees with existing config ($WORKSPACE); edit $CONFIG_FILE instead"
+    fi
+else
+    if [[ -n "$WORKSPACE_OVERRIDE" ]]; then
+        WORKSPACE="$WORKSPACE_OVERRIDE"
+    elif [[ -d /workspace && -w /workspace ]]; then
+        WORKSPACE=/workspace
+    else
+        WORKSPACE="$HOME/workspace"
+    fi
+    ARCHIVE_DIR="$HOME/archives"
+    [[ "$WORKSPACE" == /workspace ]] && ARCHIVE_DIR=/workspace/.tacmux/archives
+    LOG_DIR="$HOME/logs"
+fi
 
 validate_block() {
     local file="$1" start="$2" end="$3"
@@ -121,13 +160,11 @@ managed_tmux_mode() {
     ' "$file"
 }
 
-validate_block "$HOME/.zshrc" '# >>> TACMUX >>>' '# <<< TACMUX <<<'
-validate_block "$HOME/.bashrc" '# >>> TACMUX >>>' '# <<< TACMUX <<<'
 if [[ "$TMUX_MODE" != skip ]]; then
     validate_block "$HOME/.tmux.conf" '# >>> TACMUX >>>' '# <<< TACMUX <<<'
 fi
 
-step "Installing locked TACMUX v2 application"
+step "Installing locked TACMUX application"
 mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/tmux" "$INSTALL_DIR/lib" "$BIN_DIR" "$CONFIG_DIR"
 APP_STAGE=$(mktemp -d "$INSTALL_DIR/.app-stage.XXXXXX")
 APP_BACKUP="$INSTALL_DIR/.app-backup.$$"
@@ -145,6 +182,8 @@ cleanup_stage() {
 trap cleanup_stage EXIT
 cp "$SCRIPT_DIR/pyproject.toml" "$SCRIPT_DIR/uv.lock" "$SCRIPT_DIR/README.md" "$SCRIPT_DIR/LICENSE" "$APP_STAGE/"
 cp -R "$SCRIPT_DIR/src" "$APP_STAGE/src"
+find "$APP_STAGE/src" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+find "$APP_STAGE/src" -depth -type d -name __pycache__ -empty -delete
 [[ ! -d "$APP_DIR" ]] || mv "$APP_DIR" "$APP_BACKUP"
 mv "$APP_STAGE" "$APP_DIR"
 APP_SWAPPED=1
@@ -169,13 +208,8 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 else
     info "Preserved $CONFIG_FILE"
 fi
-mkdir -p "$WORKSPACE" "$ARCHIVE_DIR" "$HOME/logs"
-chmod 700 "$CONFIG_DIR" "$WORKSPACE" "$ARCHIVE_DIR" "$HOME/logs"
-
-# v2 has no shell-sourced core or completion dependency. Remove only TACMUX's
-# marked legacy blocks and preserve all unrelated shell content.
-remove_block "$HOME/.zshrc" '# >>> TACMUX >>>' '# <<< TACMUX <<<'
-remove_block "$HOME/.bashrc" '# >>> TACMUX >>>' '# <<< TACMUX <<<'
+mkdir -p "$WORKSPACE" "$ARCHIVE_DIR" "$LOG_DIR"
+chmod 700 "$CONFIG_DIR" "$WORKSPACE" "$ARCHIVE_DIR" "$LOG_DIR"
 
 step "Installing tmux integration"
 if [[ "$TMUX_MODE" == skip ]]; then

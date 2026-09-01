@@ -32,6 +32,7 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
+from textual.widgets.data_table import RowDoesNotExist
 from rich.text import Text
 
 from .archive import (
@@ -54,7 +55,6 @@ from .dialogs import (
     ExportForm,
     FindingForm,
     ImportDiscoveryForm,
-    LegacyImportForm,
     MessageModal,
     PromptModal,
     ScanForm,
@@ -72,7 +72,6 @@ from .discovery import (
 )
 from .errors import ConflictError, TacmuxError, ValidationError
 from .export import ExportProfile, create_handoff, parse_export_profile
-from .migration import import_v1_workspace
 from .model import (
     AccessRecord,
     Activity,
@@ -170,7 +169,6 @@ class EngagementPickerScreen(Screen):
         Binding("enter", "open_selected", "Open"),
         Binding("a", "actions", "Actions"),
         Binding("n", "new_engagement", "New"),
-        Binding("i", "import_legacy", "Import v1"),
         Binding("r", "restore", "Restore"),
         Binding("/", "filter", "Filter"),
         Binding("escape", "close_filter", show=False),
@@ -191,11 +189,6 @@ class EngagementPickerScreen(Screen):
             "Create engagement",
             "new_engagement",
             "Create an external, internal, both, or lab engagement",
-        ),
-        (
-            "Import v1 workspace",
-            "import_legacy",
-            "Import existing evidence into a stable v2 layout",
         ),
         (
             "Restore verified engagement archive",
@@ -240,6 +233,11 @@ class EngagementPickerScreen(Screen):
 
     def refresh_table(self, query: str = "") -> None:
         table = self.query_one("#engagements", DataTable)
+        selected = None
+        previous_row = table.cursor_coordinate.row
+        if table.row_count:
+            row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+            selected = str(row_key.value)
         if not table.columns:
             table.add_columns(
                 "Client / Lab / Platform", "Engagement", "Type", "Status", "Targets", "Live"
@@ -257,18 +255,23 @@ class EngagementPickerScreen(Screen):
             if query and query not in haystack:
                 continue
             table.add_row(
-                engagement.client,
-                engagement.name,
-                engagement.assessment_type.value.replace("_", " "),
-                (
+                plain(engagement.client),
+                plain(engagement.name),
+                plain(engagement.assessment_type.value.replace("_", " ")),
+                plain(
                     " closed"
                     if engagement.status == EngagementStatus.CLOSED
                     else " active"
                 ),
-                str(len(engagement.targets)),
-                str(len(live.get(engagement.id, set()))),
+                plain(len(engagement.targets)),
+                plain(len(live.get(engagement.id, set()))),
                 key=engagement.id,
             )
+        if table.row_count:
+            try:
+                table.move_cursor(row=table.get_row_index(selected))
+            except (RowDoesNotExist, TypeError):
+                table.move_cursor(row=min(previous_row, table.row_count - 1))
         self.query_one("#picker-hint", Static).update(
             plain(
                 f"{self.app.settings.workspace} · {len(records)} "
@@ -295,21 +298,26 @@ class EngagementPickerScreen(Screen):
         except TacmuxError as exc:
             self.app.show_error(str(exc))
             return
+        actions = [("open", "Open engagement")]
+        if record.engagement.status == EngagementStatus.CLOSED:
+            actions.append(("reopen", "Reopen engagement"))
+        else:
+            actions.extend(
+                [
+                    ("edit", "Edit engagement details"),
+                    ("close", "Close engagement"),
+                ]
+            )
+        actions.extend(
+            [
+                ("archive", "Create verified archive"),
+                ("delete", "Delete engagement…"),
+            ]
+        )
         self.app.push_screen(
             ActionMenu(
                 f"{record.engagement.client} / {record.engagement.name}",
-                [
-                    ("open", "Open engagement"),
-                    ("edit", "Edit engagement details"),
-                    (
-                        "reopen" if record.engagement.status == EngagementStatus.CLOSED else "close",
-                        "Reopen engagement"
-                        if record.engagement.status == EngagementStatus.CLOSED
-                        else "Close engagement",
-                    ),
-                    ("archive", "Create verified archive"),
-                    ("delete", "Delete engagement…"),
-                ],
+                actions,
             ),
             lambda action: self._engagement_action(record.engagement.id, action),
         )
@@ -364,7 +372,10 @@ class EngagementPickerScreen(Screen):
             self.app.show_error(str(exc))
             return
         outstanding = len(record.engagement.outstanding_cleanup)
-        message = "Close this engagement? Operational changes will be blocked until it is reopened."
+        message = (
+            "Close this engagement? Operational changes will be blocked until "
+            "it is reopened."
+        )
         if outstanding:
             message += f"\n\n{outstanding} cleanup item(s) are still outstanding."
         self.app.push_screen(
@@ -521,7 +532,8 @@ class EngagementPickerScreen(Screen):
                         matches.append(index)
                 if len(matches) != 1:
                     raise ValidationError(
-                        f"exclusion {exclusion} must be inside exactly one front-loaded scope entry"
+                        f"exclusion {exclusion} must be inside exactly one "
+                        "front-loaded scope entry"
                     )
                 scope_specs[matches[0]][4].append(exclusion)
             record = self.app.workspace.create_engagement(
@@ -533,18 +545,6 @@ class EngagementPickerScreen(Screen):
             )
             self.app.open_engagement(record)
         except (TacmuxError, OSError, ValueError) as exc:
-            self.app.show_error(str(exc))
-
-    def action_import_legacy(self) -> None:
-        self.app.push_screen(LegacyImportForm(), self._import_legacy)
-
-    def _import_legacy(self, value: dict | None) -> None:
-        if value is None:
-            return
-        try:
-            record = import_v1_workspace(self.app.workspace, **value)
-            self.app.open_engagement(record)
-        except (TacmuxError, OSError) as exc:
             self.app.show_error(str(exc))
 
     def action_restore(self) -> None:
@@ -606,13 +606,14 @@ class EngagementPickerScreen(Screen):
 
 class MainScreen(Screen):
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("enter", "default_action", "Attach"),
+        Binding("enter", "default_action", "Open"),
         Binding("a", "actions", "Actions"),
         Binding("n", "new_target", "New"),
         Binding("d", "discovery", "Scan"),
         Binding("e", "switch_engagement", "Switch"),
         Binding("g", "switch_engagement", "Engagements", show=False),
         Binding("/", "filter", "Find"),
+        Binding("?", "help", "Keys"),
         Binding("escape", "close_filter", show=False),
         Binding("r", "refresh", "Refresh", show=False),
         Binding("1", "tab('targets')", "Targets", show=False),
@@ -623,7 +624,6 @@ class MainScreen(Screen):
         Binding("q", "app.quit", "Quit"),
     ]
     ACTIVE_ONLY_BINDINGS: ClassVar[set[str]] = {
-        "default_action",
         "new_target",
         "discovery",
     }
@@ -637,6 +637,7 @@ class MainScreen(Screen):
         "activity",
         "attack_path",
         "ops",
+        "restore",
     }
     operator_commands: ClassVar[list[tuple[str, str, str]]] = [
         (
@@ -723,7 +724,7 @@ class MainScreen(Screen):
         ("Switch engagement", "switch_engagement", "Return to the engagement picker"),
     ]
 
-    def __init__(self, record: EngagementRecord):
+    def __init__(self, record: EngagementRecord, initial_target_id: str = ""):
         super().__init__()
         self.record = record
         self.pending_job_id = ""
@@ -733,6 +734,7 @@ class MainScreen(Screen):
         self.pending_service_copy: tuple[Path, Path] | None = None
         self.restore_options: list[Path] = []
         self._active_tab = "targets"
+        self.initial_target_id = initial_target_id
 
     @property
     def engagement(self) -> Engagement:
@@ -830,7 +832,7 @@ class MainScreen(Screen):
 
     def on_mount(self) -> None:
         self.app.title = " TACMUX"
-        self.app.sub_title = f"{self.engagement.client}: {self.engagement.name}"
+        self.app.sub_title = ""
         self.call_after_refresh(self._finish_mount)
         self.set_interval(3.0, self._poll_external_state)
 
@@ -838,6 +840,10 @@ class MainScreen(Screen):
         if self.app.screen is not self:
             return
         self.refresh_all()
+        targets = self.query_one(TargetsPane)
+        if self.initial_target_id:
+            targets.select_target(self.initial_target_id)
+            self.initial_target_id = ""
         self.query_one("#target-table", DataTable).focus()
 
     def on_resize(self, event: events.Resize) -> None:
@@ -910,12 +916,22 @@ class MainScreen(Screen):
                 )
             else:
                 metrics.append((" window not set", theme.warning))
+        if self.engagement.outstanding_cleanup:
+            metrics.append(
+                (
+                    f" cleanup {len(self.engagement.outstanding_cleanup)}",
+                    theme.warning,
+                )
+            )
+        if active_jobs:
+            metrics.append(
+                (f" {active_jobs} {'scan' if active_jobs == 1 else 'scans'}", theme.warning)
+            )
         count = len(self.engagement.targets)
         metrics.extend(
             [
                 (f" {count} {'target' if count == 1 else 'targets'}", muted),
                 (f" {len(self.live_target_ids)} live", muted),
-                (f" {active_jobs} {'scan' if active_jobs == 1 else 'scans'}", muted),
                 (
                     " logging on"
                     if self.engagement.logging_enabled
@@ -924,13 +940,6 @@ class MainScreen(Screen):
                 ),
             ]
         )
-        if self.engagement.outstanding_cleanup:
-            metrics.append(
-                (
-                    f" cleanup {len(self.engagement.outstanding_cleanup)}",
-                    theme.warning,
-                )
-            )
         result.append("\n")
         for index, (value, style) in enumerate(metrics):
             if index:
@@ -1067,7 +1076,10 @@ class MainScreen(Screen):
     @on(DataTable.RowSelected)
     def row_selected(self, event: DataTable.RowSelected) -> None:
         if event.data_table.id == "target-table":
-            self.action_attach()
+            if self.engagement.status == EngagementStatus.CLOSED:
+                self.target_actions()
+            else:
+                self.action_attach()
         elif event.data_table.id == "scope-table":
             self.edit_scope()
         elif event.data_table.id == "jobs-table":
@@ -1080,7 +1092,10 @@ class MainScreen(Screen):
     def action_default_action(self) -> None:
         active = self.query_one("#workspace-tabs", TabbedContent).active
         if active == "targets":
-            self.action_attach()
+            if self.engagement.status == EngagementStatus.CLOSED:
+                self.target_actions()
+            else:
+                self.action_attach()
         elif active == "scope":
             focused = self.app.focused
             if isinstance(focused, DataTable) and focused.id == "jobs-table":
@@ -1090,14 +1105,21 @@ class MainScreen(Screen):
         elif active == "documents":
             self.open_selected_document()
         elif active == "records":
-            self.edit_selected_record()
+            if self.engagement.status == EngagementStatus.CLOSED:
+                self.app.show_error(
+                    "Engagement is closed — reopen it before editing records"
+                )
+            else:
+                self.edit_selected_record()
 
     def action_filter(self) -> None:
         field = self.query_one("#target-filter", Input)
         active = self.query_one("#workspace-tabs", TabbedContent).active
         if active not in {"targets", "records", "documents"}:
-            self.action_tab("targets")
-            active = "targets"
+            self.app.notify(
+                "Find is available on Targets, Records, and Documents"
+            )
+            return
         field.placeholder = f"Filter {active}"
         field.display = True
         field.focus()
@@ -1135,18 +1157,35 @@ class MainScreen(Screen):
 
     @on(Input.Submitted, "#target-filter")
     def filter_submitted(self) -> None:
-        active = self.query_one("#workspace-tabs", TabbedContent).active
         self.action_close_filter()
-        table = self.query_one(
-            "#records-table"
-            if active == "records"
-            else "#documents-table"
-            if active == "documents"
-            else "#target-table",
-            DataTable,
+
+    def action_help(self) -> None:
+        self.app.push_screen(
+            MessageModal(
+                "TACMUX Keyboard Reference",
+                "Global\n"
+                "  Enter  Open the highlighted item\n"
+                "  a      Actions for the active tab\n"
+                "  /      Find in Targets, Records, or Documents\n"
+                "  e / g  Engagement picker\n"
+                "  r      Refresh external state\n"
+                "  1–5    Targets / Scope / Records / Situation / Documents\n"
+                "  q      Quit the cockpit; detached work continues\n\n"
+                "Operator\n"
+                "  n      New target\n"
+                "  d      Discovery and import menu\n"
+                "  Ctrl+P Command palette\n\n"
+                "Discovery review\n"
+                "  Space  Cycle Add / Merge / Ignore\n"
+                "  m      Choose a merge target\n"
+                "  Ctrl+S Commit reviewed results\n\n"
+                "Attack paths\n"
+                "  Enter  Add a confirmed record\n"
+                "  Delete Remove selected step\n"
+                "  Ctrl+↑ / Ctrl+↓  Reorder step\n\n"
+                "Esc closes filters, menus, and dialogs.",
+            )
         )
-        if table.row_count:
-            self.action_default_action()
 
     def action_refresh(self) -> None:
         if self.refresh_all():
@@ -1369,7 +1408,6 @@ class MainScreen(Screen):
         running = self.app.tmux.target_session_running(self.engagement, target)
         if self.engagement.status == EngagementStatus.CLOSED:
             actions = [
-                ("notes", "Edit target notes"),
                 ("services", "View services"),
                 ("archive", "Archive target"),
             ]
@@ -1596,7 +1634,8 @@ class MainScreen(Screen):
         self.app.push_screen(
             ConfirmModal(
                 "Clear Services",
-                "Remove the imported service snapshot from this target? The source XML is retained.",
+                "Remove the imported service snapshot from this target? "
+                "The source XML is retained.",
             ),
             lambda confirmed: self._clear_services(target_id) if confirmed else None,
         )
@@ -1739,6 +1778,11 @@ class MainScreen(Screen):
         self.action_tab("records")
 
     def edit_selected_record(self) -> None:
+        try:
+            self._require_active()
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
+            return
         selected = self.query_one(RecordsPane).selected_record()
         if selected is None:
             self.app.show_error("No engagement record is selected")
@@ -1746,6 +1790,11 @@ class MainScreen(Screen):
         self._edit_record(*selected)
 
     def records_actions(self) -> None:
+        if self.engagement.status == EngagementStatus.CLOSED:
+            self.app.show_error(
+                "Engagement is closed — records are review-only until it is reopened"
+            )
+            return
         selected = self.query_one(RecordsPane).selected_record()
         actions = [
             ("activity", "Record activity"),
@@ -1821,6 +1870,7 @@ class MainScreen(Screen):
 
     def _edit_record(self, kind: str, record_id: str) -> None:
         try:
+            self._require_active()
             record = self._record(kind, record_id)
             if kind == "access":
                 target = self.engagement.target_by_id(record.target_id)
@@ -2024,25 +2074,6 @@ class MainScreen(Screen):
             lambda job_id: self._open_job_import(jobs, job_id),
         )
 
-    def import_selected_job(self) -> None:
-        try:
-            job_id = self.query_one(ScopeDiscoveryPane).selected_job_id()
-        except ValidationError as exc:
-            self.app.show_error(str(exc))
-            return
-        jobs = self.app.jobs.list(self.record.root)
-        job = next((item for item in jobs if str(item.get("id")) == job_id), None)
-        if (
-            job is None
-            or job.get("state") not in {"succeeded", "partial"}
-            or job.get("imported_at")
-        ):
-            self.app.show_error(
-                "Only a successful or partial, not-yet-imported discovery job can be imported"
-            )
-            return
-        self._open_job_import([job], job_id)
-
     def job_actions(self) -> None:
         try:
             job_id = self.query_one(ScopeDiscoveryPane).selected_job_id()
@@ -2065,6 +2096,9 @@ class MainScreen(Screen):
             actions.append(("import", "Review and import results"))
         if job.get("state") in {"queued", "running"}:
             actions.append(("cancel", "Cancel detached scan"))
+        log_path = Path(str(job.get("log_path", "")))
+        if log_path.is_file() and not log_path.is_symlink():
+            actions.append(("log", "View job log"))
         if not actions:
             self.app.show_error(f"Discovery {job_id} has no available actions")
             return
@@ -2084,6 +2118,15 @@ class MainScreen(Screen):
                 self.app.notify(f"Discovery {job_id} cancelled")
             except (TacmuxError, OSError) as exc:
                 self.app.show_error(str(exc))
+        elif action == "log":
+            jobs = self.app.jobs.list(self.record.root)
+            job = next(
+                (item for item in jobs if str(item.get("id")) == job_id), None
+            )
+            if job is None:
+                self.app.show_error("The selected discovery job no longer exists")
+                return
+            self.app.page_file(Path(str(job["log_path"])), terminal_output=True)
 
     def _open_job_import(self, jobs: list[dict], job_id: str | None) -> None:
         if not job_id:
@@ -2219,6 +2262,11 @@ class MainScreen(Screen):
             self.app.notify(message)
 
     def edit_selected_document(self) -> None:
+        try:
+            self._require_active()
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
+            return
         documents = self.query_one(DocumentsPane)
         selected = documents.selected_document()
         if selected is None:
@@ -2237,7 +2285,7 @@ class MainScreen(Screen):
         if selected is None:
             return
         path, editable, kind = selected
-        if editable:
+        if editable and self.engagement.status != EngagementStatus.CLOSED:
             self.edit_selected_document()
         else:
             self.app.page_file(path, terminal_output=kind == "evidence")
@@ -2252,7 +2300,7 @@ class MainScreen(Screen):
             ("export", "Create engagement handoff"),
             ("view", "View full file in pager"),
         ]
-        if editable:
+        if editable and self.engagement.status != EngagementStatus.CLOSED:
             actions.append(("edit", "Edit with $VISUAL or $EDITOR"))
         self.app.push_screen(
             ActionMenu(path.name, actions), self._document_action
@@ -2319,6 +2367,11 @@ class MainScreen(Screen):
             self.app.show_error(str(exc))
 
     def action_restore(self) -> None:
+        try:
+            self._require_active()
+        except TacmuxError as exc:
+            self.app.show_error(str(exc))
+            return
         self.restore_options = _cockpit_archives(
             self.app.settings, self.engagement.id
         )
@@ -2424,7 +2477,7 @@ class TacmuxApp(App[LaunchIntent | None]):
 
     def bootstrap(self) -> None:
         records = self.workspace.list_engagements()
-        engagement_id, _ = self.tmux.current_context()
+        engagement_id, target_id = self.tmux.current_context()
         if not engagement_id and self.settings.startup == "resume_last":
             engagement_id = self.workspace.get_last_engagement()
         record = next(
@@ -2432,7 +2485,7 @@ class TacmuxApp(App[LaunchIntent | None]):
         )
         if record is not None:
             self.workspace.set_last_engagement(record.engagement.id)
-            self.push_screen(MainScreen(record))
+            self.push_screen(MainScreen(record, initial_target_id=target_id))
         else:
             self.push_screen(EngagementPickerScreen())
 
@@ -2525,7 +2578,7 @@ class TacmuxApp(App[LaunchIntent | None]):
                 )
             if result.returncode:
                 self.show_error(f"editor exited with status {result.returncode}")
-        except (OSError, ValueError, TacmuxError) as exc:
+        except (OSError, ValueError, TacmuxError, SuspendNotSupported) as exc:
             self.show_error(str(exc))
 
     def page_file(self, path: Path, *, terminal_output: bool = False) -> None:

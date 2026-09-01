@@ -15,9 +15,11 @@ from tacmux.model import (
     AssessmentType,
     Activity,
     ActivityResult,
+    Authorization,
     AttackPath,
     AttackPathStep,
     FindingState,
+    EngagementStatus,
     ScopeAvailability,
     ScopeGroup,
     Severity,
@@ -49,7 +51,31 @@ def test_manifest_save_and_generated_document_render_are_separate(
 
     writes.clear()
     workspace.render_documents(record.root, record.engagement)
-    assert writes == ["notes/activity.md", "notes/attack-path.md", "SITREP.md"]
+    assert writes == ["SITREP.md"]
+    writes.clear()
+    workspace.render_documents(record.root, record.engagement)
+    assert writes == []
+
+
+def test_unchanged_generated_document_replaces_a_symlink(workspace, record):
+    workspace.render_documents(record.root, record.engagement)
+    sitrep = record.root / "SITREP.md"
+    expected = sitrep.read_text()
+    external = record.root.parent / "external-sitrep.md"
+    external.write_text(expected)
+    sitrep.unlink()
+    sitrep.symlink_to(external)
+
+    workspace.render_documents(record.root, record.engagement)
+
+    assert sitrep.is_file()
+    assert not sitrep.is_symlink()
+    assert sitrep.read_text() == expected
+    assert external.read_text() == expected
+
+    sitrep.chmod(0o644)
+    workspace.render_documents(record.root, record.engagement)
+    assert mode(sitrep) == 0o600
 
 
 def test_engagement_creation_frontloads_scope_before_workspace_commit(workspace):
@@ -357,6 +383,25 @@ def test_engagement_delete_reports_quarantined_cleanup_failure(
     assert len(staged) == 1
     assert staged[0].name.startswith(record.engagement.id)
     assert workspace.get_last_engagement() == ""
+
+
+def test_target_delete_reports_quarantined_cleanup_failure(
+    workspace, record, monkeypatch
+):
+    target = workspace.create_target(
+        record.root, record.engagement, "mistaken target"
+    )
+
+    def fail_cleanup(_path) -> None:
+        raise OSError("filesystem refused removal")
+
+    monkeypatch.setattr("tacmux.store.shutil.rmtree", fail_cleanup)
+    with pytest.raises(SafetyError, match="cleanup is incomplete") as error:
+        workspace.delete_target(record.root, record.engagement, target.id)
+    staged = list((record.root / ".tacmux/deleting").iterdir())
+    assert len(staged) == 1
+    assert str(staged[0]) in str(error.value)
+    assert not record.engagement.targets
 
 
 def test_terminal_topology_separates_network_map_and_attack_path(workspace, record):
@@ -728,3 +773,67 @@ def test_structured_records_can_be_removed_before_target_deletion(workspace, rec
     workspace.delete_target(record.root, record.engagement, target.id)
     workspace.delete_scope(record.root, record.engagement, scope.id)
     assert not record.engagement.targets and not record.engagement.scope
+
+
+def test_closed_engagement_freezes_workspace_mutations_until_reopened(
+    workspace, record
+):
+    target = workspace.create_target(record.root, record.engagement, "review host")
+    stale_record = type(record)(record.root, workspace.load(record.root))
+    workspace.set_status(record.root, record.engagement, EngagementStatus.CLOSED)
+
+    blocked = [
+        lambda: workspace.add_scope(
+            record.root,
+            record.engagement,
+            "LAN",
+            ScopeGroup.INTERNAL,
+            "10.50.0.0/24",
+        ),
+        lambda: workspace.update_engagement_details(
+            record.root,
+            record.engagement,
+            client="ACME Updated",
+            name=record.engagement.name,
+            assessment_type=record.engagement.assessment_type,
+            logging_enabled=True,
+            authorization=Authorization(),
+        ),
+        lambda: workspace.create_target(
+            record.root, record.engagement, "late target"
+        ),
+        lambda: workspace.rename_target(
+            record.root, record.engagement, target.id, "renamed"
+        ),
+        lambda: workspace.create_activity(
+            record.root,
+            record.engagement,
+            summary="late activity",
+            result=ActivityResult.NO_RESULT,
+            target_id=target.id,
+            evidence="",
+        ),
+        lambda: workspace.append_note(record, target, "late note"),
+        lambda: workspace.delete_target(
+            record.root, record.engagement, target.id
+        ),
+    ]
+    for mutation in blocked:
+        with pytest.raises(ConflictError, match="closed"):
+            mutation()
+    with pytest.raises(ConflictError, match="closed"):
+        workspace.append_note(
+            stale_record,
+            stale_record.engagement.targets[0],
+            "note from a stale shell",
+        )
+
+    workspace.set_status(record.root, record.engagement, EngagementStatus.ACTIVE)
+    scope = workspace.add_scope(
+        record.root,
+        record.engagement,
+        "LAN",
+        ScopeGroup.INTERNAL,
+        "10.50.0.0/24",
+    )
+    assert scope.label == "LAN"
