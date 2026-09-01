@@ -14,6 +14,14 @@ TACMUX is a terminal cockpit for authorized penetration tests and red-team engag
 
 Run `tacmux`, choose the engagement and target, and work from menus. The public CLI intentionally has almost no flag surface.
 
+<p align="center">
+  <img src="assets/tacmux-v2-tour.gif" alt="TACMUX 2.5 tour of Targets, Scope, Records, Situation, Documents, and target actions" width="100%">
+</p>
+
+The tour uses only the repository's public synthetic fixture. See the
+[TACMUX 2.5 field guide](https://bltsec.com/blog/tacmux/) for the complete
+workflow or jump to the [operator guide](docs/USAGE.md).
+
 > Use TACMUX only where you have explicit authorization. Confirm scope, rules of engagement, logging, evidence handling, and retention before testing.
 
 ## What TACMUX does
@@ -191,6 +199,13 @@ No Markdown is moved or symlinked into another application. Set `$VISUAL` or `$E
 - Automatic logging is limited to TACMUX-owned tmux sessions unless explicitly widened in config.
 
 See the [operator guide](docs/USAGE.md), [keybindings](docs/KEYBINDINGS.md), and [security policy](SECURITY.md).
+
+The checked-in demo is reproducible on Linux with the same requirements as
+TACMUX plus [VHS](https://github.com/charmbracelet/vhs) and FFmpeg. From a
+development checkout with `tacmux` on `PATH`, run `scripts/render-demo.sh`.
+The tape builds an isolated temporary workspace from
+`tests/fixtures/external_internal_example.json`; it never reads a real
+engagement workspace.
 
 ## Remove
 
