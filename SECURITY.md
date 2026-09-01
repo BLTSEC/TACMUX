@@ -14,14 +14,14 @@ The following inputs are trusted local operator inputs:
 
 - TACMUX configuration and editor selection;
 - engagement names, scope, target identity, and evidence references;
-- imported v1 directories, Nmap XML, archives, and NOCAP JSON;
+- imported Nmap XML, restored archives, and NOCAP JSON;
 - commands and output inside tmux panes.
 
 Treat a workspace copied from another person as untrusted until reviewed. TACMUX previews text and Markdown but does not execute evidence files. Symlinks are skipped by the evidence browser. Archive restore rejects absolute/traversal paths, unsafe links, special entries, multiple roots, collisions, and mismatched target metadata.
 
 ## Sensitive data
 
-TACMUX applies an owner-only `077` umask. Newly created directories are normally `0700`; manifests, Markdown, logs, job state, archives, and archive manifests are normally `0600`. Ordinary existing workspace content is not recursively changed; copied v1 imports and restored archives are hardened recursively.
+TACMUX applies an owner-only `077` umask. Newly created directories are normally `0700`; manifests, Markdown, logs, job state, archives, and archive manifests are normally `0600`. Ordinary existing workspace content is not recursively changed; restored archives are hardened recursively.
 
 Unix permissions may not be enforced by VM shared folders, FAT filesystems, some network mounts, cloud-sync directories, or removable media. Keep engagement data on an approved encrypted local filesystem or other approved protected volume.
 
@@ -56,6 +56,10 @@ Archive manifests contain SHA-256 integrity metadata, not a digital signature. A
 
 Permanent target deletion is intended only for a mistakenly created target. TACMUX requires exact confirmation, containment under the engagement's `targets` directory, a stopped session, and no structured references. It stages the directory before saving the manifest.
 
-Install and uninstall validate paired TACMUX configuration markers before editing shell or tmux files. Uninstall removes only the marked fixed installation path and a command link that resolves into it. Configuration, archives, workspaces, unrelated commands, and malformed configuration blocks are preserved.
+Install and uninstall validate paired TACMUX configuration markers before editing tmux files. Uninstall removes only the marked fixed installation path and a command link that resolves into it. Configuration, archives, workspaces, unrelated commands, and malformed configuration blocks are preserved.
 
 Manifest revisions reject stale writes from a second TACMUX process instead of silently overwriting newer structured state. Refresh the engagement and repeat the intended change after such a conflict.
+
+Inside tmux, pane ownership metadata is authoritative for contextual CLI
+commands. TACMUX rejects inherited engagement or target variables that disagree
+with the current pane so a stale shell cannot write to another engagement.

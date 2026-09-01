@@ -122,7 +122,7 @@ def _evidence_paths(record: EngagementRecord) -> list[Path]:
         target_root = root / "targets" / target.directory
         for phase in TARGET_PHASES:
             paths.update(_walk_files(target_root / phase))
-    for relative in (".tacmux/imports", ".tacmux/jobs", "legacy-import"):
+    for relative in (".tacmux/imports", ".tacmux/jobs"):
         paths.update(_walk_files(root / relative))
     references = [
         item.evidence for item in record.engagement.access if item.evidence

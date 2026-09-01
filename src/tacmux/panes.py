@@ -20,6 +20,32 @@ from .model import Engagement, Target
 from .render import ACCESS_LABELS, attack_paths_text, topology_text
 from .store import EngagementRecord
 from .terminal_output import render_sample
+from .ui import plain
+
+
+def _selection(table: DataTable) -> tuple[str | None, int]:
+    if not table.row_count:
+        return None, 0
+    row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+    return str(row_key.value), table.cursor_coordinate.row
+
+
+def _restore_selection(
+    table: DataTable, selected: str | None, previous_row: int
+) -> None:
+    if not table.row_count:
+        return
+    if selected:
+        try:
+            table.move_cursor(row=table.get_row_index(selected))
+            return
+        except RowDoesNotExist:
+            pass
+    table.move_cursor(row=min(previous_row, table.row_count - 1))
+
+
+class ReadPane(Static, can_focus=True):
+    """Focusable, keyboard-scrollable read-only content."""
 
 
 def bounded_files(
@@ -56,7 +82,7 @@ class TargetsPane(Horizontal):
 
     def compose(self) -> ComposeResult:
         yield DataTable(id="target-table", cursor_type="row", zebra_stripes=True)
-        yield Static("No target selected", id="target-detail")
+        yield ReadPane("No target selected", id="target-detail")
 
     def selected_target_id(self, *, required: bool = True) -> str | None:
         table = self.query_one("#target-table", DataTable)
@@ -67,12 +93,23 @@ class TargetsPane(Horizontal):
         row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
         return str(row_key.value)
 
+    def select_target(self, target_id: str) -> bool:
+        table = self.query_one("#target-table", DataTable)
+        try:
+            table.move_cursor(row=table.get_row_index(target_id))
+        except RowDoesNotExist:
+            return False
+        self.update_detail(
+            self.engagement.target_by_id(target_id) if self.engagement else None
+        )
+        return True
+
     def populate(
         self, engagement: Engagement, live_target_ids: set[str], query: str = ""
     ) -> None:
         self.engagement = engagement
         table = self.query_one("#target-table", DataTable)
-        selected = self.selected_target_id(required=False)
+        selected, previous_row = _selection(table)
         if not table.columns:
             table.add_columns("State", "Group", "Target", "Addresses", "Svc", "Access")
         table.clear()
@@ -98,24 +135,20 @@ class TargetsPane(Horizontal):
             )
             access = engagement.strongest_access(target.id)
             table.add_row(
-                "" if target.id in live_target_ids else "·",
-                "/".join(groups) or "—",
-                target.display_name,
-                addresses or identity,
-                str(len(target.services)) if target.services else "—",
-                ACCESS_LABELS[access] if access else "—",
+                plain("LIVE" if target.id in live_target_ids else "—"),
+                plain("/".join(groups) or "—"),
+                plain(target.display_name),
+                plain(addresses or identity),
+                plain(str(len(target.services)) if target.services else "—"),
+                plain(ACCESS_LABELS[access] if access else "—"),
                 key=target.id,
             )
-        if selected:
-            try:
-                table.move_cursor(row=table.get_row_index(selected))
-            except RowDoesNotExist:
-                pass
+        _restore_selection(table, selected, previous_row)
         selected = self.selected_target_id(required=False)
         self.update_detail(engagement.target_by_id(selected) if selected else None)
 
     def update_detail(self, target: Target | None) -> None:
-        detail = self.query_one("#target-detail", Static)
+        detail = self.query_one("#target-detail", ReadPane)
         if target is None or self.engagement is None:
             detail.update(
                 "  NO TARGET SELECTED\n\nPress n to create one or d to import discovery."
@@ -138,7 +171,12 @@ class TargetsPane(Horizontal):
             "Hostnames: "
             + (
                 ", ".join(
-                    item + (" (unscoped)" if item in self.engagement.unscoped_hostnames(target) else "")
+                    item
+                    + (
+                        " (unscoped)"
+                        if item in self.engagement.unscoped_hostnames(target)
+                        else ""
+                    )
                     for item in target.hostnames
                 )
                 or "—"
@@ -190,6 +228,7 @@ class ScopeDiscoveryPane(Static):
 
     def populate(self, engagement: Engagement, jobs: list[dict]) -> None:
         table = self.query_one("#scope-table", DataTable)
+        selected_scope, scope_row = _selection(table)
         if not table.columns:
             table.add_columns(
                 "Group", "Kind", "Label", "Scope", "Exclusions", "Availability", "Via"
@@ -202,16 +241,18 @@ class ScopeDiscoveryPane(Static):
                 else "—"
             )
             table.add_row(
-                item.group.value,
-                item.kind.value,
-                item.label,
-                item.spec,
-                ", ".join(item.exclusions) or "—",
-                item.availability.value,
-                via,
+                plain(item.group.value),
+                plain(item.kind.value),
+                plain(item.label),
+                plain(item.spec),
+                plain(", ".join(item.exclusions) or "—"),
+                plain(item.availability.value),
+                plain(via),
                 key=item.id,
             )
+        _restore_selection(table, selected_scope, scope_row)
         jobs_table = self.query_one("#jobs-table", DataTable)
+        selected_job, job_row = _selection(jobs_table)
         if not jobs_table.columns:
             jobs_table.add_columns(
                 "Job", "Profile", "State / phase", "Scope", "Started", "Results"
@@ -224,15 +265,26 @@ class ScopeDiscoveryPane(Static):
             phase = str(job.get("phase") or "")
             if phase and phase not in {"queued", "complete"}:
                 state += f" / {phase}"
+            scope_labels = []
+            for scope_id in job.get("scope_ids", []):
+                try:
+                    scope_labels.append(engagement.scope_by_id(str(scope_id)).label)
+                except TacmuxError:
+                    scope_labels.append(str(scope_id))
+            profile = {
+                "hosts": "Host identification",
+                "tcp-services": "TCP services",
+            }.get(str(job.get("profile", "hosts")), str(job.get("profile", "")))
             jobs_table.add_row(
-                str(job.get("id", "")),
-                str(job.get("profile", "hosts")),
-                state,
-                ", ".join(job.get("scope_ids", [])),
-                str(job.get("started_at") or "—")[:19],
-                str(len(job.get("result_paths", []))),
+                plain(job.get("id", "")),
+                plain(profile),
+                plain(state),
+                plain(", ".join(scope_labels)),
+                plain(str(job.get("started_at") or "—")[:19]),
+                plain(len(job.get("result_paths", []))),
                 key=str(job.get("id", "")),
             )
+        _restore_selection(jobs_table, selected_job, job_row)
 
     def selected_scope_id(self) -> str:
         table = self.query_one("#scope-table", DataTable)
@@ -249,7 +301,7 @@ class ScopeDiscoveryPane(Static):
         return str(row_key.value)
 
 
-class SituationPane(Static, can_focus=True):
+class SituationPane(ReadPane):
     def populate(self, engagement: Engagement) -> None:
         topology = topology_text(engagement).rstrip()
         paths = attack_paths_text(engagement).rstrip()
@@ -273,6 +325,7 @@ class RecordsPane(Static):
         root: Path | None = None,
     ) -> None:
         table = self.query_one("#records-table", DataTable)
+        selected, previous_row = _selection(table)
         if not table.columns:
             table.add_columns("Kind", "ID", "Target", "Summary", "Status", "When")
         table.clear()
@@ -282,7 +335,16 @@ class RecordsPane(Static):
             summary = f"{item.principal} via {item.method or 'unspecified'}"
             if root is not None and item.evidence and not (root / item.evidence).is_file():
                 summary += " (missing evidence)"
-            rows.append(("access", item.id, target, summary, ACCESS_LABELS[item.level], item.observed_at))
+            rows.append(
+                (
+                    "access",
+                    item.id,
+                    target,
+                    summary,
+                    ACCESS_LABELS[item.level],
+                    item.observed_at,
+                )
+            )
         for item in engagement.activities:
             target = (
                 engagement.target_by_id(item.target_id).display_name
@@ -292,7 +354,16 @@ class RecordsPane(Static):
             summary = item.summary
             if root is not None and item.evidence and not (root / item.evidence).is_file():
                 summary += " (missing evidence)"
-            rows.append(("activity", item.id, target, summary, item.result.value, item.occurred_at))
+            rows.append(
+                (
+                    "activity",
+                    item.id,
+                    target,
+                    summary,
+                    item.result.value,
+                    item.occurred_at,
+                )
+            )
         for item in engagement.findings:
             targets = ", ".join(
                 engagement.target_by_id(target_id).display_name
@@ -321,9 +392,20 @@ class RecordsPane(Static):
             rows.append(("cleanup", item.id, target, item.location, status, item.created_at))
         query = query.casefold().strip()
         for kind, item_id, target, summary, status, when in sorted(rows):
-            if query and query not in " ".join((kind, item_id, target, summary, status)).casefold():
+            if query and query not in " ".join(
+                (kind, item_id, target, summary, status)
+            ).casefold():
                 continue
-            table.add_row(kind, item_id, target, summary, status, when[:16] or "—", key=f"{kind}:{item_id}")
+            table.add_row(
+                plain(kind),
+                plain(item_id),
+                plain(target),
+                plain(summary),
+                plain(status),
+                plain(when[:16] or "—"),
+                key=f"{kind}:{item_id}",
+            )
+        _restore_selection(table, selected, previous_row)
 
     def selected_record(self) -> tuple[str, str] | None:
         table = self.query_one("#records-table", DataTable)
@@ -340,10 +422,11 @@ class DocumentsPane(Horizontal):
         self.record: EngagementRecord | None = None
         self.document_paths: dict[str, tuple[Path, bool, str]] = {}
         self._limit_notified = False
+        self._preview_signature: tuple[Path, int, int, str] | None = None
 
     def compose(self) -> ComposeResult:
         yield DataTable(id="documents-table", cursor_type="row", zebra_stripes=True)
-        yield Static(id="document-preview")
+        yield ReadPane(id="document-preview")
 
     @staticmethod
     def _document_entries(
@@ -530,14 +613,21 @@ class DocumentsPane(Horizontal):
                 if query in f"{item[0]} {item[1]} {item[3]}".casefold()
             ]
         table = self.query_one("#documents-table", DataTable)
+        selected, previous_row = _selection(table)
         if not table.columns:
             table.add_columns("Document / Evidence", "Mode")
         table.clear()
         self.document_paths.clear()
-        for index, (label, path, editable, kind) in enumerate(entries):
-            key = f"D{index:04d}"
+        root = record.root.resolve(strict=False)
+        for label, path, editable, kind in entries:
+            key = path.resolve(strict=False).relative_to(root).as_posix()
+            if key in self.document_paths:
+                continue
             self.document_paths[key] = (path, editable, kind)
-            table.add_row(label, "editable" if editable else kind, key=key)
+            table.add_row(
+                plain(label), plain("editable" if editable else kind), key=key
+            )
+        _restore_selection(table, selected, previous_row)
         if limit_reached and not self._limit_notified:
             self._limit_notified = True
             self.app.notify(
@@ -555,12 +645,18 @@ class DocumentsPane(Horizontal):
     def preview_selected(self) -> None:
         selected = self.selected_document()
         if selected is None:
-            self.query_one("#document-preview", Static).update("No document selected.")
+            self._preview_signature = None
+            self.query_one("#document-preview", ReadPane).update("No document selected.")
             return
         path, _, kind = selected
         try:
-            preview = self.query_one("#document-preview", Static)
-            size = path.stat().st_size
+            preview = self.query_one("#document-preview", ReadPane)
+            stat = path.stat()
+            size = stat.st_size
+            signature = (path, stat.st_mtime_ns, size, kind)
+            if signature == self._preview_signature:
+                return
+            self._preview_signature = signature
             with path.open("rb") as stream:
                 sample = stream.read(256 * 1024)
             truncated = size > 256 * 1024
@@ -591,7 +687,8 @@ class DocumentsPane(Horizontal):
                 else Text(render_sample(sample) + truncation)
             )
         except OSError as exc:
-            self.query_one("#document-preview", Static).update(
+            self._preview_signature = None
+            self.query_one("#document-preview", ReadPane).update(
                 f"Unable to read `{path}`: {exc}"
             )
 

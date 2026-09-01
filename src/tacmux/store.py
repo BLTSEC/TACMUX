@@ -115,6 +115,23 @@ def write_private_text(path: Path, text: str) -> None:
         raise
 
 
+def write_private_text_if_changed(path: Path, text: str) -> bool:
+    """Write private UTF-8 text only when its bytes would change."""
+
+    try:
+        if (
+            path.is_file()
+            and not path.is_symlink()
+            and (path.stat().st_mode & 0o777) == 0o600
+            and path.read_text(encoding="utf-8") == text
+        ):
+            return False
+    except (FileNotFoundError, UnicodeError):
+        pass
+    write_private_text(path, text)
+    return True
+
+
 def write_private_bytes(path: Path, data: bytes, *, replace: bool = True) -> None:
     """Atomically write private bytes, optionally refusing an existing destination."""
 
@@ -362,7 +379,8 @@ class Workspace:
     def _seed_editable_documents(self, root: Path, engagement: Engagement) -> None:
         overview = f"""# Engagement — {engagement.client}: {engagement.name}
 
-> Confirm written authorization, scope, rules of engagement, and retention requirements before testing.
+> Confirm written authorization, scope, rules of engagement, and retention
+> requirements before testing.
 
 ## Objectives
 
@@ -385,7 +403,8 @@ Created: {engagement.created_at}
         write_private_text(root / "ENGAGEMENT.md", overview)
         write_private_text(
             root / "findings/README.md",
-            "# Findings\n\nFinding narratives are created through TACMUX and edited with `$EDITOR`.\n",
+            "# Findings\n\nFinding narratives are created through TACMUX and "
+            "edited with `$EDITOR`.\n",
         )
 
     def _assert_current_revision(self, root: Path, engagement: Engagement) -> None:
@@ -393,6 +412,13 @@ Created: {engagement.created_at}
         if manifest.is_file() and self.load(root).revision != engagement.revision:
             raise ConflictError(
                 "engagement changed in another TACMUX process; refresh and retry"
+            )
+
+    @staticmethod
+    def require_active(engagement: Engagement) -> None:
+        if engagement.status == EngagementStatus.CLOSED:
+            raise ConflictError(
+                "engagement is closed; reopen it before making changes"
             )
 
     def save(
@@ -427,11 +453,15 @@ Created: {engagement.created_at}
         root: Path,
         engagement: Engagement,
         mutation: Callable[[], MutationResult],
+        *,
+        allow_closed: bool = False,
     ) -> MutationResult:
         snapshot = deepcopy(engagement)
         try:
             with self.lock(root):
                 self._assert_current_revision(root, engagement)
+                if not allow_closed:
+                    self.require_active(engagement)
                 result = mutation()
                 self.save(root, engagement, True)
                 return result
@@ -534,7 +564,9 @@ Created: {engagement.created_at}
             engagement.status = status
             return engagement
 
-        return self._mutate_manifest(root, engagement, mutate)
+        return self._mutate_manifest(
+            root, engagement, mutate, allow_closed=True
+        )
 
     def add_target_address(
         self,
@@ -746,15 +778,24 @@ Created: {engagement.created_at}
     ) -> Path:
         if not text.strip():
             raise ValidationError("note text is required")
-        if target is None:
-            path = record.root / "ENGAGEMENT.md"
-            heading = "## Operator Notes"
-        else:
-            path = record.root / "targets" / target.directory / "NOTES.md"
-            heading = "## Notes"
-        if not _contained(record.root, path):
-            raise SafetyError(f"unsafe note path: {path}")
         with self.lock(record.root):
+            current = self.load(record.root)
+            self.require_active(current)
+            self._assert_current_revision(record.root, record.engagement)
+            if target is None:
+                path = record.root / "ENGAGEMENT.md"
+                heading = "## Operator Notes"
+            else:
+                current_target = current.target_by_id(target.id)
+                path = (
+                    record.root
+                    / "targets"
+                    / current_target.directory
+                    / "NOTES.md"
+                )
+                heading = "## Notes"
+            if not _contained(record.root, path):
+                raise SafetyError(f"unsafe note path: {path}")
             content = path.read_text(encoding="utf-8")
             if heading not in content:
                 raise ValidationError(f"note file is missing {heading}: {path}")
@@ -837,14 +878,14 @@ Created: {engagement.created_at}
     ) -> int:
         with self.lock(root):
             self._assert_current_revision(root, engagement)
-            write_private_text(
+            write_private_text_if_changed(
                 root / "notes/activity.md", render_activity_markdown(engagement)
             )
-            write_private_text(
+            write_private_text_if_changed(
                 root / "notes/attack-path.md",
                 render_attack_path_markdown(engagement),
             )
-            write_private_text(
+            write_private_text_if_changed(
                 root / "SITREP.md",
                 render_sitrep(
                     engagement,
@@ -896,6 +937,7 @@ Created: {engagement.created_at}
         primary_endpoint: str = "",
         services: list[Service] | None = None,
     ) -> Target:
+        self.require_active(engagement)
         snapshot = deepcopy(engagement)
         target: Target | None = None
         try:
@@ -932,6 +974,7 @@ Created: {engagement.created_at}
     ) -> Target:
         """Prepare one target for a caller that will commit the engagement once."""
 
+        self.require_active(engagement)
         if not display_name.strip():
             raise ValidationError("target display name is required")
         target_id = engagement.next_id("target", "T")
@@ -973,6 +1016,7 @@ Created: {engagement.created_at}
     def rename_target(
         self, root: Path, engagement: Engagement, target_id: str, name: str
     ) -> str:
+        self.require_active(engagement)
         if not name.strip():
             raise ValidationError("target display name is required")
         snapshot = deepcopy(engagement)
@@ -1010,6 +1054,7 @@ Created: {engagement.created_at}
         target_ids: list[str],
         evidence: list[str] | None = None,
     ) -> Finding:
+        self.require_active(engagement)
         snapshot = deepcopy(engagement)
         finding: Finding | None = None
         finding_path: Path | None = None
@@ -1057,6 +1102,7 @@ Created: {engagement.created_at}
         return finding
 
     def sync_finding_document(self, root: Path, finding: Finding) -> None:
+        self.require_active(self.load(root))
         path = root / finding.document
         if not _contained(root, path) or not path.is_file():
             raise SafetyError(f"finding document is missing or unsafe: {path}")
@@ -1081,6 +1127,7 @@ Created: {engagement.created_at}
         write_private_text(path, header + marker + narrative)
 
     def delete_target(self, root: Path, engagement: Engagement, target_id: str) -> None:
+        self.require_active(engagement)
         staging: Path | None = None
         target_root: Path | None = None
         snapshot = deepcopy(engagement)
@@ -1115,7 +1162,18 @@ Created: {engagement.created_at}
                 staging.rename(target_root)
                 raise
         assert staging is not None
-        shutil.rmtree(staging)
+        try:
+            shutil.rmtree(staging)
+            _fsync_directory(staging.parent)
+        except OSError as exc:
+            if staging.exists():
+                raise SafetyError(
+                    "target was removed from the engagement, but filesystem cleanup "
+                    f"is incomplete at {staging}: {exc}"
+                ) from exc
+            raise SafetyError(
+                f"target was deleted, but final directory sync failed: {exc}"
+            ) from exc
 
     def delete_scope(self, root: Path, engagement: Engagement, scope_id: str) -> None:
         scope = engagement.scope_by_id(scope_id)
@@ -1137,6 +1195,7 @@ Created: {engagement.created_at}
     def delete_record(
         self, root: Path, engagement: Engagement, kind: str, record_id: str
     ) -> None:
+        self.require_active(engagement)
         snapshot = deepcopy(engagement)
         staged_document: tuple[Path, Path] | None = None
         try:

@@ -13,7 +13,7 @@ from .archive import verify_archive
 from .config import load_settings
 from .context import resolve
 from .discovery import DiscoveryJobs, run_job
-from .errors import ConflictError, TacmuxError
+from .errors import ConflictError, TacmuxError, ValidationError
 from .export import create_handoff, parse_export_profile
 from .hooks import LogController, clipboard_copy, status_segment
 from .model import ActivityResult, EngagementStatus
@@ -50,7 +50,7 @@ def _health() -> int:
     settings = load_settings()
     tmux = TmuxService(settings)
     checks: list[tuple[str, bool, str]] = []
-    checks.append(("Python", sys.version_info >= (3, 11), sys.version.split()[0]))
+    checks.append(("Python", sys.version_info >= (3, 11, 4), sys.version.split()[0]))
     checks.append(("tmux", tmux.available(), tmux.version()))
     checks.append(
         (
@@ -235,6 +235,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             text = " ".join(rest).strip()
             if not text:
                 return 2
+            try:
+                result = ActivityResult(result_name)
+            except ValueError as exc:
+                raise ValidationError(
+                    "activity result must be one of: confirmed, failed, no-result"
+                ) from exc
             settings = load_settings()
             tmux = TmuxService(settings)
             record, target = resolve(settings, tmux)
@@ -244,7 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 record.root,
                 record.engagement,
                 summary=text,
-                result=ActivityResult(result_name),
+                result=result,
                 target_id=target.id if target else "",
                 evidence=evidence,
             )

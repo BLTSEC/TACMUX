@@ -37,6 +37,7 @@ The five tabs answer different operator questions:
 Press `a` for the contextual Actions menu. Press `Ctrl+P` for Textual's Command
 Palette (fuzzy command search). The palette exposes the same actions as the
 visible workflow and does not require fzf.
+Press `?` for the keyboard reference available inside the cockpit.
 
 TACMUX uses a dedicated BLTSEC palette throughout the cockpit. Use a Nerd
 Font-enabled terminal for the intended icons.
@@ -100,10 +101,10 @@ Press `d` and choose one of three inputs:
 2. **Import XML or pasted hosts** — accepts Nmap XML, `IP [hostname]`, or one bare hostname per line.
 3. **Review a completed detached scan** — opens a successful or partial job's results.
 
-Highlight a job and press Enter to import a successful or partial result, or
-cancel an active scan. A port-stage failure leaves discovered hosts reviewable;
-a service-stage failure leaves hosts and identified ports reviewable. Imported
-jobs remain visible and are marked as imported.
+Highlight a job and press Enter to import a successful or partial result,
+cancel an active scan, or view its current log. A port-stage failure leaves
+discovered hosts reviewable; a service-stage failure leaves hosts and identified
+ports reviewable. Imported jobs remain visible and are marked as imported.
 
 Every later stage receives only literal IP addresses revalidated against the
 selected ready scope and its exclusions. Intermediate XML cannot authorize a
@@ -116,13 +117,17 @@ Every candidate must be reviewed:
 - **Merge** adds a scope-qualified address/hostname to an existing host. Press `m` to select the intended target when a second interface was discovered.
 - **Ignore** makes no target change.
 
-TACMUX defaults accepted results to detached target sessions. Disable that checkbox when sessions would create noise. An address matching more than one selected scope entry is ignored rather than guessed; re-import it with only the intended scope selected or add it explicitly through **Edit target identity**.
+TACMUX defaults accepted results to detached target sessions when ten or fewer
+targets are accepted. Above ten, session creation defaults off and must be
+enabled deliberately. An address matching more than one selected scope entry is
+ignored rather than guessed; re-import it with only the intended scope selected
+or add it explicitly through **Edit target identity**.
 
 Out-of-scope, partially matched, and overlapping-scope discovery results are
-locked to **Ignore**. Discovery never creates an addressless target. Manual and
-legacy-imported targets may be intentionally unresolved while their identity is
-still being established; add a scope-qualified address or hostname later through
-**Edit target identity**.
+locked to **Ignore**. Discovery never creates an addressless target. Manually
+created targets may be intentionally unresolved while their identity is
+still being established; add a scope-qualified address or hostname later
+through **Edit target identity**.
 
 Discovered hostnames are retained as aliases, but the accepted scope-qualified
 IP is the initial primary endpoint exported as `TARGET`. A hostname-only
@@ -221,10 +226,11 @@ an import that creates sessions outside that window requires confirmation. The
 warning never overrides operator authority.
 
 Close an engagement after stopping target/operations sessions and discovery
-jobs. A closed engagement remains reviewable and archivable, but blocks new
-targets, sessions, discovery commits, and record creation until reopened. The
-cockpit hides those active-only shortcuts and palette commands while closed.
-The close confirmation reports outstanding cleanup items.
+jobs. A closed engagement is review-only: TACMUX blocks changes to scope,
+targets, notes, records, documents, and discovery state until it is explicitly
+reopened. Review, paging, export, archive, and engagement deletion remain
+available. The cockpit hides active-only shortcuts and palette commands while
+closed, and the close confirmation reports outstanding cleanup items.
 
 ## Capture from a working pane
 
@@ -394,6 +400,11 @@ Press `r` in the engagement picker to restore an engagement archive, including
 when the picker is empty. In an open engagement, use **Restore verified archive**
 from the Command Palette to restore a missing target or another engagement.
 
+Closing an engagement makes TACMUX-managed data review-only. Viewing, paging,
+exporting, archiving, stopping sessions, reopening, and guarded engagement
+deletion remain available. Reopen the engagement before correcting scope,
+targets, notes, records, editable Markdown, or discovery state.
+
 Permanent target deletion is deliberately stricter than archive:
 
 - the tmux target session must be stopped;
@@ -409,12 +420,6 @@ while target, operations, or discovery work is active and requires
 archive automatically, or remove verified archives stored outside the live
 workspace. Choose **Create verified archive** from the same Actions menu first
 when a recovery copy is required.
-
-## v1 import
-
-From the engagement picker press `i`. Import is copy-only: v1 target evidence is copied into stable v2 target directories and original notes/findings are retained under `legacy-import/`. The source is never converted in place.
-
-Review imported targets, add scope-qualified addresses, and curate structured access/activity/findings manually. Import does not guess security facts from free-form notes.
 
 ## NOCAP
 

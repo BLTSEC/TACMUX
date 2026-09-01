@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 import os
-import stat
 import subprocess
 
 import pytest
 
 from tacmux.errors import ConflictError, ExternalToolError
-from tacmux.migration import import_v1_workspace
-from tacmux.model import AssessmentType, ScopeGroup, TargetAddress
+from tacmux.model import ScopeGroup, TargetAddress
 from tacmux.nocap import NocapReader
 from tacmux.tmux import TmuxService
 
@@ -174,39 +172,3 @@ def test_nocap_adapter_is_opt_in_read_only_json(tmp_path, settings, monkeypatch)
     reader = NocapReader(enabled_settings, str(binary))
     assert reader.timeline("engagement/targets/host") == [{"id": "C1"}]
     assert os.environ.get("NOCAP_WORKSPACE") == inherited_workspace
-
-
-def test_copy_only_v1_import_preserves_source(workspace, tmp_path):
-    source = tmp_path / "legacy"
-    target = source / "targets" / "old-mail"
-    (target / "recon").mkdir(parents=True)
-    (target / "recon/scan.txt").write_text("legacy evidence")
-    (source / "ENGAGEMENT.md").write_text("# Legacy notes\n")
-    target.chmod(0o755)
-    (target / "recon/scan.txt").chmod(0o644)
-    imported = import_v1_workspace(
-        workspace,
-        source,
-        client="ACME",
-        name="Imported assessment",
-        assessment_type=AssessmentType.BOTH,
-    )
-    new_target = imported.engagement.targets[0]
-    assert (source / "targets/old-mail/recon/scan.txt").read_text() == "legacy evidence"
-    assert (
-        imported.root / "targets" / new_target.directory / "recon/scan.txt"
-    ).read_text() == "legacy evidence"
-    assert (
-        imported.root / "legacy-import/ENGAGEMENT.md"
-    ).read_text() == "# Legacy notes\n"
-    imported_target = imported.root / "targets" / new_target.directory
-    assert stat.S_IMODE(imported_target.stat().st_mode) == 0o700
-    assert stat.S_IMODE((imported_target / "recon/scan.txt").stat().st_mode) == 0o600
-    with pytest.raises(ConflictError, match="outside"):
-        import_v1_workspace(
-            workspace,
-            imported.root,
-            client="ACME",
-            name="Recursive import",
-            assessment_type=AssessmentType.BOTH,
-        )

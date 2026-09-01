@@ -1,6 +1,6 @@
 version = 1
 revision = 3
-requires-python = ">=3.11"
+requires-python = ">=3.11.4"
 
 [[package]]
 name = "colorama"
@@ -150,7 +150,7 @@ wheels = [
 
 [[package]]
 name = "tacmux"
-version = "2.2.0"
+version = "2.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "textual" },

@@ -4,10 +4,10 @@ build-backend = "uv_build"
 
 [project]
 name = "tacmux"
-version = "2.2.0"
+version = "2.3.0"
 description = "Operator-first engagement workspaces and tmux control for authorized security assessments"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11.4"
 license = { text = "MIT" }
 dependencies = [
   "textual>=8.2,<9",

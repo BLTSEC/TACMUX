@@ -287,6 +287,7 @@ def restore_target_archive(
     engagement: Engagement,
     context: dict[str, Any],
 ) -> Path:
+    workspace.require_active(engagement)
     if context["engagement_id"] != engagement.id:
         raise ValidationError("target archive belongs to a different engagement")
     metadata = context.get("object_metadata")
@@ -305,6 +306,7 @@ def restore_target_archive(
     with workspace.lock(engagement_root):
         try:
             workspace._assert_current_revision(engagement_root, engagement)
+            workspace.require_active(engagement)
             existing_target = next(
                 (
                     item

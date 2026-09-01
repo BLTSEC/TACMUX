@@ -20,7 +20,7 @@ from tacmux.discovery import (
     run_job,
 )
 from tacmux.errors import ConflictError, ValidationError
-from tacmux.model import ScopeAvailability, ScopeGroup, TargetAddress
+from tacmux.model import EngagementStatus, ScopeAvailability, ScopeGroup, TargetAddress
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -312,15 +312,7 @@ def test_discovery_job_uses_only_fixed_host_identification_profile(
         "tacmux.discovery.shutil.which", lambda name: f"/usr/bin/{name}"
     )
     value = jobs.create(record.root, record.engagement, [ready.id])
-    assert value["argv"][:5] == [
-        "nmap",
-        "-sn",
-        "--reason",
-        "--exclude",
-        "198.51.100.254/32",
-    ]
-    assert "-oX" in value["argv"]
-    assert value["argv"][-1] == "198.51.100.0/24"
+    assert "argv" not in value
     assert tmux.calls[0][:6] == [
         "new-session",
         "-d",
@@ -331,6 +323,7 @@ def test_discovery_job_uses_only_fixed_host_identification_profile(
     ]
     status = json.loads((record.root / ".tacmux/jobs/J0001/status.json").read_text())
     assert status["state"] == "queued" and status["session"] == value["session"]
+    assert not {"argv", "xml_path", "log_path", "artifact_paths"} & status.keys()
     job_spec = json.loads((record.root / ".tacmux/jobs/J0001/job.json").read_text())
     assert "argv" not in job_spec
     with pytest.raises(ConflictError, match="unavailable"):
@@ -384,7 +377,9 @@ def test_run_job_rebuilds_command_and_output_paths(
     assert outside.read_text() == "preserved"
     status = json.loads((job_root / "status.json").read_text())
     assert status["state"] == "succeeded" and status["exit_code"] == 0
-    assert status["log_path"] == str(job_root / "nmap.log")
+    assert "log_path" not in status
+    assert "xml_path" not in status
+    assert "argv" not in status
     with pytest.raises(ConflictError, match="not queued"):
         run_job(settings, job_file)
     assert len(calls) == 1
@@ -598,6 +593,75 @@ def test_enhanced_ipv6_job_uses_ipv6_mode_and_skips_sv_without_ports(
     assert len(calls) == 2
     assert all("-6" in argv for argv in calls)
     assert not any("-sV" in argv for argv in calls)
+
+
+def test_mixed_ipv4_ipv6_host_discovery_runs_one_stage_per_family(
+    monkeypatch, workspace, record, settings
+):
+    ipv4 = record.engagement.add_scope(
+        "External IPv4", ScopeGroup.EXTERNAL, "198.51.100.0/24"
+    )
+    ipv6 = record.engagement.add_scope(
+        "External IPv6", ScopeGroup.EXTERNAL, "2001:db8::/64"
+    )
+    workspace.save(record.root, record.engagement)
+    jobs = DiscoveryJobs(settings, RecordingTmux(), workspace)
+    monkeypatch.setattr("tacmux.discovery.shutil.which", lambda _name: "/usr/bin/nmap")
+    job = jobs.create(record.root, record.engagement, [ipv4.id, ipv6.id])
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *, stdout, stderr, check):
+        calls.append(list(argv))
+        address = "2001:db8::25" if "-6" in argv else "198.51.100.25"
+        output = Path(argv[argv.index("-oX") + 1])
+        output.write_text(_nmap_xml((address, [], "")))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr("tacmux.discovery.subprocess.run", fake_run)
+    job_root = record.root / ".tacmux/jobs" / job["id"]
+    assert run_job(settings, job_root / "job.json") == 0
+    assert len(calls) == 2
+    assert sum("-6" in argv for argv in calls) == 1
+    status = json.loads((job_root / "status.json").read_text())
+    assert status["result_paths"] == [
+        "results-ipv4.xml",
+        "results-ipv6.xml",
+    ]
+
+
+def test_closed_engagement_blocks_discovery_create_commit_and_runner(
+    monkeypatch, workspace, record, settings
+):
+    scope = record.engagement.add_scope(
+        "LAN", ScopeGroup.INTERNAL, "10.70.0.0/24"
+    )
+    workspace.save(record.root, record.engagement)
+    jobs = DiscoveryJobs(settings, RecordingTmux(), workspace)
+    monkeypatch.setattr("tacmux.discovery.shutil.which", lambda _name: "/usr/bin/nmap")
+    job = jobs.create(record.root, record.engagement, [scope.id])
+    workspace.set_status(record.root, record.engagement, EngagementStatus.CLOSED)
+
+    with pytest.raises(ConflictError, match="closed"):
+        jobs.create(record.root, record.engagement, [scope.id])
+    decision = Reconciliation(
+        DiscoveryCandidate(["10.70.0.10"]),
+        [TargetAddress("10.70.0.10", scope.id)],
+        "add",
+    )
+    with pytest.raises(ConflictError, match="closed"):
+        apply_reconciliation(
+            workspace,
+            record.root,
+            record.engagement,
+            [decision],
+            allowed_scope_ids={scope.id},
+        )
+    job_root = record.root / ".tacmux/jobs" / job["id"]
+    with pytest.raises(ConflictError, match="closed"):
+        run_job(settings, job_root / "job.json")
+    status = json.loads((job_root / "status.json").read_text())
+    assert status["state"] == "failed"
+    assert "closed" in status["error"]
 
 
 def test_reconciliation_rolls_back_all_targets_when_commit_fails(

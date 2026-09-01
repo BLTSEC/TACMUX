@@ -241,6 +241,8 @@ class ScopeEntry:
         if self.kind != ScopeKind.NETWORK:
             return False
         network = ipaddress.ip_network(self.network)
+        if address.version != network.version:
+            return False
         return address in network and not any(
             address in ipaddress.ip_network(exclusion) for exclusion in self.exclusions
         )

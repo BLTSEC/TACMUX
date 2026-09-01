@@ -32,7 +32,7 @@ TACMUX does not require fzf, AutoRecon, Obsidian, or shell completions.
 ## Requirements
 
 - Linux
-- Python 3.11 or newer
+- Python 3.11.4 or newer
 - tmux 3.2 or newer
 - [uv](https://docs.astral.sh/uv/) for installation
 - A Nerd Font-enabled terminal for the intended icon rendering
@@ -50,7 +50,7 @@ exec "$SHELL" -l
 tacmux health
 ```
 
-The installer uses the committed `uv.lock`, installs under `~/.local/share/tacmux`, and links `tacmux` into `~/.local/bin`. Upgrades preserve configuration and evidence and refuse an unmarked install directory or malformed TACMUX configuration block.
+The installer uses the committed `uv.lock`, installs under `~/.local/share/tacmux`, and links `tacmux` into `~/.local/bin`. Upgrades use the paths already recorded in `config.toml`, preserve configuration and evidence, and refuse an unmarked install directory, unrelated command link, or malformed TACMUX configuration block.
 
 Useful modes:
 
@@ -63,7 +63,10 @@ Useful modes:
 On the first install, an existing `~/.tmux.conf` receives only the TACMUX
 integration fragment; without one, TACMUX installs its complete configuration.
 Reinstalls preserve the TACMUX-managed mode instead of changing it merely
-because `~/.tmux.conf` now exists. Prefix + `E` opens TACMUX in a tmux popup.
+because `~/.tmux.conf` now exists, including an explicit `--skip-tmux` choice.
+On a first install, a writable `/workspace` is selected automatically for common
+lab VM layouts; otherwise the default is `~/workspace`. Use `--workspace` to
+choose another first-install location. Prefix + `E` opens TACMUX in a tmux popup.
 
 ## First engagement
 
@@ -74,15 +77,16 @@ tacmux
 1. Press `n` and enter the client/lab, engagement name, assessment type, and any scope known before testing.
 2. Open **Scope** to add or update network/domain scope and exclusions. Internal scope may begin unavailable and later become ready through a selected pivot target.
 3. Press `d` to run detached host-only or TCP-service discovery, or import existing Nmap XML/pasted hosts or hostnames.
-4. Review every result as **Add**, **Merge**, or **Ignore**. Detached target sessions are created by default for accepted hosts.
+4. Review every result as **Add**, **Merge**, or **Ignore**. Detached target sessions are created by default for up to ten accepted hosts; larger imports default them off to avoid session floods.
 5. Select a target and press Enter to attach. Press `a` for target actions.
 6. Use **Records** for access, activity, findings, attack paths, and cleanup. Use **Situation** for terminal-readable topology and confirmed attack paths.
 7. Use **Documents** to preview Markdown, terminal logs, and evidence. Enter edits
    editable Markdown or pages a read-only text file; `a` offers explicit View/Edit
    actions. Generated documents remain read-only.
 
-The `Ctrl+P` Command Palette provides fuzzy command search without an fzf
-dependency. Press `a` for the shorter contextual Actions menu, including
+Press `?` for the cockpit keyboard reference. The `Ctrl+P` Command Palette
+provides fuzzy command search without an fzf dependency. Press `a` for the
+shorter contextual Actions menu, including
 engagement open/archive/delete choices from the picker.
 The interface uses a purpose-built BLTSEC palette throughout TACMUX rather than
 adding a theme-management workflow to the operator cockpit.
@@ -113,7 +117,7 @@ adding a theme-management workflow to the operator cockpit.
         └── logs/YYYYMMDD/
 ```
 
-`ENGAGEMENT.md`, target notes, and finding narratives are operator-edited. `SITREP.md`, activity, and attack-path Markdown are regenerated from structured records. Existing legacy `payloads.md` files remain visible; new cleanup entries live in the manifest and Records tab.
+`ENGAGEMENT.md`, target notes, and finding narratives are operator-edited. `SITREP.md`, activity, and attack-path Markdown are regenerated from structured records. Manually created `payloads.md` files remain visible; cleanup entries live in the manifest and Records tab.
 
 ## Minimal CLI
 
@@ -167,7 +171,7 @@ No Markdown is moved or symlinked into another application. Set `$VISUAL` or `$E
 - Access metadata that resembles credential material triggers a warning before it is saved; TACMUX does not reject or rewrite authorized evidence.
 - Exclusions are enforced by validation, import review, and Nmap `--exclude`. Overlapping scope entries must be discovered in separate jobs.
 - Hostname-only targets must match declared domain scope when domain entries exist. `*.acme.test` excludes the apex; declare `acme.test` separately.
-- Starting sessions or discovery outside a configured authorization window requires confirmation. Closed engagements block operational changes until reopened.
+- Starting sessions or discovery outside a configured authorization window requires confirmation. Closed engagements are review-only: reopen explicitly before changing scope, targets, notes, records, documents, or discovery state.
 - Automatic logging is limited to TACMUX-owned tmux sessions unless explicitly widened in config.
 
 See the [operator guide](docs/USAGE.md), [keybindings](docs/KEYBINDINGS.md), and [security policy](SECURITY.md).

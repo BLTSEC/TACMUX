@@ -231,35 +231,70 @@ BaseModal {
 
 BaseModal > Vertical,
 BaseModal > VerticalScroll {
+    width: 86;
+    max-width: 94%;
+    height: auto;
+    max-height: 92%;
     background: $surface;
     border: round $border;
+    padding: 1 2;
 }
 
-BaseModal .title,
-.modal-title {
+BaseModal .title {
     color: $primary;
     text-style: bold;
+    margin-bottom: 1;
 }
 
 BaseModal .field-label {
     color: $text-muted;
     text-style: bold;
+    margin-top: 1;
 }
 
-BaseModal .buttons,
-.modal-buttons {
+BaseModal .buttons {
     height: auto;
-    margin-top: 0;
+    margin-top: 1;
     align-horizontal: right;
 }
 
-.modal-buttons Button {
+BaseModal Button {
     margin-left: 1;
 }
 
-.modal-copy {
-    height: 2;
+BaseModal .error {
+    color: $error;
+    height: auto;
+    margin-top: 1;
+}
+
+BaseModal .warning {
+    color: $warning;
+    height: auto;
+}
+
+BaseModal .menu-hint {
+    height: auto;
     color: $text-muted;
+}
+
+BaseModal TextArea {
+    height: 8;
+    border: tall $panel;
+}
+
+BaseModal SelectionList {
+    height: 12;
+    border: tall $panel;
+}
+
+BaseModal DataTable {
+    height: 18;
+}
+
+BaseModal .compact-list {
+    height: 10;
+    border: tall $panel;
 }
 
 MainScreen.narrow TabPane {

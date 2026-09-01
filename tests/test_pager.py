@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 
+from textual.app import SuspendNotSupported
+
 from tacmux.app import TacmuxApp
 
 
@@ -54,3 +56,20 @@ def test_binary_evidence_is_not_sent_to_pager(monkeypatch, settings, workspace):
     app.page_file(evidence, terminal_output=True)
 
     assert errors == ["binary evidence cannot be displayed in the terminal pager"]
+
+
+def test_editor_suspend_failure_is_reported(monkeypatch, settings, workspace):
+    document = settings.workspace / "NOTES.md"
+    document.write_text("# Notes\n")
+    app = TacmuxApp(settings)
+    errors: list[str] = []
+    monkeypatch.setattr(app, "show_error", errors.append)
+    monkeypatch.setattr(
+        app,
+        "suspend",
+        lambda: (_ for _ in ()).throw(SuspendNotSupported()),
+    )
+
+    app.edit_file(document)
+
+    assert len(errors) == 1

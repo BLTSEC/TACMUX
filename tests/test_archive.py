@@ -13,7 +13,7 @@ from tacmux.archive import (
     verify_archive,
 )
 from tacmux.errors import ConflictError, SafetyError, ValidationError
-from tacmux.model import ScopeGroup, TargetAddress
+from tacmux.model import EngagementStatus, ScopeGroup, TargetAddress
 
 
 def test_archive_hashes_members_verifies_and_restores(tmp_path):
@@ -153,6 +153,30 @@ def test_target_archive_restore_commits_manifest_and_files(workspace, record):
     )
     assert (restored / "recon/scan.txt").read_text() == "evidence"
     assert workspace.load(record.root).target_by_id(target.id) == target
+
+
+def test_closed_engagement_refuses_target_restore(workspace, record):
+    target = workspace.create_target(record.root, record.engagement, "host")
+    target_root = record.root / "targets" / target.directory
+    archive, _ = create_archive(
+        target_root,
+        workspace.settings.archive_dir,
+        kind="targets",
+        engagement_id=record.engagement.id,
+        object_id=target.id,
+        object_metadata=asdict(target),
+    )
+    workspace.delete_target(record.root, record.engagement, target.id)
+    workspace.set_status(record.root, record.engagement, EngagementStatus.CLOSED)
+
+    with pytest.raises(ConflictError, match="closed"):
+        restore_target_archive(
+            archive,
+            workspace,
+            record.root,
+            record.engagement,
+            verify_archive(archive)["context"],
+        )
 
 
 def test_target_archive_restore_rolls_back_files_when_save_fails(

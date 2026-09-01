@@ -134,7 +134,7 @@ plain_log=$(tmux show-option -p -t '=plain:' -qv @tacmux_log_file)
 
 tmux source-file "$ROOT/tmux/tacmux.conf" || exit 1
 [[ "$(tmux show-option -gv prefix)" == C-Space ]] || \
-    fail "complete configuration did not restore the v1 prefix" || exit 1
+    fail "complete configuration did not restore the expected prefix" || exit 1
 tmux list-keys -T prefix | rg -q '^bind-key[[:space:]]+-T prefix q[[:space:]].*_internal log stop' || \
     fail "complete configuration did not restore prefix-q" || exit 1
 tmux list-keys -T prefix | rg -q '^bind-key[[:space:]]+-T prefix L[[:space:]].*Logging:' || \
