@@ -294,14 +294,13 @@ Internal: Application Network=10.44.20.0/24
 Internal scope reachability: Not reachable yet (requires access or pivot)
 ```
 
-Run detached discovery against the external entry. Review two results:
+Run detached discovery against the external entry. Review the result:
 
 ```text
 ADD  edge.northstar.example  203.0.113.25
-ADD  vpn.northstar.example   203.0.113.40
 ```
 
-TACMUX creates `T0001` and `T0002` plus detached sessions.
+TACMUX creates `T0001` and its detached target session.
 
 ### 2. Record initial access
 

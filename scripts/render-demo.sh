@@ -41,12 +41,12 @@ ffmpeg -v error -y -i "$raw" -i "$palette" \
   -lavfi "$filter [x]; [x][1:v] paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" \
   -map_metadata -1 -an "$gif"
 
-# The first settled cockpit frame is the canonical Targets still.
-ffmpeg -v error -y -ss 2.5 -i "$raw" -frames:v 1 -map_metadata -1 "$still"
+# The first settled cockpit frame follows the four-second BLTSEC title card.
+ffmpeg -v error -y -ss 8.5 -i "$raw" -frames:v 1 -map_metadata -1 "$still"
 
 size="$(wc -c < "$gif" | tr -d ' ')"
-if (( size >= 10 * 1024 * 1024 )); then
-  printf 'demo GIF is %s bytes; expected less than 10 MiB\n' "$size" >&2
+if (( size >= 5000000 )); then
+  printf 'demo GIF is %s bytes; expected less than 5 MB\n' "$size" >&2
   exit 1
 fi
 printf 'wrote %s (%s bytes)\n' "$gif" "$size"
