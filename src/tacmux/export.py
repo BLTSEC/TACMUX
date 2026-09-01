@@ -258,8 +258,8 @@ def _records(engagement: Engagement) -> str:
             "",
             "### Findings",
             "",
-            "| ID | Severity | State | Finding | Targets | Evidence | Document |",
-            "|---|---|---|---|---|---|---|",
+            "| ID | Created | Severity | State | Finding | Targets | Evidence | Document |",
+            "|---|---|---|---|---|---|---|---|",
         ]
     )
     for finding in engagement.findings:
@@ -267,13 +267,14 @@ def _records(engagement: Engagement) -> str:
             engagement.target_by_id(item).display_name for item in finding.target_ids
         )
         lines.append(
-            f"| `{finding.id}` | {finding.severity.value} | {finding.state.value} | "
+            f"| `{finding.id}` | {md_escape(finding.created_at) or '—'} | "
+            f"{finding.severity.value} | {finding.state.value} | "
             f"{md_escape(finding.title)} | {md_escape(targets) or '—'} | "
             f"{md_escape(', '.join(finding.evidence)) or '—'} | "
             f"`{md_escape(finding.document)}` |"
         )
     if not engagement.findings:
-        lines.append("| — | — | — | — | — | — | — |")
+        lines.append("| — | — | — | — | — | — | — | — |")
 
     lines.extend(
         ["", _demote_headings(render_activity_markdown(engagement).rstrip(), 2), ""]

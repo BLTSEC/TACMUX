@@ -12,13 +12,13 @@ from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal
-from textual.widgets import DataTable, Label, Static
+from textual.widgets import DataTable, Label, Select, Static
 from textual.widgets.data_table import RowDoesNotExist
 
 from .errors import TacmuxError, ValidationError
 from .model import Engagement, Target
 from .render import ACCESS_LABELS, attack_paths_text, topology_text
-from .store import EngagementRecord
+from .store import EngagementRecord, contained_path, contained_regular_file
 from .terminal_output import render_sample
 from .ui import plain
 
@@ -57,7 +57,9 @@ def bounded_files(
     while pending and len(files) < limit and scanned < scan_budget:
         directory = pending.pop()
         try:
-            with os.scandir(directory) as entries:
+            directories: list[Path] = []
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name.casefold())
                 for entry in entries:
                     scanned += 1
                     if scanned > scan_budget:
@@ -65,11 +67,12 @@ def bounded_files(
                     if entry.is_symlink():
                         continue
                     if entry.is_dir(follow_symlinks=False):
-                        pending.append(Path(entry.path))
+                        directories.append(Path(entry.path))
                     elif entry.is_file(follow_symlinks=False):
                         files.append(Path(entry.path))
                         if len(files) >= limit:
                             break
+            pending.extend(reversed(directories))
         except OSError:
             continue
     return files, bool(pending) or scanned >= scan_budget or len(files) >= limit
@@ -222,11 +225,16 @@ class TargetsPane(Horizontal):
 class ScopeDiscoveryPane(Static):
     def compose(self) -> ComposeResult:
         yield Label("  DECLARED SCOPE", classes="section-title")
+        yield Static("", id="scope-empty", classes="empty-state")
         yield DataTable(id="scope-table", cursor_type="row", zebra_stripes=True)
         yield Label("  DISCOVERY JOBS", classes="section-title")
+        yield Static("", id="jobs-empty", classes="empty-state")
         yield DataTable(id="jobs-table", cursor_type="row", zebra_stripes=True)
 
-    def populate(self, engagement: Engagement, jobs: list[dict]) -> None:
+    def populate(
+        self, engagement: Engagement, jobs: list[dict], query: str = ""
+    ) -> None:
+        query = query.casefold().strip()
         table = self.query_one("#scope-table", DataTable)
         selected_scope, scope_row = _selection(table)
         if not table.columns:
@@ -240,6 +248,19 @@ class ScopeDiscoveryPane(Static):
                 if item.via_target_id
                 else "—"
             )
+            haystack = " ".join(
+                (
+                    item.group.value,
+                    item.kind.value,
+                    item.label,
+                    item.spec,
+                    " ".join(item.exclusions),
+                    item.availability.value,
+                    via,
+                )
+            ).casefold()
+            if query and query not in haystack:
+                continue
             table.add_row(
                 plain(item.group.value),
                 plain(item.kind.value),
@@ -251,6 +272,13 @@ class ScopeDiscoveryPane(Static):
                 key=item.id,
             )
         _restore_selection(table, selected_scope, scope_row)
+        scope_empty = self.query_one("#scope-empty", Static)
+        scope_empty.display = table.row_count == 0
+        scope_empty.update(
+            "No scope entries match this filter."
+            if query and engagement.scope
+            else "No scope declared — press a to add authorized scope."
+        )
         jobs_table = self.query_one("#jobs-table", DataTable)
         selected_job, job_row = _selection(jobs_table)
         if not jobs_table.columns:
@@ -275,6 +303,17 @@ class ScopeDiscoveryPane(Static):
                 "hosts": "Host identification",
                 "tcp-services": "TCP services",
             }.get(str(job.get("profile", "hosts")), str(job.get("profile", "")))
+            haystack = " ".join(
+                (
+                    str(job.get("id", "")),
+                    profile,
+                    state,
+                    " ".join(scope_labels),
+                    str(job.get("started_at") or ""),
+                )
+            ).casefold()
+            if query and query not in haystack:
+                continue
             jobs_table.add_row(
                 plain(job.get("id", "")),
                 plain(profile),
@@ -285,6 +324,13 @@ class ScopeDiscoveryPane(Static):
                 key=str(job.get("id", "")),
             )
         _restore_selection(jobs_table, selected_job, job_row)
+        jobs_empty = self.query_one("#jobs-empty", Static)
+        jobs_empty.display = jobs_table.row_count == 0
+        jobs_empty.update(
+            "No discovery jobs match this filter."
+            if query and jobs
+            else "No discovery jobs — press d to scan or import results."
+        )
 
     def selected_scope_id(self) -> str:
         table = self.query_one("#scope-table", DataTable)
@@ -315,6 +361,20 @@ class SituationPane(ReadPane):
 
 class RecordsPane(Static):
     def compose(self) -> ComposeResult:
+        yield Select(
+            [
+                ("All records", "all"),
+                ("Access", "access"),
+                ("Activity", "activity"),
+                ("Findings", "finding"),
+                ("Attack paths", "attack path"),
+                ("Cleanup", "cleanup"),
+            ],
+            value="all",
+            allow_blank=False,
+            id="records-kind",
+        )
+        yield Static("", id="records-empty", classes="empty-state")
         yield DataTable(id="records-table", cursor_type="row", zebra_stripes=True)
 
     def populate(
@@ -323,11 +383,17 @@ class RecordsPane(Static):
         query: str = "",
         *,
         root: Path | None = None,
+        kind_filter: str = "all",
     ) -> None:
         table = self.query_one("#records-table", DataTable)
         selected, previous_row = _selection(table)
         if not table.columns:
-            table.add_columns("Kind", "ID", "Target", "Summary", "Status", "When")
+            table.add_column("Kind", width=11)
+            table.add_column("ID", width=7)
+            table.add_column("Target", width=14)
+            table.add_column("Summary", width=32)
+            table.add_column("Status", width=16)
+            table.add_column("When", width=16)
         table.clear()
         rows: list[tuple[str, str, str, str, str, str]] = []
         for item in engagement.access:
@@ -381,17 +447,32 @@ class RecordsPane(Static):
                     targets or "—",
                     title,
                     f"{item.severity.value} / {item.state.value}",
-                    "",
+                    item.created_at,
                 )
             )
         for item in engagement.attack_paths:
-            rows.append(("attack path", item.id, "—", item.name, f"{len(item.steps)} steps", ""))
+            rows.append(
+                (
+                    "attack path",
+                    item.id,
+                    "—",
+                    item.name,
+                    f"{len(item.steps)} steps",
+                    item.created_at,
+                )
+            )
         for item in engagement.cleanup:
             target = engagement.target_by_id(item.target_id).display_name
             status = f"removed {item.removed_at[:16]}" if item.removed_at else "outstanding"
             rows.append(("cleanup", item.id, target, item.location, status, item.created_at))
         query = query.casefold().strip()
-        for kind, item_id, target, summary, status, when in sorted(rows):
+        rows.sort(
+            key=lambda row: (bool(row[5]), row[5], row[0], row[1]),
+            reverse=True,
+        )
+        for kind, item_id, target, summary, status, when in rows:
+            if kind_filter != "all" and kind != kind_filter:
+                continue
             if query and query not in " ".join(
                 (kind, item_id, target, summary, status)
             ).casefold():
@@ -406,6 +487,14 @@ class RecordsPane(Static):
                 key=f"{kind}:{item_id}",
             )
         _restore_selection(table, selected, previous_row)
+        empty = self.query_one("#records-empty", Static)
+        empty.display = table.row_count == 0
+        if query or kind_filter != "all":
+            empty.update("No records match the current filters.")
+        else:
+            empty.update(
+                "No records yet — press a to record activity, findings, cleanup, or an attack path."
+            )
 
     def selected_record(self) -> tuple[str, str] | None:
         table = self.query_one("#records-table", DataTable)
@@ -422,6 +511,7 @@ class DocumentsPane(Horizontal):
         self.record: EngagementRecord | None = None
         self.document_paths: dict[str, tuple[Path, bool, str]] = {}
         self._limit_notified = False
+        self._unsafe_notified = False
         self._preview_signature: tuple[Path, int, int, str] | None = None
 
     def compose(self) -> ComposeResult:
@@ -501,7 +591,7 @@ class DocumentsPane(Horizontal):
                 resolved.relative_to(record.root.resolve(strict=True))
             except (OSError, ValueError):
                 return
-            if resolved in seen or not resolved.is_file() or path.is_symlink():
+            if resolved in seen or not contained_regular_file(record.root, path):
                 return
             seen.add(resolved)
             entries.append(
@@ -513,6 +603,40 @@ class DocumentsPane(Horizontal):
                 )
             )
             evidence_count += 1
+
+        for kind, item_id, reference in (
+            *(
+                ("Access", item.id, item.evidence)
+                for item in record.engagement.access
+                if item.evidence
+            ),
+            *(
+                ("Activity", item.id, item.evidence)
+                for item in record.engagement.activities
+                if item.evidence
+            ),
+            *(
+                ("Finding", item.id, reference)
+                for item in record.engagement.findings
+                for reference in item.evidence
+            ),
+            *(
+                ("Service", target.id, service.source)
+                for target in record.engagement.targets
+                for service in target.services
+                if service.source
+            ),
+        ):
+            label = f"Referenced evidence / {kind} {item_id} / {reference}"
+            if reference.startswith(".tacmux/imports/"):
+                label = (
+                    f"Imported provenance / {Path(reference).name} — "
+                    f"referenced by {kind} {item_id}"
+                )
+            add_entry(
+                label,
+                record.root / reference,
+            )
 
         for target in record.engagement.targets:
             target_root = record.root / "targets" / target.directory
@@ -618,9 +742,18 @@ class DocumentsPane(Horizontal):
             table.add_columns("Document / Evidence", "Mode")
         table.clear()
         self.document_paths.clear()
-        root = record.root.resolve(strict=False)
+        root = Path(os.path.abspath(record.root))
+        unsafe_count = 0
         for label, path, editable, kind in entries:
-            key = path.resolve(strict=False).relative_to(root).as_posix()
+            path_absolute = Path(os.path.abspath(path))
+            try:
+                key = path_absolute.relative_to(root).as_posix()
+            except ValueError:
+                unsafe_count += 1
+                continue
+            if not contained_path(record.root, path):
+                unsafe_count += 1
+                continue
             if key in self.document_paths:
                 continue
             self.document_paths[key] = (path, editable, kind)
@@ -632,6 +765,12 @@ class DocumentsPane(Horizontal):
             self._limit_notified = True
             self.app.notify(
                 "Evidence list is limited to the first 500 files", severity="warning"
+            )
+        if unsafe_count and not self._unsafe_notified:
+            self._unsafe_notified = True
+            self.app.notify(
+                f"Ignored {unsafe_count} unsafe linked document path(s)",
+                severity="warning",
             )
         self.preview_selected()
 

@@ -17,7 +17,7 @@ The following inputs are trusted local operator inputs:
 - imported Nmap XML, restored archives, and NOCAP JSON;
 - commands and output inside tmux panes.
 
-Treat a workspace copied from another person as untrusted until reviewed. TACMUX previews text and Markdown but does not execute evidence files. Symlinks are skipped by the evidence browser. Archive restore rejects absolute/traversal paths, unsafe links, special entries, multiple roots, collisions, and mismatched target metadata.
+Treat a workspace copied from another person as untrusted until reviewed. TACMUX previews text and Markdown but does not execute evidence files. Symlinks are skipped by the evidence browser and refused by editor/pager handoff. Archive restore rejects absolute/traversal paths, unsafe links, special entries, multiple roots, collisions, and mismatched target metadata.
 
 ## Sensitive data
 
@@ -26,6 +26,7 @@ TACMUX applies an owner-only `077` umask. Newly created directories are normally
 Unix permissions may not be enforced by VM shared folders, FAT filesystems, some network mounts, cloud-sync directories, or removable media. Keep engagement data on an approved encrypted local filesystem or other approved protected volume.
 
 Automatic pane logging is enabled for TACMUX-owned sessions by default and can capture credentials, tokens, personal data, and client evidence. Non-TACMUX sessions are ignored unless `behavior.log_outside_tacmux = true`. Disable logging in the engagement form or config when required. Stopping the TUI does not stop detached sessions or their logging.
+Pane-provided TACMUX log directories must resolve inside the configured workspace.
 
 Structured access records warn when the principal, authority, or method resembles
 an NTLM pair, private key, or long encoded secret. This is a narrow warning, not a

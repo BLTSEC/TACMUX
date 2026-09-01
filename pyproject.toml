@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "tacmux"
-version = "2.3.0"
+version = "2.4.0"
 description = "Operator-first engagement workspaces and tmux control for authorized security assessments"
 readme = "README.md"
 requires-python = ">=3.11.4"
@@ -18,8 +18,9 @@ tacmux = "tacmux.cli:main"
 
 [dependency-groups]
 dev = [
-  "pytest>=8",
-  "pytest-asyncio>=0.24",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.14.14,<0.15",
 ]
 
 [tool.uv]

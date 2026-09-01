@@ -244,7 +244,14 @@ def render_attack_path_markdown(engagement: Engagement) -> str:
     if not engagement.attack_paths:
         lines.append("No confirmed attack paths have been recorded.")
     for path in engagement.attack_paths:
-        lines.extend([f"## {path.name} `{path.id}`", ""])
+        lines.extend(
+            [
+                f"## {path.name} `{path.id}`",
+                "",
+                f"Created UTC: {md_escape(path.created_at) or '—'}",
+                "",
+            ]
+        )
         for index, step in enumerate(path.steps, 1):
             label = _reference_label(engagement, step)
             narrative = f" — {step.narrative}" if step.narrative else ""
@@ -376,8 +383,8 @@ def render_sitrep(
             "",
             "## Findings",
             "",
-            "| ID | Severity | State | Finding | Targets |",
-            "|---|---|---|---|---|",
+            "| ID | Created | Severity | State | Finding | Targets |",
+            "|---|---|---|---|---|---|",
         ]
     )
     for finding in engagement.findings:
@@ -385,7 +392,8 @@ def render_sitrep(
             engagement.target_by_id(item).display_name for item in finding.target_ids
         )
         lines.append(
-            f"| `{finding.id}` | {finding.severity.value} | {finding.state.value} | "
+            f"| `{finding.id}` | {md_escape(finding.created_at) or '—'} | "
+            f"{finding.severity.value} | {finding.state.value} | "
             f"[{md_link_text(finding.title)}]({finding.document}) | "
             f"{md_escape(targets)} |"
         )

@@ -20,7 +20,14 @@ from tacmux.discovery import (
     run_job,
 )
 from tacmux.errors import ConflictError, ValidationError
-from tacmux.model import EngagementStatus, ScopeAvailability, ScopeGroup, TargetAddress
+from tacmux.model import (
+    EngagementStatus,
+    ScopeAvailability,
+    ScopeGroup,
+    Service,
+    TargetAddress,
+    merge_services,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -56,11 +63,41 @@ def test_nmap_xml_and_pasted_hosts_are_strictly_parsed():
     pasted = parse_host_lines(
         "10.0.0.1 host-a\n10.0.0.1 duplicate\n# comment\n10.0.0.2"
     )
-    assert len(pasted) == 2 and pasted[0].hostnames == ["host-a"]
+    assert len(pasted) == 2
+    assert pasted[0].hostnames == ["duplicate", "host-a"]
     with pytest.raises(ValidationError, match="line 1"):
         parse_host_lines("not-an-ip host")
     with pytest.raises(ValidationError, match="line 1"):
         parse_host_lines("10.0.0.3 host-b unexpected")
+
+
+def test_service_merge_preserves_richer_existing_observation():
+    existing = Service(
+        port=445,
+        protocol="tcp",
+        name="microsoft-ds",
+        product="Samba smbd",
+        version="4.18",
+        extra="workgroup: ACME",
+        observed_at="2026-08-31T12:00:00Z",
+        source="first.xml",
+    )
+    later = Service(
+        port=445,
+        protocol="tcp",
+        name="microsoft-ds",
+        observed_at="2026-08-31T13:00:00Z",
+        source="later.xml",
+    )
+
+    merged = merge_services([existing], [later])
+
+    assert len(merged) == 1
+    assert merged[0].product == "Samba smbd"
+    assert merged[0].version == "4.18"
+    assert merged[0].extra == "workgroup: ACME"
+    assert merged[0].observed_at == later.observed_at
+    assert merged[0].source == later.source
 
 
 def test_malformed_nmap_address_is_a_validation_error(tmp_path):

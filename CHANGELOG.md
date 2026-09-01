@@ -1,5 +1,36 @@
 # Changelog
 
+## 2.4.0 — 2026-08-31
+
+### Added
+
+- Recent-first Records with a visible kind filter, creation timestamps for
+  findings and attack paths, Scope/Jobs search, contextual empty states, and
+  trusted copy actions for target endpoints and document paths.
+- Invalid engagement workspaces remain visible in the picker with diagnostics
+  while open, archive, and deletion actions stay unavailable.
+- Ruff linting for Python source and tests in CI.
+- Cockpit access to engagement authorization details and selected-step notes in
+  the attack-path builder.
+
+### Changed
+
+- Repeated pasted addresses retain all unique hostnames, and later service
+  observations no longer erase richer existing product or version details with
+  blank fields.
+- The picker and cockpit now live in focused screen modules while the Textual
+  application entry point remains a small application shell.
+- Records use bounded display columns, evidence references are prioritized
+  deterministically, and authorization-window banner text describes partial
+  windows explicitly.
+
+### Fixed
+
+- Data-entry and discovery dialogs remain keyboard-scrollable at 80x24.
+- Unsafe linked documents no longer crash Documents or escape engagement
+  editor/pager containment, and pane-provided log directories cannot leave the
+  configured workspace.
+
 ## 2.3.0 — 2026-08-31
 
 ### Added

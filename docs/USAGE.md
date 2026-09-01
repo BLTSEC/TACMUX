@@ -30,7 +30,7 @@ The five tabs answer different operator questions:
 |---|---|
 | Targets | What host am I working on, is its session live, and what access is confirmed? |
 | Scope | What may I touch, what is excluded, and what discovery jobs/results need review? |
-| Records | What access, activity, findings, attack paths, and cleanup obligations are recorded? |
+| Records | What happened most recently, and what access, activity, findings, paths, or cleanup obligations are recorded? |
 | Situation | What does the network look like, and what confirmed chain has been demonstrated? |
 | Documents | Where are the narrative, findings, notes, logs, and evidence? |
 
@@ -38,6 +38,8 @@ Press `a` for the contextual Actions menu. Press `Ctrl+P` for Textual's Command
 Palette (fuzzy command search). The palette exposes the same actions as the
 visible workflow and does not require fzf.
 Press `?` for the keyboard reference available inside the cockpit.
+Press `/` on Scope to filter declared scope and discovery jobs together. Records
+is newest-first and has a visible kind filter in addition to `/` text search.
 
 TACMUX uses a dedicated BLTSEC palette throughout the cockpit. Use a Nerd
 Font-enabled terminal for the intended icons.
@@ -151,6 +153,8 @@ Target actions include:
 - permanently delete an unreferenced mistaken target.
 
 Display-name changes do not rename the stable target directory or tmux identity. Starting or attaching refreshes session context; panes created afterward inherit the current primary endpoint as `TARGET`.
+The target Actions menu can copy that primary endpoint through the same trusted
+clipboard path used by `tacmux clip`.
 
 The optional engagement operations session starts in the engagement root. Stop-all cancels active discovery jobs and stops target and operations sessions before archival.
 
@@ -187,6 +191,9 @@ Create a finding only after selecting affected targets. TACMUX records title, se
 Use **Draft** when validation or reporting language remains incomplete, **Confirmed** when evidence supports it, and **Closed** for a resolved/retested record. Draft findings cannot be attack-path steps.
 
 Open **Records** to correct or delete access, activity, finding, attack-path, and cleanup records. A record used by an attack path must be removed from that path first. Scope entries can likewise be fully edited or deleted when no target address uses them.
+The Records Actions menu also creates activity, findings, cleanup items, and
+attack paths. Confirmed access remains target-centric so it cannot be recorded
+without an explicit host context.
 
 ### Cleanup
 
@@ -213,17 +220,19 @@ Network topology and attack path are separate views:
   and unresolved or hostname-only targets not yet assigned to an address;
 - an attack path is an ordered sequence of demonstrated findings, access records, and confirmed activities.
 
-Open **Situation**, press `a`, and choose **Build confirmed attack path**. Press Enter on eligible records to add them. In the chosen list, Delete removes a step and `Ctrl+Up` / `Ctrl+Down` changes order. Optional one-line step notes explain how each fact advances the chain.
+Open **Situation**, press `a`, and choose **Build confirmed attack path**. Press Enter on eligible records to add them. In the chosen list, Delete removes a step and `Ctrl+Up` / `Ctrl+Down` changes order. The optional note field belongs to the highlighted step and follows that record when the path is reordered.
 
 Each step may only reference structured confirmed state. The generated `notes/attack-path.md` and `SITREP.md` therefore cannot accidentally promote a failed responder attempt into a demonstrated compromise.
 
 ## Authorization window and engagement lifecycle
 
-From the engagement picker press `a` and choose **Edit engagement details** to
-record the authorizing party, reference, emergency contact, and explicit UTC
-start/end times. Starting a target, operations session, detached discovery, or
-an import that creates sessions outside that window requires confirmation. The
-warning never overrides operator authority.
+From the engagement picker, or from **Situation** inside the cockpit, choose
+**Edit engagement details and authorization** to record the authorizing party,
+reference, emergency contact, and optional UTC start/end times. The banner
+distinguishes an unconfigured, start-only, end-only, bounded, or currently
+out-of-window authorization period. Starting a target, operations session,
+detached discovery, or an import that creates sessions outside a configured
+window requires confirmation. The warning never overrides operator authority.
 
 Close an engagement after stopping target/operations sessions and discovery
 jobs. A closed engagement is review-only: TACMUX blocks changes to scope,
@@ -231,6 +240,12 @@ targets, notes, records, documents, and discovery state until it is explicitly
 reopened. Review, paging, export, archive, and engagement deletion remain
 available. The cockpit hides active-only shortcuts and palette commands while
 closed, and the close confirmation reports outstanding cleanup items.
+
+If a manifest is damaged or manually edited into an invalid state, its
+workspace remains visible as **INVALID** in the engagement picker. Enter shows
+the manifest path and validation failure; TACMUX refuses to open, archive, or
+delete a workspace it cannot validate. Use `tacmux health` for the same details
+from the shell.
 
 ## Capture from a working pane
 
@@ -266,6 +281,10 @@ backspaces, and common cursor redraws. Evidence indexing stops at 500 files or a
 bounded directory-scan budget; use ordinary filesystem tools for larger
 collections. Generated Markdown is changed through its structured TACMUX record,
 not edited directly.
+
+Structured evidence references are listed before the bounded directory walk.
+Unsafe linked files and paths outside the active engagement are ignored and
+cannot be opened through TACMUX's editor or pager handoff.
 
 ### Single-file handoff export
 

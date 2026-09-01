@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ipaddress
 from datetime import datetime, timezone
-from pathlib import Path
 import re
 from typing import Any, ClassVar, Iterable
 
@@ -1100,6 +1099,7 @@ class AttackPathForm(BaseModal):
             if path
             else {}
         )
+        self.note_identifier = ""
 
     def compose(self) -> ComposeResult:
         for activity in self.engagement.activities:
@@ -1148,11 +1148,11 @@ class AttackPathForm(BaseModal):
             )
             yield DataTable(id="chosen-steps", cursor_type="row", zebra_stripes=True)
             yield Label(
-                "Optional step notes (one line per chosen step)", classes="field-label"
+                "Optional note for the highlighted step", classes="field-label"
             )
-            yield TextArea(
-                "\n".join(self.step_notes.get(item, "") for item in self.chosen),
-                id="narratives",
+            yield Input(
+                placeholder="Why this confirmed record advances the path",
+                id="step-note",
             )
             yield Static("", classes="error")
             with Horizontal(classes="buttons"):
@@ -1161,29 +1161,26 @@ class AttackPathForm(BaseModal):
 
     def on_mount(self) -> None:
         self.query_one("#chosen-steps", DataTable).add_columns("#", "Confirmed step")
-        self.refresh_chosen()
+        self.refresh_chosen(0 if self.chosen else None)
 
     @on(OptionList.OptionSelected, "#eligible-steps")
     def add_step(self, event: OptionList.OptionSelected) -> None:
         identifier = str(event.option.id)
         if identifier not in self.chosen:
-            self._capture_notes()
+            self._capture_note()
             self.chosen.append(identifier)
             self.step_notes[identifier] = ""
             self.refresh_chosen(len(self.chosen) - 1)
-            self._render_notes()
 
-    def _capture_notes(self) -> None:
-        notes = self.query_one("#narratives", TextArea).text.splitlines()
-        for index, identifier in enumerate(self.chosen):
-            self.step_notes[identifier] = (
-                notes[index].strip() if index < len(notes) else ""
-            )
+    def _capture_note(self) -> None:
+        if self.note_identifier:
+            self.step_notes[self.note_identifier] = self.query_one(
+                "#step-note", Input
+            ).value.strip()
 
-    def _render_notes(self) -> None:
-        self.query_one("#narratives", TextArea).text = "\n".join(
-            self.step_notes.get(item, "") for item in self.chosen
-        )
+    def _show_note(self, identifier: str) -> None:
+        self.note_identifier = identifier
+        self.query_one("#step-note", Input).value = self.step_notes.get(identifier, "")
 
     def refresh_chosen(self, cursor_row: int | None = None) -> None:
         labels = dict(self.eligible)
@@ -1191,8 +1188,24 @@ class AttackPathForm(BaseModal):
         table.clear()
         for index, identifier in enumerate(self.chosen, 1):
             table.add_row(plain(index), plain(labels[identifier]), key=identifier)
-        if cursor_row is not None and self.chosen:
-            table.move_cursor(row=max(0, min(cursor_row, len(self.chosen) - 1)))
+        if self.chosen:
+            selected_row = max(
+                0,
+                min(cursor_row if cursor_row is not None else 0, len(self.chosen) - 1),
+            )
+            table.move_cursor(row=selected_row)
+            self._show_note(self.chosen[selected_row])
+        else:
+            self.note_identifier = ""
+            self.query_one("#step-note", Input).value = ""
+
+    @on(DataTable.RowHighlighted, "#chosen-steps")
+    def chosen_step_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        identifier = str(event.row_key.value)
+        if identifier == self.note_identifier:
+            return
+        self._capture_note()
+        self._show_note(identifier)
 
     def _chosen_index(self) -> int | None:
         table = self.query_one("#chosen-steps", DataTable)
@@ -1201,11 +1214,12 @@ class AttackPathForm(BaseModal):
     def action_remove_step(self) -> None:
         index = self._chosen_index()
         if index is not None:
-            self._capture_notes()
+            self._capture_note()
             identifier = self.chosen.pop(index)
             self.step_notes.pop(identifier, None)
+            if self.note_identifier == identifier:
+                self.note_identifier = ""
             self.refresh_chosen(index)
-            self._render_notes()
 
     def _move_step(self, offset: int) -> None:
         index = self._chosen_index()
@@ -1213,13 +1227,12 @@ class AttackPathForm(BaseModal):
             return
         destination = index + offset
         if 0 <= destination < len(self.chosen):
-            self._capture_notes()
+            self._capture_note()
             self.chosen[index], self.chosen[destination] = (
                 self.chosen[destination],
                 self.chosen[index],
             )
             self.refresh_chosen(destination)
-            self._render_notes()
 
     def action_move_up(self) -> None:
         self._move_step(-1)
@@ -1236,7 +1249,7 @@ class AttackPathForm(BaseModal):
         if not name or not self.chosen:
             self.error("Path Name and at least one confirmed step are required")
             return
-        self._capture_notes()
+        self._capture_note()
         steps = []
         for item in self.chosen:
             ref_type, ref_id = item.split(":", 1)

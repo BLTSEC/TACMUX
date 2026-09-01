@@ -303,6 +303,58 @@ def test_finding_documents_generated_records_and_target_delete_guard(workspace, 
     assert target.id not in {item.id for item in record.engagement.targets}
 
 
+def test_finding_and_attack_path_creation_times_are_stable(workspace, record):
+    from tacmux.model import Engagement
+
+    target = workspace.create_target(record.root, record.engagement, "host")
+    activity = workspace.create_activity(
+        record.root,
+        record.engagement,
+        summary="Confirmed foothold",
+        result=ActivityResult.CONFIRMED,
+        target_id=target.id,
+        evidence="",
+    )
+    finding = workspace.create_finding(
+        record.root,
+        record.engagement,
+        title="Confirmed weakness",
+        severity=Severity.HIGH,
+        state=FindingState.CONFIRMED,
+        target_ids=[target.id],
+    )
+    path = workspace.create_attack_path(
+        record.root,
+        record.engagement,
+        "Initial access",
+        [("activity", activity.id, "Established execution")],
+    )
+    created = (finding.created_at, path.created_at)
+
+    workspace.update_record(
+        record.root,
+        record.engagement,
+        "finding",
+        finding.id,
+        {
+            "title": "Confirmed weakness updated",
+            "severity": Severity.HIGH,
+            "state": FindingState.CONFIRMED,
+            "target_ids": [target.id],
+            "evidence": [],
+        },
+    )
+    loaded = workspace.load(record.root)
+    assert (loaded.findings[0].created_at, loaded.attack_paths[0].created_at) == created
+
+    legacy = loaded.to_dict()
+    legacy["findings"][0].pop("created_at")
+    legacy["attack_paths"][0].pop("created_at")
+    legacy_loaded = Engagement.from_dict(legacy)
+    assert legacy_loaded.findings[0].created_at == ""
+    assert legacy_loaded.attack_paths[0].created_at == ""
+
+
 def test_engagement_delete_removes_live_tree_and_preserves_archive(
     workspace, record
 ):

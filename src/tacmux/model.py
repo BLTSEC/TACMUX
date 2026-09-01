@@ -316,7 +316,24 @@ class Service:
 
 def merge_services(existing: list[Service], incoming: list[Service]) -> list[Service]:
     merged = {(item.port, item.protocol): item for item in existing}
-    merged.update({(item.port, item.protocol): item for item in incoming})
+    for item in incoming:
+        key = (item.port, item.protocol)
+        previous = merged.get(key)
+        if previous is None:
+            merged[key] = item
+            continue
+        merged[key] = Service(
+            port=item.port,
+            protocol=item.protocol,
+            name=item.name or previous.name,
+            product=item.product or previous.product,
+            version=item.version or previous.version,
+            extra=item.extra or previous.extra,
+            tunnel=item.tunnel or previous.tunnel,
+            state=item.state or previous.state,
+            observed_at=item.observed_at or previous.observed_at,
+            source=item.source or previous.source,
+        )
     return sorted(merged.values(), key=lambda item: (item.protocol, item.port))
 
 
@@ -413,6 +430,7 @@ class Finding:
     target_ids: list[str]
     evidence: list[str]
     document: str
+    created_at: str = field(default_factory=utc_now)
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Finding":
@@ -425,6 +443,7 @@ class Finding:
             target_ids=_strings(value, "target_ids"),
             evidence=_strings(value, "evidence"),
             document=_text(value, "document"),
+            created_at=_text(value, "created_at", default=""),
         )
 
 
@@ -449,6 +468,7 @@ class AttackPath:
     id: str
     name: str
     steps: list[AttackPathStep]
+    created_at: str = field(default_factory=utc_now)
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "AttackPath":
@@ -457,6 +477,7 @@ class AttackPath:
             id=_text(value, "id"),
             name=_text(value, "name"),
             steps=[AttackPathStep.from_dict(item) for item in _objects(value, "steps")],
+            created_at=_text(value, "created_at", default=""),
         )
 
 
@@ -1040,6 +1061,8 @@ class Engagement:
                 not _safe_reference(item) for item in finding.evidence
             ):
                 raise ValidationError(f"unsafe finding path: {finding.id}")
+            if finding.created_at:
+                parse_utc(finding.created_at)
         for item in self.cleanup:
             if item.target_id not in target_ids or not item.location.strip():
                 raise ValidationError(f"invalid cleanup item: {item.id}")
@@ -1052,6 +1075,8 @@ class Engagement:
                 raise ValidationError(
                     f"attack path {path.id} requires a name and steps"
                 )
+            if path.created_at:
+                parse_utc(path.created_at)
             for step in path.steps:
                 if not self.confirmed_reference(step.ref_type, step.ref_id):
                     raise ValidationError(

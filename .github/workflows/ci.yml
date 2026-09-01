@@ -40,6 +40,9 @@ jobs:
       - name: Run unit and installer tests
         run: uv run pytest -q
 
+      - name: Check Python lint
+        run: uv run ruff check src tests
+
       - name: Run isolated tmux integration test
         run: tests/test_tmux_integration.zsh
 
