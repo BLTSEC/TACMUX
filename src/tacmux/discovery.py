@@ -19,7 +19,7 @@ from typing import BinaryIO, Iterable, Sequence
 import xml.etree.ElementTree as ET
 
 from .config import Settings
-from .errors import ConflictError, ExternalToolError, ValidationError
+from .errors import ConflictError, ExternalToolError, SafetyError, ValidationError
 from .model import (
     Engagement,
     ScopeEntry,
@@ -35,6 +35,9 @@ from .model import (
 from .store import (
     Workspace,
     _private_directory,
+    contained_path,
+    contained_regular_file,
+    require_contained_parent,
     restore_engagement_state,
     write_private_bytes,
     write_private_json,
@@ -731,14 +734,9 @@ def apply_reconciliation(
             engagement.validate()
             if source_copy is not None and services_accepted:
                 source, destination = source_copy
-                try:
-                    destination.resolve(strict=False).relative_to(
-                        engagement_root.resolve(strict=True)
-                    )
-                except (OSError, ValueError) as exc:
-                    raise ValidationError(
-                        "service import destination must stay inside the engagement"
-                    ) from exc
+                require_contained_parent(engagement_root, destination.parent)
+                _private_directory(destination.parent)
+                require_contained_parent(engagement_root, destination)
                 write_private_bytes(destination, source.read_bytes(), replace=False)
                 copied_source = destination
             workspace.save(engagement_root, engagement, True)
@@ -764,8 +762,16 @@ class DiscoveryJobs:
         self.workspace = workspace or Workspace(settings)
 
     def list(self, engagement_root: Path) -> list[dict]:
+        self.workspace._require_engagement_root(engagement_root)
+        jobs_root = engagement_root / ".tacmux/jobs"
+        if not jobs_root.is_dir() or not contained_path(engagement_root, jobs_root):
+            raise SafetyError(
+                f"discovery job directory is missing or unsafe: {jobs_root}"
+            )
         jobs: list[dict] = []
-        for path in sorted((engagement_root / ".tacmux/jobs").glob("J*/status.json")):
+        for path in sorted(jobs_root.glob("J*/status.json")):
+            if not contained_regular_file(engagement_root, path):
+                continue
             try:
                 with path.open(encoding="utf-8") as stream:
                     value = json.load(stream)
@@ -883,7 +889,7 @@ class DiscoveryJobs:
         paths: list[tuple[Path, str]] = []
         for name in job.get("result_paths", []):
             path = engagement_root / ".tacmux/jobs" / job_id / str(name)
-            if not path.is_file() or path.is_symlink():
+            if not contained_regular_file(engagement_root, path):
                 continue
             paths.append((path, path.relative_to(engagement_root).as_posix()))
         if not paths:
@@ -923,6 +929,7 @@ class DiscoveryJobs:
             ]
             job_id = f"J{(max(existing, default=0) + 1):04d}"
             job_root = jobs_root / job_id
+            require_contained_parent(engagement_root, job_root)
             job_root.mkdir(mode=0o700)
             os.chmod(job_root, 0o700)
             value = {
@@ -1082,6 +1089,12 @@ def run_job(settings: Settings, job_file: Path) -> int:
             raise ValidationError("discovery job ID does not match its directory")
         engagement = workspace.load(engagement_root)
         workspace.require_active(engagement)
+        if not contained_regular_file(engagement_root, job_file):
+            raise SafetyError(
+                f"discovery job definition is linked or unsafe: {job_file}"
+            )
+        for destination in (status_path, job_root / "nmap.log"):
+            require_contained_parent(engagement_root, destination)
         if value.get("engagement_id") != engagement.id:
             raise ValidationError("discovery job belongs to a different engagement")
         scope_ids = value.get("scope_ids")
@@ -1120,7 +1133,7 @@ def run_job(settings: Settings, job_file: Path) -> int:
             }
         )
         value.pop("error", None)
-    except (ConflictError, ExternalToolError, ValidationError) as exc:
+    except (ConflictError, ExternalToolError, SafetyError, ValidationError) as exc:
         failure = {
             "schema": JOB_SCHEMA,
             "id": job_id,

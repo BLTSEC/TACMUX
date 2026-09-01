@@ -399,7 +399,11 @@ class RecordsPane(Static):
         for item in engagement.access:
             target = engagement.target_by_id(item.target_id).display_name
             summary = f"{item.principal} via {item.method or 'unspecified'}"
-            if root is not None and item.evidence and not (root / item.evidence).is_file():
+            if (
+                root is not None
+                and item.evidence
+                and not contained_regular_file(root, root / item.evidence)
+            ):
                 summary += " (missing evidence)"
             rows.append(
                 (
@@ -418,7 +422,11 @@ class RecordsPane(Static):
                 else "Engagement"
             )
             summary = item.summary
-            if root is not None and item.evidence and not (root / item.evidence).is_file():
+            if (
+                root is not None
+                and item.evidence
+                and not contained_regular_file(root, root / item.evidence)
+            ):
                 summary += " (missing evidence)"
             rows.append(
                 (
@@ -437,7 +445,8 @@ class RecordsPane(Static):
             )
             title = item.title
             if root is not None and any(
-                not (root / reference).is_file() for reference in item.evidence
+                not contained_regular_file(root, root / reference)
+                for reference in item.evidence
             ):
                 title += " (missing evidence)"
             rows.append(

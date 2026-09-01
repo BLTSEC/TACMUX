@@ -26,6 +26,8 @@ from .store import (
     TARGET_PHASES,
     EngagementRecord,
     _private_directory,
+    contained_regular_file,
+    require_contained_parent,
     write_private_bytes,
 )
 from .terminal_output import render_sample
@@ -48,6 +50,18 @@ class EvidenceFile:
     sha256: str
 
 
+def _validated_record_root(record: EngagementRecord) -> Path:
+    root = record.root
+    manifest = root / ".tacmux/engagement.json"
+    if (
+        root.is_symlink()
+        or not root.is_dir()
+        or not contained_regular_file(root, manifest)
+    ):
+        raise SafetyError(f"engagement root or manifest is linked or unsafe: {root}")
+    return root.resolve(strict=True)
+
+
 def _fenced(content: str, language: str = "") -> str:
     longest = max((len(item) for item in re.findall(r"`+", content)), default=0)
     fence = "`" * max(3, longest + 1)
@@ -67,14 +81,11 @@ def _demote_headings(content: str, levels: int = 1) -> str:
     return "\n".join(lines)
 
 
-def _contained_regular_file(root: Path, path: Path) -> Path | None:
+def _resolved_contained_regular_file(root: Path, path: Path) -> Path | None:
     try:
-        if path.is_symlink():
+        if not contained_regular_file(root, path):
             return None
         resolved = path.resolve(strict=True)
-        resolved.relative_to(root.resolve(strict=True))
-        if not resolved.is_file():
-            return None
         return resolved
     except (OSError, ValueError):
         return None
@@ -110,7 +121,7 @@ def _authored_markdown(record: EngagementRecord) -> list[Path]:
             continue
         if path in generated or "exports" in path.relative_to(root).parts:
             continue
-        if _contained_regular_file(root, path) is not None:
+        if _resolved_contained_regular_file(root, path) is not None:
             paths.add(path)
     return sorted(paths, key=lambda item: item.relative_to(root).as_posix())
 
@@ -146,7 +157,7 @@ def _evidence_paths(record: EngagementRecord) -> list[Path]:
         {
             resolved
             for path in paths
-            if (resolved := _contained_regular_file(root, path)) is not None
+            if (resolved := _resolved_contained_regular_file(root, path)) is not None
             and "exports" not in resolved.relative_to(root).parts
         },
         key=lambda item: item.relative_to(root).as_posix(),
@@ -344,6 +355,7 @@ def render_handoff(
     include_mermaid: bool = True,
     generated_at: str | None = None,
 ) -> str:
+    _validated_record_root(record)
     engagement = record.engagement
     generated = generated_at or datetime.now(timezone.utc).isoformat().replace(
         "+00:00", "Z"
@@ -480,7 +492,8 @@ def _missing_references(record: EngagementRecord) -> list[str]:
     return [
         f"Referenced evidence is missing: {reference}"
         for reference in sorted(set(references))
-        if _contained_regular_file(record.root, record.root / reference) is None
+        if _resolved_contained_regular_file(record.root, record.root / reference)
+        is None
     ]
 
 
@@ -492,7 +505,7 @@ def create_handoff(
     jobs: Iterable[Mapping[str, object]] = (),
     include_mermaid: bool = True,
 ) -> Path:
-    root = record.root.resolve(strict=True)
+    root = _validated_record_root(record)
     exports = root / "exports"
     if exports.exists() and exports.is_symlink():
         raise SafetyError(f"refusing symlinked export directory: {exports}")
@@ -503,6 +516,7 @@ def create_handoff(
         raise SafetyError("export directory must stay inside the engagement") from exc
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     destination = exports / f"{stamp}-{record.engagement.id}-handoff.md"
+    require_contained_parent(root, destination)
     if destination.exists():
         raise ConflictError(f"export destination already exists: {destination}")
     document = render_handoff(

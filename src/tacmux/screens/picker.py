@@ -451,6 +451,7 @@ class EngagementPickerScreen(Screen):
                 value["name"],
                 value["assessment_type"],
                 logging_enabled=value["logging_enabled"],
+                authorization=value["authorization"],
                 initial_scope=scope_specs,
             )
             self.app.open_engagement(record)

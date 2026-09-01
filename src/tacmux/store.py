@@ -62,7 +62,11 @@ def safe_filename(value: str, fallback: str = "item", limit: int = 48) -> str:
 
 
 def _private_directory(path: Path) -> None:
+    if path.is_symlink():
+        raise SafetyError(f"refusing linked private directory: {path}")
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.is_symlink() or not path.is_dir():
+        raise SafetyError(f"private directory is missing or linked: {path}")
     os.chmod(path, 0o700)
 
 
@@ -199,6 +203,15 @@ def contained_regular_file(root: Path, path: Path) -> bool:
     return contained_path(root, path) and path.is_file()
 
 
+def require_contained_parent(root: Path, path: Path) -> None:
+    """Require an existing, non-linked parent below *root* before writing."""
+
+    if not path.parent.is_dir() or not contained_path(root, path.parent):
+        raise SafetyError(
+            f"write destination has a missing, linked, or external parent: {path}"
+        )
+
+
 @dataclass(slots=True, frozen=True)
 class EngagementRecord:
     root: Path
@@ -215,6 +228,22 @@ class Workspace:
         _private_directory(self.settings.archive_dir)
         _private_directory(self.settings.log_dir)
         _private_directory(self.settings.config_file.parent)
+
+    def _require_engagement_root(self, root: Path) -> None:
+        workspace = Path(os.path.abspath(self.settings.workspace))
+        candidate = Path(os.path.abspath(root))
+        if (
+            candidate.parent != workspace
+            or not candidate.is_dir()
+            or not contained_path(workspace, candidate)
+        ):
+            raise SafetyError(
+                f"engagement is missing, linked, or outside configured workspace: {root}"
+            )
+
+    def _require_engagement_write(self, root: Path, path: Path) -> None:
+        self._require_engagement_root(root)
+        require_contained_parent(root, path)
 
     @contextmanager
     def lock(self, engagement_root: Path | None = None) -> Iterator[None]:
@@ -239,7 +268,14 @@ class Workspace:
         for manifest in self.settings.workspace.glob("E-*/.tacmux/engagement.json"):
             try:
                 engagement = self.load(manifest.parent.parent)
-            except (OSError, ValidationError, ValueError, KeyError, TypeError) as exc:
+            except (
+                OSError,
+                SafetyError,
+                ValidationError,
+                ValueError,
+                KeyError,
+                TypeError,
+            ) as exc:
                 problems.append((manifest, str(exc)))
                 continue
             records.append(EngagementRecord(manifest.parent.parent, engagement))
@@ -265,9 +301,21 @@ class Workspace:
     def delete_engagement(self, engagement_id: str) -> None:
         """Permanently remove one validated engagement from the live workspace."""
 
+        if not re.fullmatch(r"E-[0-9a-f]{12}", engagement_id):
+            raise ValidationError(f"invalid engagement ID: {engagement_id}")
         workspace_root = self.settings.workspace.resolve(strict=True)
         staging: Path | None = None
         with self.lock():
+            linked = next(
+                (
+                    path
+                    for path in self.settings.workspace.glob(f"{engagement_id}-*")
+                    if path.is_symlink()
+                ),
+                None,
+            )
+            if linked is not None:
+                raise SafetyError(f"refusing to delete symlinked engagement: {linked}")
             record = self.find(engagement_id)
             root = record.root
             if root.is_symlink():
@@ -335,6 +383,11 @@ class Workspace:
 
     def load(self, engagement_root: Path) -> Engagement:
         manifest = engagement_root / MANIFEST_RELATIVE
+        self._require_engagement_root(engagement_root)
+        if not contained_regular_file(engagement_root, manifest):
+            raise SafetyError(
+                f"engagement manifest is missing, linked, or unsafe: {manifest}"
+            )
         try:
             with manifest.open(encoding="utf-8") as stream:
                 value = json.load(stream)
@@ -355,6 +408,7 @@ class Workspace:
         assessment_type: AssessmentType,
         *,
         logging_enabled: bool | None = None,
+        authorization: Authorization | None = None,
         initial_scope: Iterable[
             tuple[str, ScopeGroup, str, ScopeAvailability]
             | tuple[str, ScopeGroup, str, ScopeAvailability, list[str]]
@@ -369,6 +423,9 @@ class Workspace:
             if logging_enabled is None
             else logging_enabled,
         )
+        if authorization is not None:
+            engagement.authorization = authorization
+            engagement.validate()
         for values in initial_scope:
             label, group, scope_value, availability, *extra = values
             engagement.add_scope(
@@ -389,6 +446,7 @@ class Workspace:
                     "notes",
                     "findings",
                     "targets",
+                    ".tacmux/imports",
                     ".tacmux/jobs",
                     ".tacmux/deleting",
                 ):
@@ -466,6 +524,7 @@ Created: {engagement.created_at}
         engagement.validate()
         self._assert_current_revision(root, engagement)
         manifest = root / MANIFEST_RELATIVE
+        self._require_engagement_write(root, manifest)
         previous_revision = engagement.revision
         engagement.revision += 1
         try:
@@ -820,8 +879,8 @@ Created: {engagement.created_at}
                     / "NOTES.md"
                 )
                 heading = "## Notes"
-            if not _contained(record.root, path):
-                raise SafetyError(f"unsafe note path: {path}")
+            if not contained_regular_file(record.root, path):
+                raise SafetyError(f"note file is missing, linked, or unsafe: {path}")
             content = path.read_text(encoding="utf-8")
             if heading not in content:
                 raise ValidationError(f"note file is missing {heading}: {path}")
@@ -904,6 +963,12 @@ Created: {engagement.created_at}
     ) -> int:
         with self.lock(root):
             self._assert_current_revision(root, engagement)
+            for destination in (
+                root / "notes/activity.md",
+                root / "notes/attack-path.md",
+                root / "SITREP.md",
+            ):
+                self._require_engagement_write(root, destination)
             write_private_text_if_changed(
                 root / "notes/activity.md", render_activity_markdown(engagement)
             )
@@ -1015,7 +1080,9 @@ Created: {engagement.created_at}
             services=list(services or []),
         )
         target_root = root / "targets" / directory
-        if not _contained(root, target_root) or target_root.exists():
+        self._require_engagement_root(root)
+        require_contained_parent(root, target_root)
+        if target_root.exists():
             raise SafetyError(f"unsafe or existing target directory: {target_root}")
         _private_directory(target_root)
         try:
@@ -1053,6 +1120,11 @@ Created: {engagement.created_at}
                 target.display_name = name.strip()
                 self.save(root, engagement, True)
                 notes = root / "targets" / target.directory / "NOTES.md"
+                if not contained_regular_file(root, notes):
+                    return (
+                        "Target renamed, but its NOTES.md heading is missing, linked, "
+                        f"or unsafe: {notes}"
+                    )
                 try:
                     content = notes.read_text(encoding="utf-8")
                     _, separator, remainder = content.partition("\n")
@@ -1102,6 +1174,7 @@ Created: {engagement.created_at}
                 engagement.findings.append(finding)
                 finding_path = root / document
                 engagement.validate()
+                self._require_engagement_write(root, finding_path)
                 if finding_path.exists():
                     raise ConflictError(
                         f"finding document already exists: {finding_path}"
@@ -1131,7 +1204,7 @@ Created: {engagement.created_at}
     def sync_finding_document(self, root: Path, finding: Finding) -> None:
         self.require_active(self.load(root))
         path = root / finding.document
-        if not _contained(root, path) or not path.is_file():
+        if not contained_regular_file(root, path):
             raise SafetyError(f"finding document is missing or unsafe: {path}")
         try:
             content = path.read_text(encoding="utf-8")
@@ -1170,13 +1243,19 @@ Created: {engagement.created_at}
                     + "; remove those records first"
                 )
             target_root = root / "targets" / target.directory
-            if not _contained(root / "targets", target_root) or not target_root.is_dir():
+            if (
+                not contained_path(root, root / "targets")
+                or not contained_path(root / "targets", target_root)
+                or target_root.is_symlink()
+                or not target_root.is_dir()
+            ):
                 raise SafetyError(
                     f"refusing to delete unsafe or missing target path: {target_root}"
                 )
             staging = root / ".tacmux/deleting" / (
                 f"{target.id}-{os.getpid()}-{secrets.token_hex(4)}"
             )
+            require_contained_parent(root, staging)
             if staging.exists():
                 raise ConflictError(f"delete staging path already exists: {staging}")
             target_root.rename(staging)
@@ -1278,11 +1357,12 @@ Created: {engagement.created_at}
         root: Path, finding: Finding
     ) -> tuple[Path, Path] | None:
         document = root / finding.document
-        if not document.is_file() or not _contained(root, document):
+        if not contained_regular_file(root, document):
             return None
         staging = root / ".tacmux/deleting" / (
             f"{finding.id}-{os.getpid()}-{secrets.token_hex(4)}.md"
         )
+        require_contained_parent(root, staging)
         if staging.exists():
             raise ConflictError(f"delete staging path already exists: {staging}")
         document.rename(staging)

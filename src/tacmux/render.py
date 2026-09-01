@@ -226,7 +226,7 @@ def render_activity_markdown(engagement: Engagement) -> str:
         target = ""
         if activity.target_id:
             target = engagement.target_by_id(activity.target_id).display_name
-        evidence = f"`{activity.evidence}`" if activity.evidence else ""
+        evidence = f"`{md_escape(activity.evidence)}`" if activity.evidence else ""
         lines.append(
             f"| {md_escape(activity.occurred_at)} | {md_escape(activity.result.value)} | "
             f"{md_escape(target)} | {md_escape(activity.summary)} | {evidence} |"
@@ -409,9 +409,10 @@ def render_sitrep(
     for activity in sorted(engagement.activities, key=lambda item: item.occurred_at)[
         -20:
     ]:
-        evidence = f"`{activity.evidence}`" if activity.evidence else ""
+        evidence = f"`{md_escape(activity.evidence)}`" if activity.evidence else ""
         lines.append(
-            f"| {activity.occurred_at} | {activity.result.value} | "
+            f"| {md_escape(activity.occurred_at)} | "
+            f"{md_escape(activity.result.value)} | "
             f"{md_escape(activity.summary)} | {evidence} |"
         )
     lines.extend(

@@ -3,12 +3,12 @@
   <host>
     <status state="up" reason="syn-ack"/>
     <address addr="198.51.100.25" addrtype="ipv4"/>
-    <hostnames><hostname name="mail.acme.test" type="PTR"/></hostnames>
+    <hostnames><hostname name="edge.example.test" type="PTR"/></hostnames>
   </host>
   <host>
     <status state="up" reason="echo-reply"/>
     <address addr="198.51.100.40" addrtype="ipv4"/>
-    <hostnames><hostname name="vpn.acme.test" type="PTR"/></hostnames>
+    <hostnames><hostname name="vpn.example.test" type="PTR"/></hostnames>
   </host>
   <host>
     <status state="down" reason="no-response"/>

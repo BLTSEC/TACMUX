@@ -222,9 +222,9 @@ def test_in_pane_note_activity_and_sitrep(
     monkeypatch.setenv("TACMUX_TARGET_ID", target.id)
     monkeypatch.setattr("tacmux.cli.TmuxService.available", lambda *_: False)
 
-    assert main(["note", "shell", "as", "svc_deploy"]) == 0
+    assert main(["note", "shell", "as", "web_operator"]) == 0
     notes = record.root / "targets" / target.directory / "NOTES.md"
-    assert "shell as svc_deploy" in notes.read_text()
+    assert "shell as web_operator" in notes.read_text()
 
     assert main(["activity", "confirmed", "Established", "route"]) == 0
     loaded = workspace.load(record.root)

@@ -150,3 +150,28 @@ def test_handoff_does_not_follow_evidence_symlinks(workspace, record, tmp_path):
     document = render_handoff(record, profile=ExportProfile.EVIDENCE)
     assert "must not be exported" not in document
     assert "loot/outside.txt" not in document
+
+
+def test_handoff_rejects_evidence_below_a_linked_directory(
+    workspace, record, tmp_path
+):
+    target, _, _ = _populated_record(workspace, record)
+    outside = tmp_path / "outside-evidence"
+    outside.mkdir()
+    (outside / "proof.txt").write_text("must not be exported")
+    link = record.root / "targets" / target.directory / "loot/linked"
+    link.symlink_to(outside, target_is_directory=True)
+    reference = link.relative_to(record.root) / "proof.txt"
+    workspace.create_activity(
+        record.root,
+        record.engagement,
+        summary="Referenced linked proof",
+        result=ActivityResult.CONFIRMED,
+        target_id=target.id,
+        evidence=reference.as_posix(),
+    )
+
+    document = render_handoff(record, profile=ExportProfile.EVIDENCE)
+
+    assert "must not be exported" not in document
+    assert f"Referenced evidence is missing: {reference.as_posix()}" in document
