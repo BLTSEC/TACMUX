@@ -238,10 +238,11 @@ def test_in_pane_note_activity_and_sitrep(
     assert main(["export"]) == 0
     export_path = Path(capsys.readouterr().out.strip())
     assert export_path.is_file()
+    assert export_path.name.endswith(f"-{record.engagement.id}-handoff.md")
     assert "Established route" in export_path.read_text()
 
     assert main(["export", "not-a-profile"]) == 1
-    assert "compact or evidence" in capsys.readouterr().err
+    assert "handoff or full" in capsys.readouterr().err
 
     workspace.set_status(record.root, loaded, EngagementStatus.CLOSED)
     assert main(["note", "late", "note"]) == 1

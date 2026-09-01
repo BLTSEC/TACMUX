@@ -527,16 +527,26 @@ async def test_export_form_and_main_action_create_handoff(
 ):
     workspace.set_last_engagement(record.engagement.id)
     app = TacmuxApp(replace(settings, startup="resume_last"))
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         main = app.screen
         assert isinstance(main, MainScreen)
         main.action_export()
         await pilot.pause()
         assert isinstance(app.screen, ExportForm)
+        assert app.screen.query_one("#profile", Select).value == "handoff"
         await pilot.press("escape")
         await pilot.pause()
-        main._create_handoff(ExportProfile.COMPACT)
+        main._choose_export_profile("full")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        warning = " ".join(
+            str(widget.render()) for widget in app.screen.query(Static)
+        )
+        assert "1 MiB total" in warning and "does not redact" in warning
+        await pilot.press("escape")
+        await pilot.pause()
+        main._create_handoff(ExportProfile.HANDOFF)
         await pilot.pause()
         assert isinstance(app.screen, MessageModal)
         assert len(list((record.root / "exports").glob("*.md"))) == 1

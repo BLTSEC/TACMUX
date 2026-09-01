@@ -31,7 +31,7 @@ Usage:
   tacmux activity RESULT [--evidence PATH] TEXT...
                                  Record confirmed, failed, or no-result activity
   tacmux sitrep                  Print the current engagement SITREP
-  tacmux export [compact|evidence]
+  tacmux export [handoff|full]
                                  Create a single-file Markdown handoff
   tacmux clip                    Copy stdin through the trusted clipboard path
   tacmux archive verify FILE     Verify an archive and every member hash
@@ -281,7 +281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings = load_settings()
             tmux = TmuxService(settings)
             record, _ = resolve(settings, tmux)
-            profile = parse_export_profile(args[1] if len(args) == 2 else "compact")
+            profile = parse_export_profile(args[1] if len(args) == 2 else "handoff")
             workspace = Workspace(settings)
             path = create_handoff(
                 record,

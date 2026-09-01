@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import os
 
-from tacmux.export import ExportProfile, create_handoff, render_handoff
+import pytest
+
+import tacmux.export as export_module
+from tacmux.export import (
+    ExportProfile,
+    create_handoff,
+    parse_export_profile,
+    render_handoff,
+)
+from tacmux.errors import ValidationError
 from tacmux.model import (
     AccessLevel,
     ActivityResult,
@@ -85,13 +95,13 @@ def _populated_record(workspace, record):
     return target, evidence, binary
 
 
-def test_compact_handoff_contains_all_records_and_authored_markdown(
+def test_handoff_contains_all_records_and_readable_authored_markdown(
     workspace, record
 ):
     target, evidence, binary = _populated_record(workspace, record)
     document = render_handoff(
         record,
-        profile=ExportProfile.COMPACT,
+        profile=ExportProfile.HANDOFF,
         live_target_ids={target.id},
         jobs=[
             {
@@ -104,7 +114,9 @@ def test_compact_handoff_contains_all_records_and_authored_markdown(
         ],
         generated_at="2026-08-31T12:00:00Z",
     )
-    assert "# TACMUX Handoff" in document
+    assert "# TACMUX Engagement Handoff" in document
+    assert "**Export format:** `tacmux.handoff/v1`" in document
+    assert "**Profile:** handoff" in document
     assert "Established initial access" in document
     assert "Exposed administrative service" in document
     assert "The service permitted access" in document
@@ -115,30 +127,129 @@ def test_compact_handoff_contains_all_records_and_authored_markdown(
     assert binary.relative_to(record.root).as_posix() in document
     assert "22/tcp open ssh" not in document
     assert '"revision":' in document
-    assert "`````markdown" in document
+    assert "#### Engagement —" in document
+    assert "`````markdown" not in document
+    assert "TACMUX closed an unterminated source fence" in document
+    notes_start = document.index("### `targets/T0001-WEB01/NOTES.md`")
+    discovery_start = document.index("## Discovery History")
+    assert document[notes_start:discovery_start].count("````") == 2
+    assert "](findings/F0001.md)" not in document
+    assert "External DMZ (S0001)" in document
+    assert document.count("## Engagement Snapshot") == 1
+    assert document.count("## Targets and Services") == 1
+    assert "## Complete Structured Records" not in document
+    assert "## SITREP" not in document
+    assert document.index("## Machine-readable Manifest") > document.index(
+        "## Evidence Coverage and Inventory"
+    )
 
 
-def test_evidence_handoff_embeds_clean_text_but_not_binary(workspace, record):
+def test_full_context_embeds_clean_text_but_not_binary(workspace, record):
     _, evidence, binary = _populated_record(workspace, record)
-    document = render_handoff(record, profile=ExportProfile.EVIDENCE)
+    document = render_handoff(record, profile=ExportProfile.FULL)
     assert "22/tcp open ssh" in document
     assert "progress 100%" in document
     assert "\x1b" not in document
-    assert f"`{binary.relative_to(record.root).as_posix()}` is binary" in document
+    binary_row = binary.relative_to(record.root).as_posix()
+    assert f"`{binary_row}`" in document
+    assert "| binary |" in document
     assert evidence.relative_to(record.root).as_posix() in document
+    assert document.index("## Machine-readable Manifest") < document.index(
+        "## Embedded Evidence Excerpts"
+    )
+
+
+def test_export_profile_names_and_compatibility_aliases():
+    assert parse_export_profile("handoff") == ExportProfile.HANDOFF
+    assert parse_export_profile("full") == ExportProfile.FULL
+    assert parse_export_profile("compact") == ExportProfile.HANDOFF
+    assert parse_export_profile("evidence") == ExportProfile.FULL
+    with pytest.raises(ValidationError, match="handoff or full"):
+        parse_export_profile("everything")
+
+
+def test_full_context_prioritizes_references_and_indexes_job_internals(
+    workspace, record, monkeypatch
+):
+    _, evidence, _ = _populated_record(workspace, record)
+    job_root = record.root / ".tacmux/jobs/J0001"
+    job_root.mkdir(parents=True)
+    (job_root / "job.json").write_text('{"administrative":"do not embed this"}')
+    (job_root / "raw.xml").write_text("<administrative>raw scanner XML</administrative>")
+    fake_home = record.root.parent.parent
+    monkeypatch.setattr(export_module.Path, "home", lambda: fake_home)
+    home_relative = record.root.relative_to(fake_home).as_posix()
+    scan_text = (
+        f"Useful scan at {record.root}/targets and ~/{home_relative}/loot; "
+        "retain /opt/client/evidence\n"
+    )
+    scan_log = job_root / "nmap.log"
+    scan_log.write_text(scan_text)
+
+    document = render_handoff(record, profile=ExportProfile.FULL)
+
+    assert "Useful scan at <ENGAGEMENT_ROOT>/targets" in document
+    assert "and <ENGAGEMENT_ROOT>/loot" in document
+    assert "/opt/client/evidence" in document
+    assert str(record.root) not in document
+    assert "do not embed this" not in document
+    assert "raw scanner XML" not in document
+    assert "`.tacmux/jobs/J0001/job.json`" in document
+    assert "`.tacmux/jobs/J0001/raw.xml`" in document
+    assert hashlib.sha256(scan_text.encode()).hexdigest() in document
+    referenced_heading = f"### `{evidence.relative_to(record.root).as_posix()}`"
+    assert document.index(referenced_heading) < document.index(
+        "### `.tacmux/jobs/J0001/nmap.log`"
+    )
+
+
+def test_full_context_reports_truncation_and_total_limit(
+    workspace, record, monkeypatch
+):
+    target, evidence, _ = _populated_record(workspace, record)
+    extra = record.root / "targets" / target.directory / "loot/unreferenced.txt"
+    extra.write_text("UNREFERENCED-NOISE")
+    monkeypatch.setattr(export_module, "PER_FILE_TEXT_LIMIT", 16)
+    monkeypatch.setattr(export_module, "TOTAL_TEXT_LIMIT", 16)
+
+    document = render_handoff(record, profile=ExportProfile.FULL)
+
+    evidence_path = evidence.relative_to(record.root).as_posix()
+    extra_path = extra.relative_to(record.root).as_posix()
+    assert f"| `{evidence_path}`" in document
+    assert "| embedded, truncated |" in document
+    assert f"| `{extra_path}`" in document
+    assert "| omitted: total limit |" in document
+    assert "UNREFERENCED-NOISE" not in document
+    assert "- **Truncated excerpts:** 1" in document
+
+
+def test_handoff_flags_report_and_cleanup_attention_items(workspace, record):
+    _populated_record(workspace, record)
+
+    document = render_handoff(record, profile=ExportProfile.HANDOFF)
+
+    assert (
+        "Finding F0001 has empty or missing sections: Summary, Evidence, Impact"
+        in document
+    )
+    assert "Outstanding cleanup remains: C0001" in document
 
 
 def test_create_handoff_is_private_unique_and_excludes_prior_exports(
     workspace, record
 ):
     _populated_record(workspace, record)
-    first = create_handoff(record, profile=ExportProfile.COMPACT)
-    second = create_handoff(record, profile=ExportProfile.COMPACT)
+    first = create_handoff(record, profile=ExportProfile.HANDOFF)
+    second = create_handoff(record, profile=ExportProfile.HANDOFF)
+    full = create_handoff(record, profile=ExportProfile.FULL)
     assert first != second
     assert first.parent == record.root / "exports"
     assert first.stat().st_mode & 0o777 == 0o600
     assert second.stat().st_mode & 0o777 == 0o600
     assert first.name not in second.read_text()
+    assert first.name.endswith(f"-{record.engagement.id}-handoff.md")
+    assert full.name.endswith(f"-{record.engagement.id}-full.md")
 
 
 def test_handoff_does_not_follow_evidence_symlinks(workspace, record, tmp_path):
@@ -147,7 +258,7 @@ def test_handoff_does_not_follow_evidence_symlinks(workspace, record, tmp_path):
     outside.write_text("must not be exported")
     link = record.root / "targets" / target.directory / "loot/outside.txt"
     os.symlink(outside, link)
-    document = render_handoff(record, profile=ExportProfile.EVIDENCE)
+    document = render_handoff(record, profile=ExportProfile.FULL)
     assert "must not be exported" not in document
     assert "loot/outside.txt" not in document
 
@@ -171,7 +282,7 @@ def test_handoff_rejects_evidence_below_a_linked_directory(
         evidence=reference.as_posix(),
     )
 
-    document = render_handoff(record, profile=ExportProfile.EVIDENCE)
+    document = render_handoff(record, profile=ExportProfile.FULL)
 
     assert "must not be exported" not in document
     assert f"Referenced evidence is missing: {reference.as_posix()}" in document

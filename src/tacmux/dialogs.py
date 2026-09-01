@@ -86,26 +86,30 @@ class ExportForm(BaseModal):
         with Vertical():
             yield Label("Create Engagement Handoff", classes="title")
             yield Static(
-                "Both profiles include every structured record and authored Markdown. "
-                "Evidence-rich also embeds bounded text logs and evidence; binary files "
-                "remain an indexed reference."
+                "Both profiles create one readable, standalone engagement record. "
+                "Full context also embeds prioritized text evidence; every source "
+                "file remains indexed with its SHA-256."
             )
             yield Label("Export Profile", classes="field-label")
             yield Select(
                 [
-                    ("Compact — records, notes, and evidence index", ExportProfile.COMPACT.value),
                     (
-                        "Evidence-rich — also embed bounded text evidence",
-                        ExportProfile.EVIDENCE.value,
+                        "Handoff — readable records, notes, and evidence index",
+                        ExportProfile.HANDOFF.value,
+                    ),
+                    (
+                        "Full context — also include prioritized text evidence",
+                        ExportProfile.FULL.value,
                     ),
                 ],
-                value=ExportProfile.COMPACT.value,
+                value=ExportProfile.HANDOFF.value,
                 allow_blank=False,
                 id="profile",
             )
             yield Static(
-                "The generated Markdown may contain sensitive client data. It is a "
-                "handoff snapshot, not a verified evidence archive."
+                "The generated Markdown may contain sensitive client data. Full "
+                "context is limited to 1 MiB of excerpts and normalizes the local "
+                "engagement path, but it does not redact secrets or identities."
             )
             yield Static("", classes="error")
             with Horizontal(classes="buttons"):

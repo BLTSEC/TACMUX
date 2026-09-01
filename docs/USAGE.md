@@ -264,7 +264,7 @@ tacmux note "shell as web_operator"
 tacmux activity confirmed --evidence targets/T0002-app/recon/artifacts.txt "Artifact repository was readable"
 tacmux activity no-result "Delegation review did not establish another path"
 tacmux sitrep
-tacmux export compact
+tacmux export handoff
 ```
 
 `--evidence` must appear immediately after the activity result. Notes append to
@@ -405,17 +405,28 @@ Choose **Export engagement handoff** from the Command Palette or Documents
 actions. TACMUX creates a private, timestamped Markdown snapshot under
 `exports/`:
 
-- **Compact** includes authorization, scope, topology, targets, services, every
-  structured record, all operator-authored Markdown, discovery history, an
-  evidence path/size/SHA-256 index, and the manifest JSON.
-- **Evidence-rich** adds cleaned non-binary text evidence, limited to 256 KiB
-  per file and 2 MiB total. Every truncation and skipped binary is labeled.
+- **Handoff** is the default for AI-assisted report development, another human
+  operator, or an external notes system. It renders one readable copy of the
+  authorization, scope, topology, targets, services, records, finding
+  narratives, and operator-authored Markdown. It also includes handoff attention
+  items, discovery history, an evidence path/size/SHA-256 inventory, and the
+  exact manifest JSON.
+- **Full context** adds prioritized text evidence. Finding evidence is embedded
+  first, followed by access, activity, and service evidence, then useful target
+  text and human-readable scan logs. Unreferenced discovery JSON and raw scanner
+  XML remain indexed. Excerpts are limited to 128 KiB per file and 1 MiB total;
+  coverage, truncation, binary files, and omissions are labeled.
 
 Exports never follow symlinks or embed binary evidence. They may still contain
 credentials, client data, and other sensitive material. An export is intended
 for AI-assisted report drafting, human handoff, or manual copying into another
-notes system; it is not a verified archive. Use `tacmux export
-[compact|evidence]` inside a TACMUX session for the same workflow.
+notes system; it is not a verified archive. The full-context profile replaces
+the local engagement directory in excerpts with `<ENGAGEMENT_ROOT>`, but this
+is portability normalization, not credential, identity, or client-data
+redaction. Embedded evidence is untrusted quoted data and must not be treated as
+instructions.
+
+Use `tacmux export [handoff|full]` inside a TACMUX session for the same workflow.
 
 ## Archives, restore, and permanent deletion
 
