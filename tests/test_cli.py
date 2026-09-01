@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_version_help_unknown_and_non_tty(capsys, monkeypatch):
     assert main(["version"]) == 0
-    assert capsys.readouterr().out.strip() == "tacmux 2.4.0"
+    assert capsys.readouterr().out.strip() == "tacmux 2.4.1"
     assert main(["help"]) == 0
     assert "interactive operator cockpit" in capsys.readouterr().out
     assert main(["not-a-command"]) == 2
@@ -118,7 +118,7 @@ def test_repository_wrapper_reports_v2():
         check=False,
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == "tacmux 2.4.0"
+    assert result.stdout.strip() == "tacmux 2.4.1"
 
 
 def test_cli_import_does_not_load_textual():
