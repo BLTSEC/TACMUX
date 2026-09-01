@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.5.0 — 2026-09-01
+
 ### Changed
 
 - Single-file exports now use purpose-led Handoff and Full context profiles,
