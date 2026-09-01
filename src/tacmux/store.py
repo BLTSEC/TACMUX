@@ -6,7 +6,6 @@ from copy import deepcopy
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, fields
 import fcntl
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -36,7 +35,6 @@ from .model import (
     ScopeEntry,
     ScopeAvailability,
     ScopeGroup,
-    ScopeKind,
     Service,
     Severity,
     Target,
@@ -175,6 +173,32 @@ def _contained(root: Path, path: Path) -> bool:
         return False
 
 
+def contained_path(root: Path, path: Path) -> bool:
+    """Return whether *path* stays below *root* without traversing links."""
+
+    try:
+        root_resolved = root.resolve(strict=True)
+        path_absolute = Path(os.path.abspath(path))
+        root_absolute = Path(os.path.abspath(root))
+        relative = path_absolute.relative_to(root_absolute)
+        current = root_absolute
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                return False
+        resolved = path_absolute.resolve(strict=False)
+        resolved.relative_to(root_resolved)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def contained_regular_file(root: Path, path: Path) -> bool:
+    """Return whether *path* is a regular, non-linked file below *root*."""
+
+    return contained_path(root, path) and path.is_file()
+
+
 @dataclass(slots=True, frozen=True)
 class EngagementRecord:
     root: Path
@@ -205,29 +229,31 @@ class Workspace:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
 
-    def list_engagements(self) -> list[EngagementRecord]:
+    def catalog_engagements(
+        self,
+    ) -> tuple[list[EngagementRecord], list[tuple[Path, str]]]:
         if not self.settings.workspace.is_dir():
-            return []
+            return [], []
         records: list[EngagementRecord] = []
+        problems: list[tuple[Path, str]] = []
         for manifest in self.settings.workspace.glob("E-*/.tacmux/engagement.json"):
             try:
                 engagement = self.load(manifest.parent.parent)
-            except (OSError, ValidationError, ValueError, KeyError, TypeError):
-                continue
-            records.append(EngagementRecord(manifest.parent.parent, engagement))
-        return sorted(
-            records, key=lambda item: item.engagement.created_at, reverse=True
-        )
-
-    def invalid_engagements(self) -> list[tuple[Path, str]]:
-        problems: list[tuple[Path, str]] = []
-        if not self.settings.workspace.is_dir():
-            return problems
-        for manifest in self.settings.workspace.glob("E-*/.tacmux/engagement.json"):
-            try:
-                self.load(manifest.parent.parent)
             except (OSError, ValidationError, ValueError, KeyError, TypeError) as exc:
                 problems.append((manifest, str(exc)))
+                continue
+            records.append(EngagementRecord(manifest.parent.parent, engagement))
+        return (
+            sorted(records, key=lambda item: item.engagement.created_at, reverse=True),
+            sorted(problems, key=lambda item: str(item[0])),
+        )
+
+    def list_engagements(self) -> list[EngagementRecord]:
+        records, _ = self.catalog_engagements()
+        return records
+
+    def invalid_engagements(self) -> list[tuple[Path, str]]:
+        _, problems = self.catalog_engagements()
         return problems
 
     def find(self, engagement_id: str) -> EngagementRecord:
@@ -923,7 +949,7 @@ Created: {engagement.created_at}
         return [
             f"{kind} {item_id} references missing evidence: {reference}"
             for kind, item_id, reference in references
-            if not (root / reference).is_file()
+            if not contained_regular_file(root, root / reference)
         ]
 
     def create_target(
@@ -1085,7 +1111,8 @@ Created: {engagement.created_at}
                     f"# {title.strip()}\n\n"
                     f"- **ID:** `{finding_id}`\n"
                     f"- **Severity:** {severity.value}\n"
-                    f"- **State:** {state.value}\n\n"
+                    f"- **State:** {state.value}\n"
+                    f"- **Created UTC:** {finding.created_at}\n\n"
                     "## Summary\n\n\n"
                     "## Evidence\n\n\n"
                     "## Impact\n\n\n"
@@ -1122,7 +1149,8 @@ Created: {engagement.created_at}
             f"# {finding.title}\n\n"
             f"- **ID:** `{finding.id}`\n"
             f"- **Severity:** {finding.severity.value}\n"
-            f"- **State:** {finding.state.value}\n\n"
+            f"- **State:** {finding.state.value}\n"
+            f"- **Created UTC:** {finding.created_at or '—'}\n\n"
         )
         write_private_text(path, header + marker + narrative)
 

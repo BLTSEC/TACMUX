@@ -597,3 +597,19 @@ def test_automatic_logging_is_bounded_to_tacmux_sessions(settings):
     controller = LogController(widened, _HookTmux())
     assert controller._disabled("%1") is False
     assert LogController(settings, _HookTmux("E-0123456789ab"))._disabled("%1") is False
+
+
+def test_session_log_directory_must_remain_inside_workspace(
+    settings, workspace, tmp_path
+):
+    controller = LogController(settings, _HookTmux("E-0123456789ab"))
+    valid = settings.workspace / "E-test/targets/T0001-web/logs"
+    assert controller._validated_session_log_root(str(valid)) == valid
+
+    with pytest.raises(ValidationError, match="outside the workspace"):
+        controller._validated_session_log_root(str(tmp_path / "outside"))
+
+    linked = settings.workspace / "linked-logs"
+    linked.symlink_to(tmp_path)
+    with pytest.raises(ValidationError, match="linked TACMUX log directory"):
+        controller._validated_session_log_root(str(linked))

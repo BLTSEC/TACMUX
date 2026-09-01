@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
+from textual.containers import Vertical
 from textual.widgets import (
     Button,
     Checkbox,
@@ -22,17 +24,24 @@ from tacmux.archive import create_archive
 from tacmux.dialogs import (
     ActionMenu,
     AttackPathForm,
+    AccessForm,
+    ActivityForm,
+    CleanupForm,
     ConfirmModal,
     DiscoveryReview,
+    EngagementDetailsForm,
     EngagementForm,
+    FindingForm,
     ExportForm,
     MessageModal,
     ScanForm,
+    ScopeForm,
+    ServicesModal,
     TargetAddressForm,
     TargetForm,
 )
 from tacmux.discovery import DiscoveryCandidate, Reconciliation
-from tacmux.errors import ConflictError
+from tacmux.errors import ConflictError, ExternalToolError
 from tacmux.export import ExportProfile
 from tacmux.model import (
     AccessLevel,
@@ -43,6 +52,7 @@ from tacmux.model import (
     EngagementStatus,
     ScopeAvailability,
     ScopeGroup,
+    Target,
     TargetAddress,
     CleanupKind,
     FindingState,
@@ -65,6 +75,57 @@ async def test_picker_is_usable_at_minimum_terminal_size(settings, workspace, re
         assert "Theme" not in {
             command.title for command in app.get_system_commands(app.screen)
         }
+
+
+@pytest.mark.asyncio
+async def test_data_entry_modals_scroll_to_actions_at_minimum_size(
+    settings, workspace, record
+):
+    forms = [
+        ScopeForm(record.engagement),
+        TargetForm(record.engagement),
+        AccessForm("web"),
+        ActivityForm(record.engagement),
+        FindingForm(record.engagement),
+        CleanupForm(record.engagement),
+        ServicesModal(
+            Target(
+                id="T0001",
+                display_name="web",
+                directory="T0001-web",
+            )
+        ),
+        ScanForm(record.engagement),
+        DiscoveryReview(
+            [
+                Reconciliation(
+                    DiscoveryCandidate(["198.51.100.25"]),
+                    [],
+                    "ignore",
+                )
+            ],
+            allowed_scope_ids=set(),
+        ),
+    ]
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        for form in forms:
+            app.push_screen(form)
+            await pilot.pause()
+            body = app.screen.query_one(Vertical)
+            assert str(body.styles.overflow_y) == "auto"
+            buttons = list(app.screen.query(Button))
+            assert buttons
+            for _ in range(30):
+                if app.focused is buttons[-1]:
+                    break
+                await pilot.press("tab")
+                await pilot.pause()
+            assert app.focused is buttons[-1]
+            assert buttons[-1].region.bottom <= body.region.bottom
+            app.pop_screen()
+            await pilot.pause()
 
 
 @pytest.mark.asyncio
@@ -109,6 +170,31 @@ async def test_operator_markup_is_literal_in_picker_records_and_options(
         app.push_screen(ActionMenu("[prod] menu", [("open", "[prod] host")]))
         await pilot.pause()
         assert str(app.screen.query_one(OptionList).get_option_at_index(0).prompt) == "[prod] host"
+
+
+@pytest.mark.asyncio
+async def test_documents_ignore_unsafe_authored_link_without_crashing(
+    settings, workspace, record, tmp_path, monkeypatch
+):
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside engagement")
+    document = record.root / "ENGAGEMENT.md"
+    document.unlink()
+    document.symlink_to(outside)
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    errors: list[str] = []
+    monkeypatch.setattr(app, "show_error", errors.append)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        assert "ENGAGEMENT.md" not in main.document_paths
+        app.edit_file(document, allowed_root=record.root)
+        app.page_file(document, allowed_root=record.root)
+        assert len(errors) == 2
+        assert all("missing, linked, or outside" in message for message in errors)
 
 
 @pytest.mark.asyncio
@@ -558,8 +644,22 @@ async def test_attack_path_form_keeps_operator_selected_order(
         form = app.screen
         assert isinstance(form, AttackPathForm)
         form.chosen = ["access:AR0001", "activity:A0001"]
-        form.refresh_chosen()
-        assert form.chosen == ["access:AR0001", "activity:A0001"]
+        form.refresh_chosen(0)
+        form.query_one("#step-note", Input).value = "Foothold established"
+        form.query_one("#chosen-steps", DataTable).move_cursor(row=1)
+        await pilot.pause()
+        form.query_one("#step-note", Input).value = "Route confirmed"
+
+        form.action_move_up()
+        assert form.chosen == ["activity:A0001", "access:AR0001"]
+        assert form.step_notes == {
+            "access:AR0001": "Foothold established",
+            "activity:A0001": "Route confirmed",
+        }
+
+        form.action_remove_step()
+        assert form.chosen == ["access:AR0001"]
+        assert form.query_one("#step-note", Input).value == "Foothold established"
 
 
 @pytest.mark.asyncio
@@ -791,6 +891,50 @@ async def test_outside_window_warns_before_every_session_start_path(
 
 
 @pytest.mark.asyncio
+async def test_cockpit_edits_authorization_and_describes_partial_windows(
+    settings, workspace, record
+):
+    workspace.set_last_engagement(record.engagement.id)
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        assert "authorization window not configured" in main._status_line([]).plain
+
+        main.action_edit_engagement()
+        await pilot.pause()
+        assert isinstance(app.screen, EngagementDetailsForm)
+        await pilot.press("escape")
+        await pilot.pause()
+
+        main._save_engagement_details(
+            {
+                "client": record.engagement.client,
+                "name": record.engagement.name,
+                "assessment_type": record.engagement.assessment_type,
+                "logging_enabled": record.engagement.logging_enabled,
+                "authorization": Authorization(
+                    authorized_by="ACME",
+                    reference="SOW-42",
+                    window_start="2020-01-01T00:00:00Z",
+                ),
+            }
+        )
+        await pilot.pause()
+        assert "active since 2020-01-01T00:00:00Z" in main._status_line([]).plain
+
+        main.action_tab("situation")
+        main.action_actions()
+        await pilot.pause()
+        prompts = {
+            str(option.prompt)
+            for option in app.screen.query_one(OptionList)._options
+        }
+        assert "Edit engagement details and authorization" in prompts
+
+
+@pytest.mark.asyncio
 async def test_closed_engagement_blocks_operational_entry_points(
     settings, workspace, record, monkeypatch
 ):
@@ -980,7 +1124,7 @@ async def test_discovery_post_commit_failures_do_not_report_a_rollback(
         assert isinstance(main, MainScreen)
         messages: list[tuple[str, str]] = []
         monkeypatch.setattr(
-            "tacmux.app.apply_reconciliation",
+            "tacmux.screens.cockpit.apply_reconciliation",
             lambda *_args, **_kwargs: [target],
         )
         monkeypatch.setattr(
@@ -1015,6 +1159,13 @@ async def test_discovery_post_commit_failures_do_not_report_a_rollback(
 async def test_filter_submit_only_applies_filter_and_scope_find_stays_put(
     settings, workspace, record, monkeypatch
 ):
+    workspace.add_scope(
+        record.root,
+        record.engagement,
+        "External perimeter",
+        ScopeGroup.EXTERNAL,
+        "198.51.100.0/24",
+    )
     workspace.create_target(record.root, record.engagement, "mail host")
     workspace.set_last_engagement(record.engagement.id)
     app = TacmuxApp(replace(settings, startup="resume_last"))
@@ -1039,12 +1190,118 @@ async def test_filter_submit_only_applies_filter_and_scope_find_stays_put(
         main.action_tab("scope")
         main.action_filter()
         assert main.query_one("#workspace-tabs", TabbedContent).active == "scope"
+        assert field.display
+        field.value = "no matching scope or job"
+        await pilot.pause()
+        assert main.query_one("#scope-table", DataTable).row_count == 0
+        assert main.query_one("#scope-empty", Static).display
+        await pilot.press("enter")
+        await pilot.pause()
         assert not field.display
+        assert app.screen is main
 
         main.action_help()
         await pilot.pause()
         assert isinstance(app.screen, MessageModal)
         assert "Discovery review" in app.screen.message
+
+
+@pytest.mark.asyncio
+async def test_invalid_engagement_is_visible_but_not_operable(
+    settings, workspace, record
+):
+    manifest = settings.workspace / "E-broken" / ".tacmux" / "engagement.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"schema":"wrong"}\n')
+
+    app = TacmuxApp(settings)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, EngagementPickerScreen)
+        table = picker.query_one("#engagements", DataTable)
+        assert table.row_count == 2
+        invalid_row = next(
+            index
+            for index in range(table.row_count)
+            if str(table.get_row_at(index)[3]) == "INVALID"
+        )
+        table.move_cursor(row=invalid_row)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, MessageModal)
+        assert "cannot validate" in app.screen.message
+        assert str(manifest) in app.screen.message
+
+
+@pytest.mark.asyncio
+async def test_records_are_recent_first_and_filter_by_kind(
+    settings, workspace, record
+):
+    target = workspace.create_target(record.root, record.engagement, "host")
+    activity = workspace.create_activity(
+        record.root,
+        record.engagement,
+        summary="Older activity",
+        result=ActivityResult.CONFIRMED,
+        target_id=target.id,
+        evidence="",
+    )
+    finding = workspace.create_finding(
+        record.root,
+        record.engagement,
+        title="Middle finding",
+        severity=Severity.HIGH,
+        state=FindingState.CONFIRMED,
+        target_ids=[target.id],
+    )
+    path = workspace.create_attack_path(
+        record.root,
+        record.engagement,
+        "Newest path",
+        [("activity", activity.id, "Confirmed")],
+    )
+    activity.occurred_at = "2026-08-31T10:00:00Z"
+    finding.created_at = "2026-08-31T11:00:00Z"
+    path.created_at = "2026-08-31T12:00:00Z"
+    workspace.save(record.root, record.engagement)
+    workspace.set_last_engagement(record.engagement.id)
+
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        main.action_tab("records")
+        await pilot.pause()
+        table = main.query_one("#records-table", DataTable)
+        assert table.virtual_size.width <= table.region.width
+        assert [str(key.value) for key in table.rows] == [
+            f"attack path:{path.id}",
+            f"finding:{finding.id}",
+            f"activity:{activity.id}",
+        ]
+
+        main.records_actions()
+        await pilot.pause()
+        assert isinstance(app.screen, ActionMenu)
+        prompts = {
+            str(option.prompt)
+            for option in app.screen.query_one(OptionList)._options
+        }
+        assert "Create finding" in prompts
+        await pilot.press("escape")
+        await pilot.pause()
+
+        main.query_one("#records-kind", Select).value = "finding"
+        await pilot.pause()
+        assert [str(key.value) for key in table.rows] == [f"finding:{finding.id}"]
+
+        main.action_filter()
+        main.query_one("#target-filter", Input).value = "does not match"
+        await pilot.pause()
+        assert table.row_count == 0
+        assert main.query_one("#records-empty", Static).display
 
 
 @pytest.mark.asyncio
@@ -1242,3 +1499,50 @@ async def test_tmux_bootstrap_reselects_originating_target(
         await pilot.pause()
         assert isinstance(app.screen, MainScreen)
         assert app.screen.query_one(TargetsPane).selected_target_id() == target.id
+
+
+@pytest.mark.asyncio
+async def test_operator_clipboard_actions_reuse_trusted_copy_path(
+    settings, workspace, record, monkeypatch
+):
+    scope = workspace.add_scope(
+        record.root,
+        record.engagement,
+        "DMZ",
+        ScopeGroup.EXTERNAL,
+        "198.51.100.25/32",
+    )
+    workspace.create_target(
+        record.root,
+        record.engagement,
+        "gateway",
+        addresses=[TargetAddress("198.51.100.25", scope.id)],
+        primary_endpoint="198.51.100.25",
+    )
+    workspace.set_last_engagement(record.engagement.id)
+    copied: list[bytes] = []
+    monkeypatch.setattr(
+        "tacmux.screens.cockpit.clipboard_copy",
+        lambda _tmux, data: copied.append(data) or 0,
+    )
+
+    app = TacmuxApp(replace(settings, startup="resume_last"))
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        main = app.screen
+        assert isinstance(main, MainScreen)
+        main.copy_primary_endpoint()
+        main.action_tab("documents")
+        await pilot.pause()
+        main._document_action("copy_path")
+        assert copied == [b"198.51.100.25", b"ENGAGEMENT.md"]
+
+        errors: list[str] = []
+        monkeypatch.setattr(app, "show_error", errors.append)
+
+        def unavailable(_tmux, _data):
+            raise ExternalToolError("no clipboard")
+
+        monkeypatch.setattr("tacmux.screens.cockpit.clipboard_copy", unavailable)
+        main.copy_primary_endpoint()
+        assert errors == ["no clipboard"]

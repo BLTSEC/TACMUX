@@ -16,7 +16,10 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
     (home / ".bashrc").write_text("# operator bash config\n")
     workspace = tmp_path / "workspace with spaces"
     original_uv_cache = subprocess.run(
-        ["uv", "cache", "dir"], text=True, capture_output=True, check=True
+        ["uv", "--color", "never", "cache", "dir"],
+        text=True,
+        capture_output=True,
+        check=True,
     ).stdout.strip()
     env = os.environ.copy()
     env.update(
@@ -49,7 +52,7 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
             capture_output=True,
             check=True,
         ).stdout.strip()
-        == "tacmux 2.3.0"
+        == "tacmux 2.4.0"
     )
     installed_source = home / ".local/share/tacmux/app/src"
     assert not list(installed_source.rglob("*.pyc"))
@@ -93,7 +96,10 @@ def test_installer_preserves_tmux_mode_and_explicit_full_override(tmp_path):
     tmux_config = home / ".tmux.conf"
     tmux_config.write_text("set -g mouse off\n")
     original_uv_cache = subprocess.run(
-        ["uv", "cache", "dir"], text=True, capture_output=True, check=True
+        ["uv", "--color", "never", "cache", "dir"],
+        text=True,
+        capture_output=True,
+        check=True,
     ).stdout.strip()
     env = os.environ.copy()
     env.update(
@@ -301,7 +307,10 @@ def test_reinstall_uses_existing_config_paths_without_touching_guessed_paths(
         f'log_dir = "{configured_logs}"\n'
     )
     cache = subprocess.run(
-        ["uv", "cache", "dir"], text=True, capture_output=True, check=True
+        ["uv", "--color", "never", "cache", "dir"],
+        text=True,
+        capture_output=True,
+        check=True,
     ).stdout.strip()
     env = os.environ.copy()
     env.update(
@@ -363,7 +372,10 @@ def test_skip_tmux_mode_persists_across_unflagged_reinstall(tmp_path):
     tmux_config = home / ".tmux.conf"
     tmux_config.write_text("set -g mouse off\n")
     cache = subprocess.run(
-        ["uv", "cache", "dir"], text=True, capture_output=True, check=True
+        ["uv", "--color", "never", "cache", "dir"],
+        text=True,
+        capture_output=True,
+        check=True,
     ).stdout.strip()
     env = os.environ.copy()
     env.update(

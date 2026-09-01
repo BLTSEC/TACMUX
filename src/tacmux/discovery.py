@@ -384,6 +384,7 @@ def parse_nmap_results(
 def parse_host_lines(text: str) -> list[DiscoveryCandidate]:
     candidates: list[DiscoveryCandidate] = []
     seen: set[tuple[str, str]] = set()
+    address_candidates: dict[str, DiscoveryCandidate] = {}
     for number, raw_line in enumerate(text.splitlines(), 1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -414,10 +415,6 @@ def parse_host_lines(text: str) -> list[DiscoveryCandidate]:
                 DiscoveryCandidate(addresses=[], hostnames=[hostname], reason="pasted")
             )
             continue
-        key = ("address", address)
-        if key in seen:
-            continue
-        seen.add(key)
         hostnames: list[str] = []
         if len(fields) > 1:
             try:
@@ -426,13 +423,17 @@ def parse_host_lines(text: str) -> list[DiscoveryCandidate]:
                 raise ValidationError(
                     f"line {number}: expected IP [hostname] or hostname"
                 ) from exc
-        candidates.append(
-            DiscoveryCandidate(
-                addresses=[address],
-                hostnames=hostnames,
-                reason="pasted",
-            )
+        existing = address_candidates.get(address)
+        if existing is not None:
+            existing.hostnames = sorted(set(existing.hostnames + hostnames))
+            continue
+        candidate = DiscoveryCandidate(
+            addresses=[address],
+            hostnames=hostnames,
+            reason="pasted",
         )
+        address_candidates[address] = candidate
+        candidates.append(candidate)
     return candidates
 
 
@@ -903,7 +904,7 @@ class DiscoveryJobs:
             raise ExternalToolError(
                 "Nmap is not installed; XML and pasted-host import remain available"
             )
-        selected = _validated_scan_scopes(engagement, scope_ids)
+        _validated_scan_scopes(engagement, scope_ids)
         selected_profile = _scan_profile(profile)
         selected_pace = _scan_pace(pace)
         jobs_root = engagement_root / ".tacmux/jobs"

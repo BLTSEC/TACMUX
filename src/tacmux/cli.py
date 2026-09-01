@@ -60,8 +60,7 @@ def _health() -> int:
         )
     )
     workspace = Workspace(settings)
-    invalid = workspace.invalid_engagements()
-    engagements = workspace.list_engagements()
+    engagements, invalid = workspace.catalog_engagements()
     checks.append(
         (
             "engagement manifests",

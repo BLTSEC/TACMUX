@@ -13,7 +13,7 @@ Press the tmux prefix, release it, then press `E`. The complete TACMUX tmux conf
 | `n` | Add a target |
 | `d` | Host discovery actions |
 | `e` | Return to the engagement picker (`g` remains a hidden alias) |
-| `/` | Filter the active Targets, Records, or Documents table |
+| `/` | Filter the active Targets, Scope/Jobs, Records, or Documents table |
 | `?` | Open the in-cockpit keyboard reference |
 | `r` | Refresh sessions, jobs, topology, and SITREP |
 | `1`–`5` | Targets, Scope, Records, Situation, Documents |
@@ -44,6 +44,9 @@ On the Documents tab, `a` offers **Create engagement handoff**, **View full file
 in pager**, and, for editable Markdown, **Edit with `$VISUAL` or `$EDITOR`**.
 TACMUX uses `$PAGER`, then `less -SR`, then `more` without adding an application
 dependency.
+The same menu can copy the selected path relative to the engagement root. A
+target's Actions menu can copy its primary endpoint through TACMUX's trusted
+clipboard path.
 
 Attack-path builder:
 
@@ -52,6 +55,9 @@ Attack-path builder:
 | `Enter` | Add the highlighted confirmed record |
 | `Delete` | Remove the highlighted chosen step |
 | `Ctrl+Up` / `Ctrl+Down` | Reorder the chosen step |
+
+The note field belongs to the highlighted chosen step and follows that record
+when the path is reordered.
 
 ## tmux logging and evidence
 

@@ -29,6 +29,31 @@ ARCHIVE_SCHEMA = "tacmux.archive/v2"
 CHUNK_SIZE = 1024 * 1024
 
 
+def newest_archives(paths: list[Path]) -> list[Path]:
+    def modified(path: Path) -> int:
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return 0
+
+    return sorted(
+        (path for path in paths if path.is_file()), key=modified, reverse=True
+    )
+
+
+def engagement_archives(archive_dir: Path) -> list[Path]:
+    return newest_archives(list(archive_dir.glob("*/engagements/*.tar.gz")))
+
+
+def cockpit_archives(archive_dir: Path, engagement_id: str) -> list[Path]:
+    return newest_archives(
+        [
+            *archive_dir.glob("*/engagements/*.tar.gz"),
+            *(archive_dir / engagement_id / "targets").glob("*.tar.gz"),
+        ]
+    )
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:

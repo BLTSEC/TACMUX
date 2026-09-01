@@ -24,6 +24,7 @@ Run `tacmux`, choose the engagement and target, and work from menus. The public 
 - Runs detached target, operations, and scope-constrained Nmap discovery sessions with engagement-wide stop controls.
 - Reconciles every discovered host through Add/Merge/Ignore review and retains XML provenance for observed services.
 - Records activity, access, findings, cleanup, and confirmed attack paths without treating authentication as compromise.
+- Keeps Records recent-first with a kind filter so the current operational timeline remains easy to review.
 - Renders terminal topology, SITREP, Markdown and log previews, pager/editor handoff, and compact or evidence-rich single-file exports.
 - Creates hash-verified archives and optionally reads NOCAP timelines without merging the two tools.
 
@@ -79,7 +80,7 @@ tacmux
 3. Press `d` to run detached host-only or TCP-service discovery, or import existing Nmap XML/pasted hosts or hostnames.
 4. Review every result as **Add**, **Merge**, or **Ignore**. Detached target sessions are created by default for up to ten accepted hosts; larger imports default them off to avoid session floods.
 5. Select a target and press Enter to attach. Press `a` for target actions.
-6. Use **Records** for access, activity, findings, attack paths, and cleanup. Use **Situation** for terminal-readable topology and confirmed attack paths.
+6. Use **Records** for a recent-first view of access, activity, findings, attack paths, and cleanup; filter by record kind when the timeline grows. Use **Situation** for terminal-readable topology, confirmed attack paths, and direct access to engagement authorization details.
 7. Use **Documents** to preview Markdown, terminal logs, and evidence. Enter edits
    editable Markdown or pages a read-only text file; `a` offers explicit View/Edit
    actions. Generated documents remain read-only.
@@ -90,6 +91,9 @@ shorter contextual Actions menu, including
 engagement open/archive/delete choices from the picker.
 The interface uses a purpose-built BLTSEC palette throughout TACMUX rather than
 adding a theme-management workflow to the operator cockpit.
+If a damaged engagement manifest cannot be loaded, the picker keeps its
+workspace visible as **INVALID** and shows the validation error instead of
+silently hiding it. Run `tacmux health` for the full diagnostic path.
 
 ## Workspace
 
@@ -172,6 +176,7 @@ No Markdown is moved or symlinked into another application. Set `$VISUAL` or `$E
 - Exclusions are enforced by validation, import review, and Nmap `--exclude`. Overlapping scope entries must be discovered in separate jobs.
 - Hostname-only targets must match declared domain scope when domain entries exist. `*.acme.test` excludes the apex; declare `acme.test` separately.
 - Starting sessions or discovery outside a configured authorization window requires confirmation. Closed engagements are review-only: reopen explicitly before changing scope, targets, notes, records, documents, or discovery state.
+- Authored documents, evidence, editor/pager handoffs, and session log directories are contained to the active TACMUX workspace and engagement; unsafe links are refused.
 - Automatic logging is limited to TACMUX-owned tmux sessions unless explicitly widened in config.
 
 See the [operator guide](docs/USAGE.md), [keybindings](docs/KEYBINDINGS.md), and [security policy](SECURITY.md).

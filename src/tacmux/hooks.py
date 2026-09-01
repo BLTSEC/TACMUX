@@ -72,7 +72,11 @@ class LogController:
             pane, "#S\t#W\t#{pane_title}\t#P"
         ).split("\t", 3)
         log_root_value = self._session_option(pane, "@tacmux_log_dir")
-        log_root = Path(log_root_value) if log_root_value else self.settings.log_dir
+        log_root = (
+            self._validated_session_log_root(log_root_value)
+            if log_root_value
+            else self.settings.log_dir
+        )
         date = datetime.now(timezone.utc).strftime("%Y%m%d")
         log_dir = log_root / date if log_root_value else log_root
         _private_directory(log_dir)
@@ -88,6 +92,27 @@ class LogController:
                 f"Session: {session}\nTarget: {target}\nPane: {pane}\n\n"
             )
         return path
+
+    def _validated_session_log_root(self, value: str) -> Path:
+        workspace = Path(os.path.abspath(self.settings.workspace))
+        candidate = Path(os.path.abspath(value))
+        try:
+            relative = candidate.relative_to(workspace)
+            current = workspace
+            for part in relative.parts:
+                current /= part
+                if current.is_symlink():
+                    raise ValidationError(
+                        f"refusing linked TACMUX log directory: {value}"
+                    )
+            candidate.resolve(strict=False).relative_to(
+                self.settings.workspace.resolve(strict=True)
+            )
+        except (OSError, ValueError) as exc:
+            raise ValidationError(
+                f"TACMUX session log directory is outside the workspace: {value}"
+            ) from exc
+        return candidate
 
     def start(
         self, pane: str, *, force: bool = False, kind: str = "pane"
