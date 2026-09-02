@@ -65,7 +65,7 @@ tm status
 ```text
 tacmux                         fzf session/target switcher
 tacmux init [NAME]             create or open an engagement
-tacmux target add|rename|delete
+tacmux target add|update|rename|delete
 tacmux stop [TARGET]           stop a target or ops session
 tacmux status [TARGET]         concise operational status
 tacmux sitrep [SECTION]        edit SITREP at an optional heading
@@ -73,7 +73,7 @@ tacmux sitrep sync             validate and repair scaffolding
 tacmux log [OUTCOME] TEXT      record an event
 tacmux done TEXT               record a successful completed step
 tacmux history [TARGET]        show narrative history
-tacmux creds [view|add|check]  credentials and where they worked
+tacmux creds [view|add|confirm] credentials and confirmed access
 tacmux ports [TARGET]          normalized port inventory
 tacmux ports add [TARGET]      ingest Nmap normal output
 tacmux todo [add|done]         planned and completed work
@@ -109,7 +109,7 @@ Missing values open short prompts or an `fzf` picker. Inline commands infer the 
         └── working/
 ```
 
-`SITREP.md` contains Narrative, Targets, Credentials, Credential Checks, TODO, Completed, and Cleanup. TACMUX manages only the Markdown tables between its markers. Prose outside those markers remains operator-owned.
+`SITREP.md` contains Narrative, Targets, Credentials with confirmed access, TODO, Completed, and Cleanup. TACMUX manages only the Markdown tables between its markers. Prose outside those markers remains operator-owned.
 
 Narrative replaces separate note and activity systems:
 

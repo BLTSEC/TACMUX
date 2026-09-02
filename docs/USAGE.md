@@ -15,6 +15,7 @@ tacmux init ACME
 cd ~/workspace/ACME
 tacmux target add EDGE01 198.51.100.20
 tacmux target add DC01 10.20.30.10
+tacmux target update EDGE01 os Linux
 ```
 
 Every target receives `scans`, `payloads`, `loot`, `screenshots`, and `working`. Target creation adds its Details and Ports tables to SITREP but does not start a session.
@@ -28,7 +29,7 @@ tacmux target rename EDGE01 WEB01
 tacmux target delete MISTAKE
 ```
 
-Deletion requires typing the exact target name. It refuses targets referenced by Narrative, ports, credential checks, TODO, Completed, Cleanup, or NOCAP captures. Clear mistaken records explicitly; TACMUX never cascade-deletes operational history.
+Deletion requires typing the exact target name. It refuses targets referenced by Narrative, ports, confirmed credentials, TODO, Completed, Cleanup, or NOCAP captures. Clear mistaken records explicitly; TACMUX never cascade-deletes operational history.
 
 ## SITREP
 
@@ -81,9 +82,18 @@ tm cleanup done              # choose only after verification
 
 ## Target status
 
-Target Details contain only Endpoint, Network, Status, Hostnames, Role, OS, Access, Principal, Method/Path, and Capture Route. Status is `new`, `active`, `blocked`, or `complete`. Edit durable facts through `tm sitrep TARGET`.
+Target Details contain only Endpoint, Network, Status, Hostnames, Role, OS, Access, Principal, Method/Path, and Capture Route. Status is `new`, `active`, `blocked`, or `complete`. Use `tm target update` for an interactive target/field selector, or update a field directly:
 
-`tm status` inside a target shows Details, ports, credential checks, tasks, cleanup, and recent Narrative. In the operations session it shows the engagement's target summary. Pass a target name for its detailed view.
+```bash
+tm target update WEB01 status active
+tm target update WEB01 os Linux
+tm target update WEB01 role "mail server"
+tm target update WEB01 principal --clear
+```
+
+The field keys are `endpoint`, `network`, `status`, `hostnames`, `role`, `os`, `access`, `principal`, `method`, and `route`. Endpoint and Capture Route updates require the target session to be stopped because they define new-session and capture behavior. Direct Access updates may deliberately raise or lower the recorded level; credential confirmation only raises it. Use `tm sitrep TARGET` for Notes or unusual manual corrections.
+
+`tm status` inside a target shows Details, ports, confirmed credentials without secrets, tasks, cleanup, and recent Narrative. In the operations session it shows OS and access across the engagement. Pass a target name for its detailed view.
 
 ## Credentials
 
@@ -102,16 +112,23 @@ engagement is next opened. Keep the corresponding passphrase in Credentials
 and set its Source to the relative key path. For example:
 
 ```bash
-install -m 600 recovered.key credentials/keys/adminuser-mail.key
+install -m 600 recovered.key credentials/keys/svc-web.key
 tm creds add password
 ```
 
 Zsh completion is installed for both `tacmux` and the recommended `tm` alias.
-It completes commands, actions, engagements, targets, SITREP sections,
-credential IDs, task IDs, cleanup IDs, result/access values, and input files.
+It completes commands, actions, engagements, targets, target fields, SITREP sections,
+credential IDs, task IDs, cleanup IDs, access values, and input files.
 It never emits credential values.
 
-`tm creds` and `tm creds view` display raw values. `tm creds check` records the credential, target, result, optional access obtained, timestamp, and Notes. A working authentication does not imply code execution: target access changes only when the operator explicitly selects a non-`none` access level.
+`tm creds` and `tm creds view` display raw values. Once a credential is known to work, record its target, service, and access level on that credential's existing row:
+
+```bash
+tm creds confirm
+tm creds confirm C001 WEB01 user SSH "interactive shell"
+```
+
+Confirmed Access uses `TARGET · SERVICE · ACCESS`; confirming the same target/service updates that entry, while another target or service is appended to the same credential. Only confirmed successes belong here. Put useful failures in Narrative. Confirmation can raise a target's Access, Principal, and Method/Path but never silently lower stronger access already recorded. Access means the capability actually demonstrated: authentication alone is `authenticated`, not code execution.
 
 ## Ports
 
@@ -156,4 +173,4 @@ This keeps one NOCAP metadata root at `captures/.nocap` while routing files bene
 
 This route-prefix behavior requires NOCAP 2.3 or newer. `tacmux health` rejects an installed older version while continuing to treat an absent NOCAP installation as optional.
 
-Pane logs are centralized under `logs/YYYYMMDD/`. Prefix+`T` toggles current-pane logging and Prefix+`S` captures scrollback.
+Pane logs are centralized under `logs/YYYYMMDD/`. TACMUX installs logging hooks only on TACMUX-owned sessions, so new windows and splits start logging automatically. Reopening an existing session repairs missing hooks without re-enabling panes you deliberately toggled off. Prefix+`T` toggles current-pane logging and Prefix+`S` captures scrollback.

@@ -55,11 +55,17 @@ prefix_before=$(tmux show-option -gv prefix)
 tmux source-file "$ROOT/tmux/tacmux-integration.conf" || exit 1
 [[ "$(tmux show-option -gv prefix)" == "$prefix_before" ]] || \
     fail "integration changed the operator prefix" || exit 1
+tmux set-hook -g 'after-new-window[90]' \
+    'run-shell -b "$HOME/.local/bin/tacmux _internal log start \"#{pane_id}\""'
+tmux set-hook -g 'after-new-window[91]' 'display-message "operator hook"'
 
 tacmux init ACME >/dev/null || exit 1
 cd "$TEST_ROOT/workspace/ACME" || exit 1
 tacmux target add WEB01 192.0.2.10 >/dev/null || exit 1
 session=$(python -c 'from pathlib import Path; from tacmux.config import load_settings; from tacmux.tmux import TmuxService; s=load_settings(); print(TmuxService(s).start(Path.cwd(), "WEB01").name)') || exit 1
+tacmux _internal hooks repair >/dev/null || exit 1
+tmux show-hooks -g after-new-window | rg -q 'after-new-window\[91\].*operator hook' || \
+    fail "legacy cleanup removed an unrelated indexed hook" || exit 1
 
 [[ "$(tmux show-environment -t "$session" TACMUX_ROOT)" == "TACMUX_ROOT=$PWD" ]] || \
     fail "engagement root was not exported" || exit 1
@@ -71,6 +77,13 @@ session=$(python -c 'from pathlib import Path; from tacmux.config import load_se
     fail "primary endpoint was not exported" || exit 1
 [[ "$(tmux show-option -t "$session" -qv @tacmux_log_dir)" == "$PWD/logs" ]] || \
     fail "central log path was not configured" || exit 1
+for hook in after-new-window after-split-window; do
+    tmux show-hooks -t "$session:" "$hook" | rg -q '\[90\].*_internal log start' || \
+        fail "$hook was not installed on the TACMUX session" || exit 1
+    if tmux show-hooks -g "$hook" | rg -q '_internal log start'; then
+        fail "$hook leaked into global tmux state" || exit 1
+    fi
+done
 
 wait_for '[[ "$(tmux display-message -t "$session:0.0" -p "#{pane_pipe}")" == 1 ]]' || \
     fail "landing pane did not start logging" || exit 1
@@ -78,8 +91,15 @@ tmux send-keys -t "$session:0.0" 'printf "TACMUX_V3_MARKER\n"' Enter
 wait_for 'rg -q TACMUX_V3_MARKER "$PWD/logs"' || \
     fail "pane output was not logged centrally" || exit 1
 
-tmux split-window -t "$session:" -v -c "$PWD/targets/WEB01"
+tmux split-window -t "$session:0" -v -c "$PWD/targets/WEB01"
 wait_for '[[ "$(tmux display-message -t "$session:0.1" -p "#{pane_pipe}")" == 1 ]]' || \
     fail "split pane did not inherit logging" || exit 1
+
+tmux new-window -d -t "$session:" -n ligolo -c "$PWD/targets/WEB01"
+wait_for '[[ "$(tmux display-message -t "$session:1.0" -p "#{pane_pipe}")" == 1 ]]' || \
+    fail "new window did not inherit logging" || exit 1
+tmux split-window -d -t "$session:1" -h -c "$PWD/targets/WEB01"
+wait_for '[[ "$(tmux display-message -t "$session:1.1" -p "#{pane_pipe}")" == 1 ]]' || \
+    fail "service-style split did not inherit logging" || exit 1
 
 print -- '[PASS] v3 central logging, context, and NOCAP environment'

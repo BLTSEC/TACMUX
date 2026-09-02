@@ -16,13 +16,13 @@ _tacmux() {
     'init:create or open an engagement'
     'switch:switch engagement or target session'
     'stop:stop a target or operations session'
-    'target:add, rename, or delete a target'
+    'target:add, update, rename, or delete a target'
     'status:show engagement or target status'
     'sitrep:edit or repair the situation report'
     'log:record an operational event'
     'done:record a successful narrative step'
     'history:show narrative history'
-    'creds:view, add, or check credentials'
+    'creds:view, add, or confirm working credentials'
     'ports:view or import target ports'
     'todo:view, add, or complete planned work'
     'cleanup:view, add, or complete cleanup work'
@@ -53,15 +53,25 @@ _tacmux() {
       ;;
     target)
       if (( CURRENT == 3 )); then
-        _values 'target action' add rename delete
+        _values 'target action' add update rename delete
         return
       fi
       action="${words[3]}"
       case "$action" in
-        rename|delete)
+        update|rename|delete)
           (( CURRENT == 4 )) && _tacmux_dynamic target
           ;;
       esac
+      if [[ "$action" == update && CURRENT == 5 ]]; then
+        _values 'target field' endpoint network status hostnames role os access principal method route
+      elif [[ "$action" == update && CURRENT == 6 ]]; then
+        case "${words[5]}" in
+          status) _values 'target status' new active blocked complete ;;
+          os) _values 'operating system' Linux Windows macOS --clear ;;
+          access) _values 'access level' none authenticated user admin system domain --clear ;;
+          network|hostnames|role|principal|method) _values 'value' --clear ;;
+        esac
+      fi
       ;;
     log)
       if (( CURRENT == 3 )); then
@@ -70,16 +80,15 @@ _tacmux() {
       ;;
     creds)
       if (( CURRENT == 3 )); then
-        _values 'credential action' view add check
+        _values 'credential action' view add confirm
         return
       fi
       action="${words[3]}"
       case "$action:$CURRENT" in
         add:4) _values 'credential type' password hash ;;
-        check:4) _tacmux_dynamic credential ;;
-        check:5) _tacmux_dynamic target ;;
-        check:6) _values 'check result' worked partial failed ;;
-        check:7) _values 'access level' none authenticated user admin system domain ;;
+        confirm:4) _tacmux_dynamic credential ;;
+        confirm:5) _tacmux_dynamic target ;;
+        confirm:6) _values 'access level' authenticated user admin system domain ;;
       esac
       ;;
     ports)

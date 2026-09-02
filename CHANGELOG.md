@@ -8,6 +8,15 @@
   automatic repair for existing v3 engagement layouts.
 - Native Zsh completion for `tacmux` and the recommended `tm` alias, with
   contextual engagement, target, record-ID, status, and file suggestions.
+- Interactive and direct `target update` helpers for durable target details.
+
+### Changed
+
+- Credentials now keep confirmed target, service, access, and timestamp on the
+  credential row instead of maintaining a separate check ledger.
+- Auto-log hooks are session-local and are repaired whenever a TACMUX session
+  is opened, covering new windows and splits without touching unrelated tmux
+  sessions.
 
 ## 3.0.0 — 2026-09-02
 

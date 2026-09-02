@@ -7,7 +7,7 @@ import pytest
 
 from tacmux.context import resolve
 from tacmux.errors import ConflictError, ValidationError
-from tacmux.tmux import TmuxService
+from tacmux.tmux import Session, TmuxService
 
 
 def test_context_resolves_target_from_working_directory(
@@ -99,7 +99,53 @@ def test_start_exports_central_nocap_and_logs(
     assert "TACMUX_TARGET=captures" in create
     assert "NOCAP_ROUTE_PREFIX=WEB01" in create
     assert "TARGET=192.0.2.10" in create
+    hooks = [args for args in calls if args[0] == "set-hook"]
+    assert {args[3] for args in hooks} == {
+        "after-new-window[90]",
+        "after-split-window[90]",
+    }
+    assert all("_internal log start" in args[4] for args in hooks)
     assert session.target == "WEB01"
+
+
+def test_repair_autolog_hooks_touches_only_owned_sessions(settings, monkeypatch):
+    tmux = TmuxService(settings)
+    owned = [Session("tacmux-acme-ops", Path("/tmp/acme"), "")]
+    installed = []
+    removed = []
+    monkeypatch.setattr(tmux, "sessions", lambda: owned)
+    monkeypatch.setattr(tmux, "install_autolog_hooks", installed.append)
+    monkeypatch.setattr(
+        tmux, "remove_legacy_global_autolog_hooks", lambda: removed.append(True)
+    )
+
+    assert tmux.repair_autolog_hooks() == 1
+    assert installed == ["tacmux-acme-ops"]
+    assert removed == [True]
+
+
+def test_legacy_global_hook_cleanup_is_specific(settings, monkeypatch):
+    tmux = TmuxService(settings)
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if args[:2] == ["show-hooks", "-g"]:
+            hook = args[2]
+            output = (
+                f'{hook}[90] run-shell -b "tacmux _internal log start pane"\n'
+                f'{hook}[91] display-message "operator hook"\n'
+            )
+            return subprocess.CompletedProcess(args, 0, output, "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(tmux, "run", fake_run)
+    tmux.remove_legacy_global_autolog_hooks()
+
+    assert [args for args in calls if args[:2] == ["set-hook", "-gu"]] == [
+        ["set-hook", "-gu", "after-new-window[90]"],
+        ["set-hook", "-gu", "after-split-window[90]"],
+    ]
 
 
 def test_require_stopped(settings, monkeypatch):

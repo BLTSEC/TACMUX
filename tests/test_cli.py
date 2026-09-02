@@ -83,6 +83,57 @@ def test_cli_credential_view_alias(
     assert "alice" in capsys.readouterr().out
 
 
+def test_cli_confirms_credential_without_exposing_secret_in_target_status(
+    monkeypatch, settings, workspace, engagement, capsys
+):
+    _configure(monkeypatch, settings)
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    credential = workspace.add_credential(
+        engagement, "alice", "do-not-print", "password"
+    )
+    monkeypatch.chdir(engagement)
+
+    assert (
+        main(
+            [
+                "creds",
+                "confirm",
+                credential,
+                "WEB01",
+                "user",
+                "SSH",
+                "shell access",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert main(["status", "WEB01"]) == 0
+    output = capsys.readouterr().out
+    assert "Confirmed Credentials" in output
+    assert "alice" in output
+    assert "do-not-print" not in output
+
+
+def test_cli_updates_target_details_and_guards_live_identity_fields(
+    monkeypatch, settings, workspace, engagement, capsys
+):
+    _configure(monkeypatch, settings)
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    monkeypatch.chdir(engagement)
+
+    assert main(["target", "update", "WEB01", "os", "Linux"]) == 0
+    assert main(["target", "update", "WEB01", "role", "mail server"]) == 0
+    assert main(["target", "update", "WEB01", "role", "--clear"]) == 0
+    details = workspace.target_details(engagement, "WEB01")
+    assert details["OS"][0] == "Linux"
+    assert details["Role"][0] == ""
+
+    monkeypatch.setattr("tacmux.tmux.TmuxService.target_running", lambda *_: True)
+    assert main(["target", "update", "WEB01", "endpoint", "192.0.2.11"]) == 1
+    assert "stop WEB01 first" in capsys.readouterr().err
+
+
 def test_sync_prompts_for_missing_target_section(
     monkeypatch, settings, workspace, engagement
 ):

@@ -21,8 +21,8 @@ from .interaction import ask, choose, edit_text, format_table, open_editor
 from .tmux import TmuxService
 from .workspace import (
     ACCESS_LEVELS,
-    CHECK_RESULTS,
     OUTCOMES,
+    TARGET_STATUSES,
     Workspace,
     parse_host_candidates,
     parse_nmap_ports,
@@ -37,6 +37,7 @@ Usage:
   tacmux switch                  Switch engagement/target with fzf
   tacmux stop [TARGET]           Stop a target or operations session
   tacmux target add [NAME] [IP]  Create a target and file tree
+  tacmux target update [TARGET] [FIELD] [VALUE|--clear]
   tacmux target rename [OLD] [NEW]
   tacmux target delete [TARGET]
   tacmux status [TARGET]         Show target or engagement status
@@ -46,7 +47,7 @@ Usage:
   tacmux log edit                Edit the Narrative table
   tacmux done [TEXT...]          Record a successful completed step
   tacmux history [TARGET]        Show narrative history
-  tacmux creds [view|add|check]  View or record credentials and checks
+  tacmux creds [view|add|confirm] View or confirm working credentials
   tacmux ports [TARGET]          View normalized target ports
   tacmux ports add [TARGET] [FILE]
   tacmux todo [add|done]         View, add, or complete work
@@ -82,7 +83,6 @@ def _completion_values(arguments: Sequence[str]) -> int:
                     "narrative",
                     "targets",
                     "credentials",
-                    "checks",
                     "todo",
                     "completed",
                     "cleanup",
@@ -188,8 +188,8 @@ def _target_command(
     tmux: TmuxService,
     arguments: Sequence[str],
 ) -> int:
-    if not arguments or arguments[0] not in {"add", "rename", "delete"}:
-        raise ValidationError("target requires add, rename, or delete")
+    if not arguments or arguments[0] not in {"add", "update", "rename", "delete"}:
+        raise ValidationError("target requires add, update, rename, or delete")
     action, *rest = arguments
     context = resolve(settings, tmux)
     if action == "add":
@@ -202,6 +202,8 @@ def _target_command(
     if not old:
         old = _target_choice(workspace, context.root)
     old = workspace.canonical_target(context.root, old)
+    if action == "update":
+        return _update_target(workspace, tmux, context, old, rest[1:])
     tmux.require_stopped(context.root, old)
     if action == "rename":
         new = rest[1] if len(rest) > 1 else ask("New target name")
@@ -213,6 +215,99 @@ def _target_command(
         raise ValidationError("target deletion cancelled")
     workspace.delete_target(context.root, old)
     print(f"Deleted {old}")
+    return 0
+
+
+TARGET_DETAIL_FIELDS = {
+    "endpoint": "Endpoint",
+    "network": "Network",
+    "status": "Status",
+    "hostnames": "Hostnames",
+    "role": "Role",
+    "os": "OS",
+    "access": "Access",
+    "principal": "Principal",
+    "method": "Method/Path",
+    "route": "Capture Route",
+}
+REQUIRED_TARGET_FIELDS = {"Endpoint", "Status", "Capture Route"}
+STOPPED_ONLY_TARGET_FIELDS = {"Endpoint", "Capture Route"}
+
+
+def _interactive_target_value(field: str, current: str) -> str:
+    if field == "Status":
+        return choose(
+            [(value, value) for value in TARGET_STATUSES],
+            "Status> ",
+            default=current,
+        )
+    if field == "Access":
+        return choose(
+            [(value, value) for value in ACCESS_LEVELS],
+            "Access> ",
+            default=current,
+        )
+    if field == "OS":
+        selected = choose(
+            [
+                ("Linux", "Linux"),
+                ("Windows", "Windows"),
+                ("macOS", "macOS"),
+                ("Other", "other"),
+                ("Clear", ""),
+            ],
+            "OS> ",
+            default=current,
+        )
+        return ask("OS") if selected == "other" else selected
+    if current and field not in REQUIRED_TARGET_FIELDS:
+        mode = choose(
+            [("Set or update value", "set"), ("Clear current value", "clear")],
+            f"{field}> ",
+            default="set",
+        )
+        if mode == "clear":
+            return ""
+    return ask(field, default=current, required=field in REQUIRED_TARGET_FIELDS)
+
+
+def _update_target(
+    workspace: Workspace,
+    tmux: TmuxService,
+    context: Context,
+    target: str,
+    arguments: Sequence[str],
+) -> int:
+    details = workspace.target_details(context.root, target)
+    if arguments:
+        field_key, *value_parts = arguments
+        field = TARGET_DETAIL_FIELDS.get(field_key.casefold())
+        if field is None:
+            raise ValidationError(
+                "target field must be: " + ", ".join(TARGET_DETAIL_FIELDS)
+            )
+        if not value_parts:
+            raise ValidationError("target update requires a value or --clear")
+        if value_parts == ["--clear"]:
+            if field in REQUIRED_TARGET_FIELDS:
+                raise ValidationError(f"{field} cannot be cleared")
+            value = ""
+        else:
+            value = " ".join(value_parts)
+    else:
+        field_key = choose(
+            [
+                (f"{label:14} {details[label][0] or '-'}", key)
+                for key, label in TARGET_DETAIL_FIELDS.items()
+            ],
+            "Target field> ",
+        )
+        field = TARGET_DETAIL_FIELDS[field_key]
+        value = _interactive_target_value(field, details[field][0])
+    if field in STOPPED_ONLY_TARGET_FIELDS:
+        tmux.require_stopped(context.root, target)
+    workspace.set_target_detail(context.root, target, field, value)
+    print(f"Updated {target} {field}: {value or '-'}")
     return 0
 
 
@@ -230,12 +325,17 @@ def _print_status(
                     name,
                     details["Endpoint"][0],
                     details["Status"][0],
+                    details["OS"][0] or "-",
                     details["Access"][0],
                     "LIVE" if tmux.target_running(context.root, name) else "-",
                 ]
             )
         print(f"{context.root.name}\n")
-        print(format_table(("Target", "Endpoint", "Status", "Access", "Session"), rows))
+        print(
+            format_table(
+                ("Target", "Endpoint", "Status", "OS", "Access", "Session"), rows
+            )
+        )
         return
     target = workspace.canonical_target(context.root, target)
     details = sitrep.read_target(text, target, "DETAILS")
@@ -245,8 +345,29 @@ def _print_status(
     sections: list[tuple[str, tuple[str, ...], list[list[str]]]] = [
         ("Ports", sitrep.PORTS, sitrep.read_target(text, target, "PORTS")),
     ]
+    confirmed_credentials: list[list[str]] = []
+    for row in sitrep.read_global(text, "CREDENTIALS"):
+        for confirmed_target, service, access in sitrep.parse_confirmed_access(row[5]):
+            if confirmed_target == target:
+                confirmed_credentials.append(
+                    [row[0], row[1], row[2], service, access, row[7], row[8]]
+                )
+    sections.append(
+        (
+            "Confirmed Credentials",
+            (
+                "ID",
+                "Principal",
+                "Type",
+                "Service",
+                "Access",
+                "Last Confirmed (UTC)",
+                "Notes",
+            ),
+            confirmed_credentials,
+        )
+    )
     for name, label in (
-        ("CREDENTIAL_CHECKS", "Credential Checks"),
         ("TODO", "TODO"),
         ("COMPLETED", "Completed"),
         ("CLEANUP", "Cleanup"),
@@ -376,7 +497,7 @@ def _credential_command(
         )
         print(f"Added {identifier} ({principal}, {secret_type})")
         return 0
-    if action == "check":
+    if action == "confirm":
         credentials = sitrep.read_global(text, "CREDENTIALS")
         credential = (
             rest[0]
@@ -391,27 +512,23 @@ def _credential_command(
             if len(rest) > 1
             else _target_choice(workspace, context.root, context.target)
         )
-        result = (
+        access = (
             rest[2]
             if len(rest) > 2
-            else choose([(value, value) for value in CHECK_RESULTS], "Result> ")
-        )
-        access = (
-            rest[3]
-            if len(rest) > 3
             else choose(
-                [(value, value) for value in ACCESS_LEVELS],
-                "Access obtained> ",
-                default="none",
+                [(value, value) for value in ACCESS_LEVELS if value != "none"],
+                "Confirmed access> ",
+                default="authenticated",
             )
         )
+        service = rest[3] if len(rest) > 3 else ask("Service")
         notes = " ".join(rest[4:]) if len(rest) > 4 else ask("Notes", required=False)
-        identifier = workspace.add_credential_check(
-            context.root, credential, target, result, access, notes
+        workspace.confirm_credential(
+            context.root, credential, target, access, service, notes
         )
-        print(f"Added credential check {identifier}")
+        print(f"Confirmed {credential} on {target} via {service} ({access})")
         return 0
-    raise ValidationError("creds supports view, add, or check")
+    raise ValidationError("creds supports view, add, or confirm")
 
 
 def _input_text(settings: Settings, source: str = "") -> str:
@@ -559,6 +676,16 @@ def _health(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
             and tuple(map(int, match.groups())) >= (2, 3, 0)
         )
         cap_detail = result.stdout.strip() if result.returncode == 0 else "unavailable"
+    live_sessions = tmux.sessions()
+    hooks_ok = not settings.auto_log or (
+        not tmux.legacy_global_autolog_hooks()
+        and all(tmux.autolog_hooks_ready(session.name) for session in live_sessions)
+    )
+    hooks_detail = (
+        "disabled"
+        if not settings.auto_log
+        else f"{len(live_sessions)} TACMUX session(s)"
+    )
     checks = [
         ("Python", sys.version_info >= (3, 11), sys.version.split()[0], True),
         ("tmux", tmux.available(), tmux.version(), True),
@@ -587,6 +714,7 @@ def _health(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
             False,
         ),
         ("cap", cap_ok, cap_detail, True),
+        ("log hooks", hooks_ok, hooks_detail, True),
     ]
     invalid: list[tuple[Path, str]] = []
     for root in workspace.engagements():
@@ -613,6 +741,9 @@ def _internal(arguments: Sequence[str]) -> int:
         return clipboard_copy(tmux, sys.stdin.buffer.read())
     if command == "status-segment":
         print(status_segment(settings, tmux), end="")
+        return 0
+    if command == "hooks" and rest == ["repair"]:
+        print(tmux.repair_autolog_hooks())
         return 0
     if command == "log":
         if not rest:

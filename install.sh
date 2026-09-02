@@ -169,5 +169,11 @@ fi
 printf 'TMUX_MODE=%s\n' "$TMUX_MODE" > "$STATE_FILE"
 chmod 600 "$STATE_FILE"
 
+if [[ "$TMUX_MODE" != skip ]] && tmux list-sessions >/dev/null 2>&1; then
+    tmux source-file "$HOME/.tmux.conf" || warn "Could not reload live tmux config"
+fi
+TACMUX_CONFIG="$CONFIG_FILE" "$BIN_DIR/tacmux" _internal hooks repair >/dev/null || \
+    warn "Could not repair hooks on live TACMUX sessions"
+
 TACMUX_CONFIG="$CONFIG_FILE" "$BIN_DIR/tacmux" health
 info "TACMUX v3 installed. Run: tacmux init NAME"

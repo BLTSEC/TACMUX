@@ -7,8 +7,10 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 from typing import Mapping, Sequence
 
 from .config import Settings
@@ -29,6 +31,8 @@ def _safe_session_part(value: str) -> str:
 
 
 class TmuxService:
+    AUTOLOG_HOOKS = ("after-new-window", "after-split-window")
+
     def __init__(self, settings: Settings, binary: str = "tmux"):
         self.settings = settings
         self.binary = binary
@@ -144,6 +148,58 @@ class TmuxService:
         root, separator, target = result.stdout.rstrip("\r\n").partition("\t")
         return (Path(root), target) if separator and root else (None, "")
 
+    def _autolog_hook_command(self) -> str:
+        executable = shutil.which("tacmux")
+        launcher = (
+            shlex.quote(executable)
+            if executable
+            else f"{shlex.quote(sys.executable)} -m tacmux.cli"
+        )
+        shell_command = f'{launcher} _internal log start "#{{pane_id}}"'
+        return f"run-shell -b {shlex.quote(shell_command)}"
+
+    def install_autolog_hooks(self, name: str) -> None:
+        command = self._autolog_hook_command()
+        for hook in self.AUTOLOG_HOOKS:
+            self.run(["set-hook", "-t", f"={name}:", f"{hook}[90]", command])
+
+    def autolog_hooks_ready(self, name: str) -> bool:
+        for hook in self.AUTOLOG_HOOKS:
+            result = self.run(
+                ["show-hooks", "-t", f"={name}:", hook], check=False
+            )
+            if (
+                result.returncode
+                or "[90]" not in result.stdout
+                or "_internal log start" not in result.stdout
+            ):
+                return False
+        return True
+
+    def legacy_global_autolog_hooks(self) -> list[str]:
+        found: list[str] = []
+        for hook in self.AUTOLOG_HOOKS:
+            result = self.run(["show-hooks", "-g", hook], check=False)
+            if result.returncode:
+                continue
+            if any(
+                line.startswith(f"{hook}[90]") and "_internal log start" in line
+                for line in result.stdout.splitlines()
+            ):
+                found.append(hook)
+        return found
+
+    def remove_legacy_global_autolog_hooks(self) -> None:
+        for hook in self.legacy_global_autolog_hooks():
+            self.run(["set-hook", "-gu", f"{hook}[90]"])
+
+    def repair_autolog_hooks(self) -> int:
+        self.remove_legacy_global_autolog_hooks()
+        sessions = self.sessions()
+        for session in sessions:
+            self.install_autolog_hooks(session.name)
+        return len(sessions)
+
     def start(self, root: Path, target: str = "") -> Session:
         if not self.available():
             raise ExternalToolError("tmux is not installed")
@@ -210,6 +266,7 @@ class TmuxService:
                 self.run(["set-environment", "-t", f"={name}:", key, value])
             for key, value in options.items():
                 self.run(["set-option", "-t", f"={name}:", key, value])
+            self.install_autolog_hooks(name)
             if created and pane and self.settings.auto_log:
                 from .hooks import LogController
 

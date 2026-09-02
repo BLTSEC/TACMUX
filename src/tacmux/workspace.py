@@ -21,7 +21,6 @@ from . import sitrep
 TARGET_DIRECTORIES = ("scans", "payloads", "loot", "screenshots", "working")
 OUTCOMES = ("info", "success", "partial", "failed")
 TARGET_STATUSES = ("new", "active", "blocked", "complete")
-CHECK_RESULTS = ("worked", "partial", "failed")
 ACCESS_LEVELS = ("none", "authenticated", "user", "admin", "system", "domain")
 
 
@@ -54,6 +53,19 @@ def validate_value(value: str, field: str, *, required: bool = True) -> str:
     if "\0" in result or "\n" in result or "\r" in result:
         raise ValidationError(f"{field} must be a single line")
     return result
+
+
+def validate_confirmation_component(value: str, field: str) -> str:
+    result = validate_value(value, field)
+    if ";" in result or "·" in result:
+        raise ValidationError(f"{field} cannot contain ';' or '·'")
+    return result
+
+
+def validate_target_name(value: str) -> str:
+    return validate_confirmation_component(
+        validate_name(value, "target name"), "target name"
+    )
 
 
 def _private_directory(path: Path) -> None:
@@ -224,7 +236,7 @@ class Workspace:
             return updated
 
     def _target_path(self, root: Path, target: str) -> Path:
-        target = validate_name(target, "target name")
+        target = validate_target_name(target)
         return self._contained(root, "targets", target)
 
     def target_exists(self, root: Path, target: str) -> bool:
@@ -239,7 +251,7 @@ class Workspace:
         return matches[0]
 
     def add_target(self, root: Path, name: str, endpoint: str) -> str:
-        name = validate_name(name, "target name")
+        name = validate_target_name(name)
         if name.casefold() in {"engagement", "ops"}:
             raise ValidationError(f"reserved target name: {name}")
         endpoint = validate_value(endpoint, "endpoint")
@@ -280,7 +292,7 @@ class Workspace:
 
     def rename_target(self, root: Path, old: str, new: str) -> str:
         old = self.canonical_target(root, old)
-        new = validate_name(new, "target name")
+        new = validate_target_name(new)
         if new.casefold() in {"engagement", "ops"}:
             raise ValidationError(f"reserved target name: {new}")
         if new.casefold() in {
@@ -335,7 +347,6 @@ class Workspace:
         references: list[str] = []
         for table_name, label in (
             ("NARRATIVE", "narrative rows"),
-            ("CREDENTIAL_CHECKS", "credential checks"),
             ("TODO", "TODO items"),
             ("COMPLETED", "completed items"),
             ("CLEANUP", "cleanup items"),
@@ -347,6 +358,14 @@ class Workspace:
                 for row in sitrep.read_global(text, table_name)
             ):
                 references.append(label)
+        if any(
+            confirmation_target == target
+            for row in sitrep.read_global(text, "CREDENTIALS")
+            for confirmation_target, _service, _access in sitrep.parse_confirmed_access(
+                row[5]
+            )
+        ):
+            references.append("confirmed credentials")
         if sitrep.read_target(text, target, "PORTS"):
             references.append("port records")
         route = sitrep.details_map(text, target)["Capture Route"][0]
@@ -432,53 +451,75 @@ class Workspace:
             identifier = sitrep.next_id(rows, "C")
             created.append(identifier)
             rows.append(
-                [identifier, principal, secret_type, secret, source, utc_now(), notes]
+                [
+                    identifier,
+                    principal,
+                    secret_type,
+                    secret,
+                    source,
+                    "",
+                    utc_now(),
+                    "",
+                    notes,
+                ]
             )
             return sitrep.write_global(text, "CREDENTIALS", rows)
 
         self.mutate(root, operation)
         return created[0]
 
-    def add_credential_check(
+    def confirm_credential(
         self,
         root: Path,
         credential: str,
         target: str,
-        result: str,
-        access: str = "none",
+        access: str,
+        service: str,
         notes: str = "",
-    ) -> str:
+    ) -> None:
         target = self.canonical_target(root, target)
-        result = result.casefold()
+        validate_confirmation_component(target, "target name")
         access = access.casefold()
-        if result not in CHECK_RESULTS:
-            raise ValidationError("check result must be worked, partial, or failed")
-        if access not in ACCESS_LEVELS:
-            raise ValidationError("invalid access level")
-        created: list[str] = []
+        if access not in ACCESS_LEVELS or access == "none":
+            raise ValidationError(
+                "confirmed access must be authenticated, user, admin, system, or domain"
+            )
+        service = validate_confirmation_component(service, "service")
+        notes = validate_value(notes, "notes", required=False)
 
         def operation(text: str) -> str:
             credentials = sitrep.read_global(text, "CREDENTIALS")
             match = next((row for row in credentials if row[0] == credential), None)
             if match is None:
                 raise ValidationError(f"unknown credential: {credential}")
-            checks = sitrep.read_global(text, "CREDENTIAL_CHECKS")
-            identifier = sitrep.next_id(checks, "V")
-            created.append(identifier)
-            checks.append(
-                [identifier, credential, target, result, access, utc_now(), notes]
-            )
-            updated = sitrep.write_global(text, "CREDENTIAL_CHECKS", checks)
-            if result == "worked" and access != "none":
+            entries = sitrep.parse_confirmed_access(match[5])
+            key = (target.casefold(), service.casefold())
+            replacement = (target, service, access)
+            for index, entry in enumerate(entries):
+                if (entry[0].casefold(), entry[1].casefold()) == key:
+                    entries[index] = replacement
+                    break
+            else:
+                entries.append(replacement)
+            match[5] = sitrep.render_confirmed_access(entries)
+            match[7] = utc_now()
+            if notes:
+                tagged = f"[{target} / {service}] {notes}"
+                match[8] = f"{match[8]}; {tagged}" if match[8] else tagged
+            updated = sitrep.write_global(text, "CREDENTIALS", credentials)
+            current_access = sitrep.details_map(updated, target)["Access"][0]
+            if ACCESS_LEVELS.index(access) > ACCESS_LEVELS.index(current_access):
                 updated = sitrep.set_detail(updated, target, "Access", access)
                 updated = sitrep.set_detail(updated, target, "Principal", match[1])
                 updated = sitrep.set_detail(
-                    updated, target, "Method/Path", f"Credential {credential}"
+                    updated,
+                    target,
+                    "Method/Path",
+                    f"Credential {credential} via {service}",
                 )
             return updated
 
         self.mutate(root, operation)
-        return created[0]
 
     def add_task(self, root: Path, target: str, task: str, notes: str = "") -> str:
         if target != "ENGAGEMENT":
@@ -613,6 +654,7 @@ class Workspace:
         endpoints: dict[str, str] = {}
         routes: dict[str, str] = {}
         for target in sorted(section_names):
+            validate_target_name(target)
             details = sitrep.details_map(document, target)
             endpoint = details["Endpoint"][0]
             if not endpoint:
@@ -663,10 +705,32 @@ class Workspace:
                 raise ValidationError(f"invalid credential ID: {row[0]}")
             if row[2] not in {"password", "hash"}:
                 raise ValidationError(f"invalid credential type: {row[2]}")
+            confirmations = sitrep.parse_confirmed_access(row[5])
+            confirmation_keys: set[tuple[str, str]] = set()
+            for target, service, access in confirmations:
+                validate_confirmation_component(target, "confirmed target")
+                validate_confirmation_component(service, "confirmed service")
+                key = (target.casefold(), service.casefold())
+                if key in confirmation_keys:
+                    raise ValidationError(
+                        f"duplicate confirmed target/service on credential {row[0]}"
+                    )
+                confirmation_keys.add(key)
+                if target not in directory_names:
+                    problems.append(
+                        f"credential {row[0]} references missing target: {target}"
+                    )
+                if access not in ACCESS_LEVELS or access == "none":
+                    raise ValidationError(
+                        f"invalid confirmed access on credential {row[0]}: {access}"
+                    )
+            if bool(confirmations) != bool(row[7]):
+                raise ValidationError(
+                    f"credential {row[0]} confirmation timestamp is inconsistent"
+                )
         targets = directory_names | {"ENGAGEMENT"}
         for table_name in (
             "NARRATIVE",
-            "CREDENTIAL_CHECKS",
             "TODO",
             "COMPLETED",
             "CLEANUP",
@@ -678,7 +742,6 @@ class Workspace:
             if ids and len(ids) != len(set(ids)):
                 raise ValidationError(f"duplicate IDs in {table_name.lower()}")
             expected_prefix = {
-                "CREDENTIAL_CHECKS": "V",
                 "TODO": "T",
                 "COMPLETED": "T",
                 "CLEANUP": "X",
@@ -701,15 +764,6 @@ class Workspace:
         ]
         if len(task_ids) != len(set(task_ids)):
             raise ValidationError("duplicate task IDs across TODO and completed")
-        for row in sitrep.read_global(document, "CREDENTIAL_CHECKS"):
-            if row[1] not in credential_ids:
-                problems.append(
-                    f"credential check references missing credential: {row[1]}"
-                )
-            if row[3] not in CHECK_RESULTS:
-                raise ValidationError(f"invalid credential check result: {row[3]}")
-            if row[4] not in ACCESS_LEVELS:
-                raise ValidationError(f"invalid credential check access: {row[4]}")
         for row in sitrep.read_global(document, "NARRATIVE"):
             if row[2] not in OUTCOMES:
                 raise ValidationError(f"invalid narrative outcome: {row[2]}")

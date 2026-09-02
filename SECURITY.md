@@ -41,6 +41,6 @@ NOCAP owns its capture metadata and command execution boundary. TACMUX exports a
 
 ## Destructive operations
 
-Target deletion is only for mistaken targets. TACMUX requires a stopped session, exact typed confirmation, containment below `targets/`, and no structured history, port records, tasks, cleanup, credential checks, or NOCAP captures. It stages the target directory before updating SITREP and reports any staged data that could not be removed.
+Target deletion is only for mistaken targets. TACMUX requires a stopped session, exact typed confirmation, containment below `targets/`, and no structured history, port records, tasks, cleanup, confirmed credential references, or NOCAP captures. It stages the target directory before updating SITREP and reports any staged data that could not be removed.
 
 Uninstall removes only a marked TACMUX installation and matching command link. Configuration and engagement directories are preserved. Paired TACMUX markers are validated before editing `~/.tmux.conf` or `~/.zshrc`; linked shell configuration files are left untouched.

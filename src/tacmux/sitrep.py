@@ -16,16 +16,9 @@ CREDENTIALS = (
     "Type",
     "Secret",
     "Source",
+    "Confirmed Access",
     "Added (UTC)",
-    "Notes",
-)
-CREDENTIAL_CHECKS = (
-    "ID",
-    "Credential",
-    "Target",
-    "Result",
-    "Access",
-    "Tested (UTC)",
+    "Last Confirmed (UTC)",
     "Notes",
 )
 TODO = ("ID", "Target", "Task", "Added (UTC)", "Notes")
@@ -53,7 +46,6 @@ PORTS = (
 GLOBAL_TABLES: dict[str, tuple[str, ...]] = {
     "NARRATIVE": NARRATIVE,
     "CREDENTIALS": CREDENTIALS,
-    "CREDENTIAL_CHECKS": CREDENTIAL_CHECKS,
     "TODO": TODO,
     "COMPLETED": COMPLETED,
     "CLEANUP": CLEANUP,
@@ -62,7 +54,6 @@ GLOBAL_TABLES: dict[str, tuple[str, ...]] = {
 GLOBAL_HEADINGS = {
     "NARRATIVE": "Narrative",
     "CREDENTIALS": "Credentials",
-    "CREDENTIAL_CHECKS": "Credential Checks",
     "TODO": "TODO",
     "COMPLETED": "Completed",
     "CLEANUP": "Cleanup",
@@ -82,6 +73,8 @@ DETAIL_FIELDS = (
 )
 
 TARGET_HEADING = re.compile(r"(?m)^### (.+?)\s*$")
+CONFIRMATION_SEPARATOR = "; "
+CONFIRMATION_FIELD_SEPARATOR = " · "
 
 
 @dataclass(slots=True, frozen=True)
@@ -89,6 +82,27 @@ class TargetSection:
     name: str
     start: int
     end: int
+
+
+def parse_confirmed_access(value: str) -> list[tuple[str, str, str]]:
+    """Parse ``target · service · access`` entries from a credential row."""
+    if not value.strip():
+        return []
+    results: list[tuple[str, str, str]] = []
+    for raw_entry in value.split(";"):
+        parts = tuple(part.strip() for part in raw_entry.split("·"))
+        if len(parts) != 3 or not all(parts):
+            raise ValidationError(
+                "Confirmed Access entries must use: target · service · access"
+            )
+        results.append((parts[0], parts[1], parts[2]))
+    return results
+
+
+def render_confirmed_access(entries: Iterable[tuple[str, str, str]]) -> str:
+    return CONFIRMATION_SEPARATOR.join(
+        CONFIRMATION_FIELD_SEPARATOR.join(entry) for entry in entries
+    )
 
 
 def _marker(name: str, edge: str) -> str:
@@ -366,7 +380,6 @@ def rename_target(text: str, old: str, new: str) -> str:
     updated = text[: section.start] + f"### {new}" + text[heading_end:]
     for table_name in (
         "NARRATIVE",
-        "CREDENTIAL_CHECKS",
         "TODO",
         "COMPLETED",
         "CLEANUP",
@@ -381,6 +394,23 @@ def rename_target(text: str, old: str, new: str) -> str:
                 changed = True
         if changed:
             updated = write_global(updated, table_name, rows)
+    credentials = read_global(updated, "CREDENTIALS")
+    changed = False
+    for row in credentials:
+        entries = parse_confirmed_access(row[5])
+        renamed = [
+            (new if target == old else target, service, access)
+            for target, service, access in entries
+        ]
+        if renamed != entries:
+            row[5] = render_confirmed_access(renamed)
+            changed = True
+        tagged_notes = row[8].replace(f"[{old} / ", f"[{new} / ")
+        if tagged_notes != row[8]:
+            row[8] = tagged_notes
+            changed = True
+    if changed:
+        updated = write_global(updated, "CREDENTIALS", credentials)
     return updated
 
 
@@ -425,10 +455,6 @@ _No targets yet._
 
 {table_block("CREDENTIALS", CREDENTIALS, [])}
 
-## Credential Checks
-
-{table_block("CREDENTIAL_CHECKS", CREDENTIAL_CHECKS, [])}
-
 ## TODO
 
 {table_block("TODO", TODO, [])}
@@ -449,7 +475,6 @@ def heading_line(text: str, section: str) -> int:
         "targets": "## Targets",
         "credentials": "## Credentials",
         "creds": "## Credentials",
-        "checks": "## Credential Checks",
         "todo": "## TODO",
         "completed": "## Completed",
         "cleanup": "## Cleanup",

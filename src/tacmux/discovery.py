@@ -11,7 +11,7 @@ from typing import Sequence
 from .config import Settings
 from .errors import ExternalToolError, ValidationError
 from .interaction import confirm, edit_text
-from .workspace import Workspace, validate_name
+from .workspace import Workspace, validate_target_name
 
 
 def run_host_discovery(network: str) -> str:
@@ -77,7 +77,7 @@ def review_candidates(
         name, separator, endpoint = line.partition("\t")
         if not separator:
             raise ValidationError(f"candidate line {number} must contain a tab")
-        name = validate_name(name, "target name")
+        name = validate_target_name(name)
         if name.casefold() in {"engagement", "ops"}:
             raise ValidationError(f"candidate line {number} uses reserved name: {name}")
         endpoint = endpoint.strip()
@@ -104,6 +104,8 @@ def review_candidates(
 def create_reviewed_targets(
     workspace: Workspace, root: Path, candidates: Sequence[tuple[str, str]]
 ) -> tuple[list[str], list[str]]:
+    for name, _endpoint in candidates:
+        validate_target_name(name)
     existing_endpoints = {
         workspace.target_details(root, target)["Endpoint"][0]: target
         for target in workspace.targets(root)

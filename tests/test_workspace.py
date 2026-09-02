@@ -44,8 +44,8 @@ def test_narrative_tasks_cleanup_and_credentials(workspace, engagement):
     credential = workspace.add_credential(
         engagement, "ACME\\alice", "p:a|ss\\word", "password", "WEB01"
     )
-    check = workspace.add_credential_check(
-        engagement, credential, "WEB01", "worked", "user", "SMB"
+    workspace.confirm_credential(
+        engagement, credential, "WEB01", "user", "SMB", "validated"
     )
 
     text = workspace.read(engagement)
@@ -53,7 +53,10 @@ def test_narrative_tasks_cleanup_and_credentials(workspace, engagement):
     assert sitrep.read_global(text, "TODO") == []
     assert sitrep.read_global(text, "COMPLETED")[0][0] == task
     assert sitrep.read_global(text, "CLEANUP")[0][3] == "complete"
-    assert sitrep.read_global(text, "CREDENTIAL_CHECKS")[0][0] == check
+    credential_row = sitrep.read_global(text, "CREDENTIALS")[0]
+    assert credential_row[5] == "WEB01 · SMB · user"
+    assert credential_row[7]
+    assert credential_row[8] == "[WEB01 / SMB] validated"
     details = workspace.target_details(engagement, "WEB01")
     assert details["Access"][0] == "user"
     assert details["Principal"][0] == "ACME\\alice"
@@ -82,7 +85,9 @@ def test_identity_mutation_validates_manual_edits_and_syncs_credentials(
 ):
     text = workspace.read(engagement)
     rows = sitrep.read_global(text, "CREDENTIALS")
-    rows.append(["C001", "alice", "password", "secret", "manual", "now", ""])
+    rows.append(
+        ["C001", "alice", "password", "secret", "manual", "", "now", "", ""]
+    )
     (engagement / "SITREP.md").write_text(
         sitrep.write_global(text, "CREDENTIALS", rows)
     )
@@ -92,6 +97,71 @@ def test_identity_mutation_validates_manual_edits_and_syncs_credentials(
 
     assert (engagement / "credentials/creds.txt").read_text() == "alice:secret\n"
     assert (engagement / "SITREP.md").stat().st_mode & 0o777 == 0o600
+
+
+def test_credential_confirmations_upsert_and_never_lower_target_access(
+    workspace, engagement
+):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    workspace.add_target(engagement, "DB01", "192.0.2.20")
+    credential = workspace.add_credential(
+        engagement, "ACME\\alice", "secret", "password"
+    )
+
+    workspace.confirm_credential(
+        engagement, credential, "WEB01", "user", "SMB", "first"
+    )
+    workspace.confirm_credential(
+        engagement, credential, "WEB01", "admin", "SMB", "elevated"
+    )
+    workspace.confirm_credential(
+        engagement, credential, "DB01", "authenticated", "MSSQL"
+    )
+
+    row = sitrep.read_global(workspace.read(engagement), "CREDENTIALS")[0]
+    assert sitrep.parse_confirmed_access(row[5]) == [
+        ("WEB01", "SMB", "admin"),
+        ("DB01", "MSSQL", "authenticated"),
+    ]
+    assert row[8] == "[WEB01 / SMB] first; [WEB01 / SMB] elevated"
+    assert workspace.target_details(engagement, "WEB01")["Access"][0] == "admin"
+    assert (
+        workspace.target_details(engagement, "WEB01")["Method/Path"][0]
+        == f"Credential {credential} via SMB"
+    )
+
+    workspace.confirm_credential(
+        engagement, credential, "WEB01", "user", "SSH", "also valid"
+    )
+    details = workspace.target_details(engagement, "WEB01")
+    assert details["Access"][0] == "admin"
+    assert details["Method/Path"][0] == f"Credential {credential} via SMB"
+
+
+def test_confirmed_credentials_follow_rename_and_block_delete(workspace, engagement):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    credential = workspace.add_credential(engagement, "alice", "secret", "password")
+    workspace.confirm_credential(
+        engagement, credential, "WEB01", "authenticated", "HTTPS", "validated"
+    )
+
+    workspace.rename_target(engagement, "WEB01", "APP01")
+    row = sitrep.read_global(workspace.read(engagement), "CREDENTIALS")[0]
+    assert row[5] == "APP01 · HTTPS · authenticated"
+    assert row[8] == "[APP01 / HTTPS] validated"
+    with pytest.raises(ConflictError, match="confirmed credentials"):
+        workspace.delete_target(engagement, "APP01")
+
+
+def test_confirmation_delimiters_are_reserved(workspace, engagement):
+    with pytest.raises(ValidationError, match="cannot contain"):
+        workspace.add_target(engagement, "WEB;01", "192.0.2.10")
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    credential = workspace.add_credential(engagement, "alice", "secret", "password")
+    with pytest.raises(ValidationError, match="service cannot contain"):
+        workspace.confirm_credential(
+            engagement, credential, "WEB01", "user", "SMB·ADMIN"
+        )
 
 
 def test_target_delete_refuses_history_then_removes_mistake(workspace, engagement):

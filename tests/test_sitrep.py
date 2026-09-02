@@ -34,10 +34,38 @@ def test_rename_updates_only_structured_target_columns():
         "NARRATIVE",
         [["now", "WEB01", "info", "WEB01 appears in prose", ""]],
     )
+    text = sitrep.write_global(
+        text,
+        "CREDENTIALS",
+        [
+            [
+                "C001",
+                "alice",
+                "password",
+                "secret",
+                "manual",
+                "WEB01 · SSH · user",
+                "now",
+                "now",
+                "",
+            ]
+        ],
+    )
     updated = sitrep.rename_target(text, "WEB01", "APP01")
     row = sitrep.read_global(updated, "NARRATIVE")[0]
     assert row[1] == "APP01"
     assert row[3] == "WEB01 appears in prose"
+    assert sitrep.read_global(updated, "CREDENTIALS")[0][5] == (
+        "APP01 · SSH · user"
+    )
+
+
+def test_confirmed_access_round_trip_and_malformed_value():
+    entries = [("WEB01", "SSH", "user"), ("DC01", "SMB", "admin")]
+    rendered = sitrep.render_confirmed_access(entries)
+    assert sitrep.parse_confirmed_access(rendered) == entries
+    with pytest.raises(ValidationError, match="target · service · access"):
+        sitrep.parse_confirmed_access("WEB01 - SSH - user")
 
 
 def test_malformed_managed_table_fails_closed():

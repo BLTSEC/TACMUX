@@ -87,6 +87,18 @@ def test_review_commit_skips_existing_endpoint(workspace, engagement):
     assert skipped == ["DUP (192.0.2.10)"]
 
 
+def test_review_commit_rejects_reserved_confirmation_delimiter_before_writes(
+    workspace, engagement
+):
+    with pytest.raises(ValidationError, match="cannot contain"):
+        create_reviewed_targets(
+            workspace,
+            engagement,
+            [("GOOD", "192.0.2.20"), ("BAD;NAME", "192.0.2.30")],
+        )
+    assert workspace.targets(engagement) == []
+
+
 def test_review_requires_save_and_final_confirmation(settings, monkeypatch):
     edit_calls = []
 
