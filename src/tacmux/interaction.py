@@ -83,14 +83,35 @@ def open_editor(settings: Settings, path: Path, line: int | None = None) -> None
         raise ExternalToolError(f"editor exited with status {result.returncode}")
 
 
-def edit_text(settings: Settings, initial: str, suffix: str = ".txt") -> str:
+def edit_text(
+    settings: Settings,
+    initial: str,
+    suffix: str = ".txt",
+    *,
+    require_save: bool = False,
+) -> str:
     descriptor, name = tempfile.mkstemp(prefix="tacmux-", suffix=suffix)
     path = Path(name)
     try:
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             stream.write(initial)
+        before = path.stat()
         open_editor(settings, path)
+        after = path.stat()
+        unchanged = (
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) == (
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if require_save and unchanged:
+            raise ValidationError("editor closed without saving; operation cancelled")
         return path.read_text(encoding="utf-8")
     finally:
         path.unlink(missing_ok=True)

@@ -137,7 +137,7 @@ The raw input is copied into the target's `scans/` directory. TCP, UDP, and SCTP
 - `hosts`: pasted or piped `NAME IP`, `IP`, or Nmap report lines
 - `netexec`: pasted or piped NetExec SMB output
 
-Candidates open in `$EDITOR` as `TARGET_NAME<TAB>IP`. Delete gateways or unwanted entries, rename targets, save, and close. Accepted entries receive full target trees. Existing names or endpoints are skipped, and sessions never auto-start.
+Candidates open in `$EDITOR` as `TARGET_NAME<TAB>IP`. Delete gateways or unwanted entries and rename targets as needed. Save and close to stage the review; quit without saving to cancel. After a save, TACMUX shows the accepted count and requires a final default-No confirmation before creating any target trees. Existing names or endpoints are skipped, and sessions never auto-start. If Nmap reports implausibly broad liveness through a pivot, cancel and use the `netexec` or `hosts` input instead.
 
 TACMUX has no formal scope engine. Supplying an active discovery destination is an operator authorization decision.
 

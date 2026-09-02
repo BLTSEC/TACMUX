@@ -4,7 +4,11 @@ import subprocess
 
 import pytest
 
-from tacmux.discovery import create_reviewed_targets, run_host_discovery
+from tacmux.discovery import (
+    create_reviewed_targets,
+    review_candidates,
+    run_host_discovery,
+)
 from tacmux.errors import ValidationError
 from tacmux.workspace import parse_host_candidates
 
@@ -81,3 +85,37 @@ def test_review_commit_skips_existing_endpoint(workspace, engagement):
     )
     assert created == ["DB01"]
     assert skipped == ["DUP (192.0.2.10)"]
+
+
+def test_review_requires_save_and_final_confirmation(settings, monkeypatch):
+    edit_calls = []
+
+    def fake_edit(_settings, initial, suffix, *, require_save):
+        edit_calls.append((initial, suffix, require_save))
+        return "WEB01\t192.0.2.10\n"
+
+    monkeypatch.setattr("tacmux.discovery.edit_text", fake_edit)
+    monkeypatch.setattr("tacmux.discovery.confirm", lambda _prompt: False)
+
+    with pytest.raises(ValidationError, match="import cancelled"):
+        review_candidates(settings, [("WEB01", "192.0.2.10")])
+    assert edit_calls[0][1:] == (".targets", True)
+
+
+def test_review_returns_only_saved_confirmed_candidates(settings, monkeypatch):
+    monkeypatch.setattr(
+        "tacmux.discovery.edit_text",
+        lambda *_args, **_kwargs: "WEB01\t192.0.2.10\n",
+    )
+    prompts = []
+
+    def approve(prompt):
+        prompts.append(prompt)
+        return True
+
+    monkeypatch.setattr("tacmux.discovery.confirm", approve)
+
+    assert review_candidates(settings, [("OLD", "192.0.2.10")]) == [
+        ("WEB01", "192.0.2.10")
+    ]
+    assert prompts == ["Create 1 reviewed target(s)?"]

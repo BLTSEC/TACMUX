@@ -59,12 +59,15 @@ def review_candidates(
     if not unique:
         raise ValidationError("no hosts were identified")
     lines = [
-        "# Delete unwanted hosts, rename targets in column one, then save.",
+        "# Delete unwanted hosts or rename targets in column one.",
+        "# Save and close to continue; quit without saving to cancel.",
         "# Format: TARGET_NAME<TAB>ENDPOINT",
         *(f"{name}\t{endpoint}" for name, endpoint in unique.values()),
         "",
     ]
-    reviewed = edit_text(settings, "\n".join(lines), suffix=".targets")
+    reviewed = edit_text(
+        settings, "\n".join(lines), suffix=".targets", require_save=True
+    )
     result: list[tuple[str, str]] = []
     names: set[str] = set()
     endpoints: set[str] = set()
@@ -93,6 +96,8 @@ def review_candidates(
         result.append((name, endpoint))
     if not result:
         raise ValidationError("candidate review accepted no hosts")
+    if not confirm(f"Create {len(result)} reviewed target(s)?"):
+        raise ValidationError("discovery import cancelled")
     return result
 
 
