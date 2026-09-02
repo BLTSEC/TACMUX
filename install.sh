@@ -6,6 +6,7 @@ umask 077
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$HOME/.local/share/tacmux"
 APP_DIR="$INSTALL_DIR/app"
+COMPLETION_DIR="$INSTALL_DIR/completions"
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tacmux"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
@@ -102,7 +103,7 @@ install_block() {
     printf '\n# >>> TACMUX >>>\n%s\n# <<< TACMUX <<<\n' "$body" >> "$file"
 }
 
-mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/tmux" "$BIN_DIR" "$CONFIG_DIR"
+mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/tmux" "$COMPLETION_DIR" "$BIN_DIR" "$CONFIG_DIR"
 stage=$(mktemp -d "$INSTALL_DIR/.app-stage.XXXXXX")
 backup="$INSTALL_DIR/.app-backup.$$"
 swapped=0
@@ -129,6 +130,7 @@ printf 'tacmux-v3\n' > "$INSTALL_DIR/.tacmux-install"
 chmod 600 "$INSTALL_DIR/.tacmux-install"
 rm -f "$INSTALL_DIR/tmux/tacmux.conf"
 cp "$SCRIPT_DIR/tmux/tacmux-integration.conf" "$INSTALL_DIR/tmux/"
+cp "$SCRIPT_DIR/completions/_tacmux" "$COMPLETION_DIR/"
 ln -sfn "$MANAGED_COMMAND" "$BIN_DIR/tacmux"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -149,6 +151,20 @@ if [[ "$TMUX_MODE" == skip ]]; then
 else
     install_block "$HOME/.tmux.conf" "source-file \"$INSTALL_DIR/tmux/tacmux-integration.conf\""
     info "Installed tmux integration"
+fi
+
+if command -v zsh >/dev/null 2>&1; then
+    if [[ -L "$HOME/.zshrc" ]]; then
+        warn "Skipped linked ~/.zshrc; add $COMPLETION_DIR to fpath manually"
+    else
+        ZSH_COMPLETION_BLOCK='fpath=("$HOME/.local/share/tacmux/completions" $fpath)
+autoload -Uz compinit
+(( $+functions[compdef] )) || compinit
+autoload -Uz _tacmux
+compdef _tacmux tacmux tm'
+        install_block "$HOME/.zshrc" "$ZSH_COMPLETION_BLOCK"
+        info "Installed Zsh completion for tacmux and tm"
+    fi
 fi
 printf 'TMUX_MODE=%s\n' "$TMUX_MODE" > "$STATE_FILE"
 chmod 600 "$STATE_FILE"

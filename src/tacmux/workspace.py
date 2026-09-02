@@ -143,6 +143,7 @@ class Workspace:
             for relative in (
                 ".tacmux",
                 "credentials",
+                "credentials/keys",
                 "captures",
                 "captures/.nocap",
                 "captures/ops",
@@ -180,6 +181,7 @@ class Workspace:
     def require_engagement(self, root: Path) -> None:
         if not self.is_engagement(root):
             raise ValidationError(f"not a TACMUX v3 engagement: {root}")
+        _private_directory(self._contained(root, "credentials", "keys"))
 
     def sitrep_path(self, root: Path) -> Path:
         self.require_engagement(root)

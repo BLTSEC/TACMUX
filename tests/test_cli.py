@@ -92,3 +92,33 @@ def test_sync_prompts_for_missing_target_section(
     monkeypatch.setattr("tacmux.cli.ask", lambda _label: "192.0.2.30")
     assert main(["sitrep", "sync"]) == 0
     assert workspace.target_details(engagement, "MANUAL")["Endpoint"][0] == "192.0.2.30"
+
+
+def test_completion_values_are_contextual_and_never_print_secrets(
+    monkeypatch, settings, workspace, engagement, capsys
+):
+    _configure(monkeypatch, settings)
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    credential = workspace.add_credential(
+        engagement, "alice", "do-not-complete-this", "password"
+    )
+    task = workspace.add_task(engagement, "WEB01", "Enumerate SMB")
+    cleanup = workspace.add_cleanup(engagement, "WEB01", "Remove payload")
+    monkeypatch.chdir(engagement)
+
+    assert main(["_complete", "engagement"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["ACME"]
+    assert main(["_complete", "target"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["WEB01"]
+    assert main(["_complete", "credential"]) == 0
+    credential_output = capsys.readouterr().out
+    assert credential_output.splitlines() == [credential]
+    assert "do-not-complete-this" not in credential_output
+    assert main(["_complete", "todo"]) == 0
+    assert capsys.readouterr().out.splitlines() == [task]
+    assert main(["_complete", "cleanup"]) == 0
+    assert capsys.readouterr().out.splitlines() == [cleanup]
+    assert main(["_complete", "sitrep"]) == 0
+    assert {"narrative", "cleanup", "WEB01"} <= set(
+        capsys.readouterr().out.splitlines()
+    )

@@ -14,7 +14,7 @@ Foreground Nmap discovery accepts only a literal IP or CIDR and constructs a fix
 
 ## Sensitive data
 
-TACMUX can store raw passwords and hashes in `SITREP.md` and generated credential files. `tacmux creds` intentionally prints them. Pane logs and NOCAP captures can also contain secrets, personal data, and client evidence.
+TACMUX can store raw passwords and hashes in `SITREP.md`, generated credential files, and operator-supplied SSH keys under `credentials/keys/`. `tacmux creds` intentionally prints password and hash values. Pane logs and NOCAP captures can also contain secrets, personal data, and client evidence.
 
 New engagement directories are `0700` and new TACMUX files are `0600` where supported. Shared folders, FAT filesystems, network mounts, removable media, and cloud-sync directories may ignore or broaden those permissions. Use an approved encrypted evidence location and protect backups separately.
 
@@ -43,4 +43,4 @@ NOCAP owns its capture metadata and command execution boundary. TACMUX exports a
 
 Target deletion is only for mistaken targets. TACMUX requires a stopped session, exact typed confirmation, containment below `targets/`, and no structured history, port records, tasks, cleanup, credential checks, or NOCAP captures. It stages the target directory before updating SITREP and reports any staged data that could not be removed.
 
-Uninstall removes only a marked TACMUX installation and matching command link. Configuration and engagement directories are preserved. Paired tmux markers are validated before editing `~/.tmux.conf`.
+Uninstall removes only a marked TACMUX installation and matching command link. Configuration and engagement directories are preserved. Paired TACMUX markers are validated before editing `~/.tmux.conf` or `~/.zshrc`; linked shell configuration files are left untouched.

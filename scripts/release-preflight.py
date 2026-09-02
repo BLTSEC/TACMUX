@@ -17,6 +17,7 @@ CHANGELOG_HEADING_RE = re.compile(r"^## ([0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)", re.MU
 
 REQUIRED_FILES = (
     "assets/TACMUX.jpg",
+    "completions/_tacmux",
     "docs/KEYBINDINGS.md",
     "docs/USAGE.md",
     "SECURITY.md",

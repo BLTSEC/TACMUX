@@ -21,6 +21,7 @@ There is no dashboard to maintain. Target directories are inventory, `SITREP.md`
 - tmux and [fzf](https://github.com/junegunn/fzf)
 - [uv](https://docs.astral.sh/uv/) for installation
 - `$VISUAL`, `$EDITOR`, or `vi`
+- Optional: Zsh; the installer enables completion for `tacmux` and `tm`
 - Optional: Nmap for foreground host identification
 - Optional: [NOCAP](https://github.com/BLTSEC/NOCAP) 2.3+ for engagement-wide captures
 
@@ -34,7 +35,7 @@ exec "$SHELL" -l
 tacmux health
 ```
 
-The installer places TACMUX under `~/.local/share/tacmux`, links the command into `~/.local/bin`, and adds only the TACMUX integration fragment to an existing `~/.tmux.conf`. General tmux preferences belong to the operator or system loadout.
+The installer places TACMUX under `~/.local/share/tacmux`, links the command into `~/.local/bin`, enables Zsh completion, and adds only the TACMUX integration fragment to an existing `~/.tmux.conf`. General tmux preferences belong to the operator or system loadout. Start a new shell after installation so completion is active.
 
 ## Start working
 
@@ -89,6 +90,7 @@ Missing values open short prompts or an `fzf` picker. Inline commands infer the 
 ├── .tacmux/
 ├── SITREP.md
 ├── credentials/
+│   ├── keys/
 │   ├── creds.txt
 │   ├── users.txt
 │   ├── passwords.txt

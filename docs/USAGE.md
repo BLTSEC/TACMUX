@@ -96,6 +96,21 @@ tm creds add hash 'alice:aad3b435b51404ee:31d6cfe0d16ae931'
 
 Input splits on the first colon. SITREP is the source of truth. TACMUX generates deduplicated `creds.txt`, `users.txt`, `passwords.txt`, and `hashes.txt` under `credentials/`.
 
+Store SSH private keys centrally under `credentials/keys/`; TACMUX creates that
+owner-only directory for new engagements and repairs it when an existing v3
+engagement is next opened. Keep the corresponding passphrase in Credentials
+and set its Source to the relative key path. For example:
+
+```bash
+install -m 600 recovered.key credentials/keys/adminuser-mail.key
+tm creds add password
+```
+
+Zsh completion is installed for both `tacmux` and the recommended `tm` alias.
+It completes commands, actions, engagements, targets, SITREP sections,
+credential IDs, task IDs, cleanup IDs, result/access values, and input files.
+It never emits credential values.
+
 `tm creds` and `tm creds view` display raw values. `tm creds check` records the credential, target, result, optional access obtained, timestamp, and Notes. A working authentication does not imply code execution: target access changes only when the operator explicitly selects a non-`none` access level.
 
 ## Ports

@@ -1,0 +1,113 @@
+#compdef tacmux tm
+
+_tacmux_dynamic() {
+  local kind="$1"
+  shift
+  local -a values
+  values=("$@" "${(@f)$(command tacmux _complete "$kind" 2>/dev/null)}")
+  values=("${(@)values:#}")
+  (( ${#values} )) && compadd -Q -- "${values[@]}"
+}
+
+_tacmux() {
+  local command action
+  local -a commands
+  commands=(
+    'init:create or open an engagement'
+    'switch:switch engagement or target session'
+    'stop:stop a target or operations session'
+    'target:add, rename, or delete a target'
+    'status:show engagement or target status'
+    'sitrep:edit or repair the situation report'
+    'log:record an operational event'
+    'done:record a successful narrative step'
+    'history:show narrative history'
+    'creds:view, add, or check credentials'
+    'ports:view or import target ports'
+    'todo:view, add, or complete planned work'
+    'cleanup:view, add, or complete cleanup work'
+    'discover:identify and review hosts'
+    'health:check TACMUX and its tools'
+    'clip:copy standard input to the clipboard'
+    'version:show the TACMUX version'
+    'help:show command help'
+  )
+
+  if (( CURRENT == 2 )); then
+    _describe -t commands 'TACMUX command' commands
+    return
+  fi
+
+  command="${words[2]}"
+  case "$command" in
+    init)
+      (( CURRENT == 3 )) && _tacmux_dynamic engagement
+      ;;
+    stop|status|history)
+      (( CURRENT == 3 )) && _tacmux_dynamic target
+      ;;
+    sitrep)
+      if (( CURRENT == 3 )); then
+        _tacmux_dynamic sitrep sync
+      fi
+      ;;
+    target)
+      if (( CURRENT == 3 )); then
+        _values 'target action' add rename delete
+        return
+      fi
+      action="${words[3]}"
+      case "$action" in
+        rename|delete)
+          (( CURRENT == 4 )) && _tacmux_dynamic target
+          ;;
+      esac
+      ;;
+    log)
+      if (( CURRENT == 3 )); then
+        _values 'outcome or action' info success partial failed edit
+      fi
+      ;;
+    creds)
+      if (( CURRENT == 3 )); then
+        _values 'credential action' view add check
+        return
+      fi
+      action="${words[3]}"
+      case "$action:$CURRENT" in
+        add:4) _values 'credential type' password hash ;;
+        check:4) _tacmux_dynamic credential ;;
+        check:5) _tacmux_dynamic target ;;
+        check:6) _values 'check result' worked partial failed ;;
+        check:7) _values 'access level' none authenticated user admin system domain ;;
+      esac
+      ;;
+    ports)
+      if (( CURRENT == 3 )); then
+        _tacmux_dynamic target add
+      elif [[ "${words[3]}" == add ]]; then
+        if (( CURRENT == 4 )); then
+          _alternative 'targets:target:_tacmux_dynamic target' 'files:Nmap output:_files'
+        elif (( CURRENT == 5 )); then
+          _files
+        fi
+      fi
+      ;;
+    todo|cleanup)
+      if (( CURRENT == 3 )); then
+        _values "$command action" add done
+      elif (( CURRENT == 4 )) && [[ "${words[3]}" == done ]]; then
+        _tacmux_dynamic "$command"
+      fi
+      ;;
+    discover)
+      if (( CURRENT == 3 )); then
+        _values 'discovery source' nmap hosts netexec
+      elif (( CURRENT == 4 )) && [[ "${words[3]}" == hosts || "${words[3]}" == netexec ]]; then
+        _files
+      fi
+      ;;
+  esac
+}
+
+_tacmux "$@"

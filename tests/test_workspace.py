@@ -10,6 +10,9 @@ from tacmux.workspace import TARGET_DIRECTORIES, parse_nmap_ports
 
 
 def test_create_engagement_and_target_tree(workspace, engagement):
+    key_directory = engagement / "credentials/keys"
+    assert key_directory.is_dir()
+    assert key_directory.stat().st_mode & 0o777 == 0o700
     workspace.add_target(engagement, "WEB01", "192.0.2.10")
     target = engagement / "targets" / "WEB01"
     assert all((target / name).is_dir() for name in TARGET_DIRECTORIES)
@@ -19,6 +22,16 @@ def test_create_engagement_and_target_tree(workspace, engagement):
     assert details["Capture Route"][0] == "WEB01"
     assert (target.stat().st_mode & 0o777) == 0o700
     assert (engagement / "SITREP.md").stat().st_mode & 0o777 == 0o600
+
+
+def test_existing_engagement_repairs_missing_key_directory(workspace, engagement):
+    key_directory = engagement / "credentials/keys"
+    key_directory.rmdir()
+
+    workspace.require_engagement(engagement)
+
+    assert key_directory.is_dir()
+    assert key_directory.stat().st_mode & 0o777 == 0o700
 
 
 def test_narrative_tasks_cleanup_and_credentials(workspace, engagement):

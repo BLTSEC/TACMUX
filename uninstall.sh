@@ -50,6 +50,13 @@ else
     remove_block "$HOME/.tmux.conf"
 fi
 
+if [[ -L "$HOME/.zshrc" ]]; then
+    printf 'Preserved linked Zsh config: %s\n' "$HOME/.zshrc" >&2
+else
+    validate_block "$HOME/.zshrc"
+    remove_block "$HOME/.zshrc"
+fi
+
 if [[ -L "$BIN" ]] && \
    [[ "$(readlink -f "$BIN")" == "$INSTALL_DIR/app/.venv/bin/tacmux" ]]; then
     rm -f "$BIN"

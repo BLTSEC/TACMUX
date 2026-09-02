@@ -63,6 +63,53 @@ def _settings_services() -> tuple[Settings, Workspace, TmuxService]:
     return settings, Workspace(settings), TmuxService(settings)
 
 
+def _completion_values(arguments: Sequence[str]) -> int:
+    """Print newline-delimited, non-secret values for shell completion."""
+    if len(arguments) != 1:
+        return 0
+    kind = arguments[0]
+    settings, workspace, tmux = _settings_services()
+    try:
+        if kind == "engagement":
+            values = [root.name for root in workspace.engagements()]
+        else:
+            context = resolve(settings, tmux, allow_picker=False)
+            targets = workspace.targets(context.root)
+            if kind == "target":
+                values = targets
+            elif kind == "sitrep":
+                values = [
+                    "narrative",
+                    "targets",
+                    "credentials",
+                    "checks",
+                    "todo",
+                    "completed",
+                    "cleanup",
+                    *targets,
+                ]
+            elif kind == "credential":
+                values = [
+                    row[0]
+                    for row in sitrep.read_global(
+                        workspace.read(context.root), "CREDENTIALS"
+                    )
+                ]
+            elif kind in {"todo", "cleanup"}:
+                table = kind.upper()
+                rows = sitrep.read_global(workspace.read(context.root), table)
+                values = [
+                    row[0] for row in rows if kind != "cleanup" or row[3] != "complete"
+                ]
+            else:
+                values = []
+    except (TacmuxError, OSError, ValueError):
+        values = []
+    for value in values:
+        print(value)
+    return 0
+
+
 def _target_choice(workspace: Workspace, root: Path, default: str = "") -> str:
     targets = workspace.targets(root)
     return choose([(name, name) for name in targets], "Target> ", default=default)
@@ -600,6 +647,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if arguments and arguments[0] == "_internal":
             return _internal(arguments[1:])
+        if arguments and arguments[0] == "_complete":
+            return _completion_values(arguments[1:])
         settings, workspace, tmux = _settings_services()
         workspace.initialize()
         if not arguments or arguments == ["switch"]:

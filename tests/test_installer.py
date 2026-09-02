@@ -12,6 +12,7 @@ def test_shell_scripts_parse_and_v3_has_no_full_tmux_preset():
     for script in (ROOT / "install.sh", ROOT / "uninstall.sh", ROOT / "bin/tacmux"):
         subprocess.run(["bash", "-n", str(script)], check=True)
     installer = (ROOT / "install.sh").read_text()
+    subprocess.run(["zsh", "-n", str(ROOT / "completions/_tacmux")], check=True)
     assert "--full-tmux" not in installer
     assert "tacmux-v3" in installer
     assert not (ROOT / "tmux/tacmux.conf").exists()
@@ -88,6 +89,9 @@ def test_uninstaller_preserves_linked_tmux_config(tmp_path):
     managed = tmp_path / "managed-tmux.conf"
     managed.write_text("set -g mouse on\n")
     os.symlink(managed, home / ".tmux.conf")
+    managed_zsh = tmp_path / "managed-zshrc"
+    managed_zsh.write_text("alias keep=true\n")
+    os.symlink(managed_zsh, home / ".zshrc")
     env = os.environ | {
         "HOME": str(home),
         "XDG_CONFIG_HOME": str(home / ".config"),
@@ -98,6 +102,8 @@ def test_uninstaller_preserves_linked_tmux_config(tmp_path):
     assert result.returncode == 0
     assert managed.read_text() == "set -g mouse on\n"
     assert (home / ".tmux.conf").is_symlink()
+    assert managed_zsh.read_text() == "alias keep=true\n"
+    assert (home / ".zshrc").is_symlink()
     assert not install.exists()
 
 
@@ -105,6 +111,8 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
     home = tmp_path / "home"
     workspace = tmp_path / "engagements with spaces"
     home.mkdir()
+    shell_config = home / ".zshrc"
+    shell_config.write_text("# operator shell\n")
     env = os.environ | {
         "HOME": str(home),
         "UV_OFFLINE": "1",
@@ -123,6 +131,21 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
     )
     assert first.returncode == 0, first.stderr
     command = home / ".local/bin/tacmux"
+    completion = home / ".local/share/tacmux/completions/_tacmux"
+    assert completion.is_file()
+    assert "#compdef tacmux tm" in completion.read_text()
+    assert shell_config.read_text().count("# >>> TACMUX >>>") == 1
+    completion_check = subprocess.run(
+        [
+            "zsh",
+            "-dfc",
+            'source "$HOME/.zshrc"; whence -w _tacmux; (( $+functions[compdef] ))',
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert completion_check.returncode == 0, completion_check.stderr
     version = subprocess.run(
         [str(command), "version"], env=env, text=True, capture_output=True, check=True
     )
@@ -140,6 +163,7 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
     )
     assert second.returncode == 0, second.stderr
     assert evidence.read_text() == "keep\n"
+    assert shell_config.read_text().count("# >>> TACMUX >>>") == 1
 
     removed = subprocess.run(
         [str(ROOT / "uninstall.sh")],
@@ -150,3 +174,6 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
     assert removed.returncode == 0, removed.stderr
     assert evidence.read_text() == "keep\n"
     assert not command.exists()
+    assert "# operator shell" in shell_config.read_text()
+    assert "# >>> TACMUX >>>" not in shell_config.read_text()
+    assert ".local/share/tacmux/completions" not in shell_config.read_text()

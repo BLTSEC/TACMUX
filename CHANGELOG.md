@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- Owner-only `credentials/keys/` storage for engagement SSH keys, including
+  automatic repair for existing v3 engagement layouts.
+- Native Zsh completion for `tacmux` and the recommended `tm` alias, with
+  contextual engagement, target, record-ID, status, and file suggestions.
+
 ## 3.0.0 — 2026-09-02
 
 ### Changed
