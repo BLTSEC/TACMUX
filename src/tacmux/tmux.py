@@ -125,7 +125,7 @@ class TmuxService:
         )
         if result.returncode:
             return None, ""
-        root, separator, target = result.stdout.strip().partition("\t")
+        root, separator, target = result.stdout.rstrip("\r\n").partition("\t")
         return (Path(root), target) if separator and root else (None, "")
 
     def session_context(self, name: str) -> tuple[Path | None, str]:
@@ -141,7 +141,7 @@ class TmuxService:
         )
         if result.returncode:
             return None, ""
-        root, separator, target = result.stdout.strip().partition("\t")
+        root, separator, target = result.stdout.rstrip("\r\n").partition("\t")
         return (Path(root), target) if separator and root else (None, "")
 
     def start(self, root: Path, target: str = "") -> Session:

@@ -214,7 +214,7 @@ def status_segment(settings: Settings, tmux: TmuxService) -> str:
         ],
         check=False,
     )
-    name, separator, remainder = result.stdout.strip().partition("\t")
+    name, separator, remainder = result.stdout.rstrip("\r\n").partition("\t")
     if not separator:
         return ""
     root, separator, active = remainder.partition("\t")

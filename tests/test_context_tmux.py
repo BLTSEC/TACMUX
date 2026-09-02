@@ -57,6 +57,22 @@ def test_session_name_is_readable_and_collision_resistant(settings):
     assert first != second
 
 
+def test_tmux_context_preserves_empty_operations_target(
+    settings, engagement, monkeypatch
+):
+    tmux = TmuxService(settings)
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, f"{engagement}\t\n", "")
+
+    monkeypatch.setattr(tmux, "available", lambda: True)
+    monkeypatch.setattr(tmux, "run", fake_run)
+    monkeypatch.setenv("TMUX", "1")
+
+    assert tmux.current_context() == (engagement, "")
+    assert tmux.session_context("tacmux-example-ops") == (engagement, "")
+
+
 def test_start_exports_central_nocap_and_logs(
     settings, workspace, engagement, monkeypatch
 ):
