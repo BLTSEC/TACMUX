@@ -279,6 +279,27 @@ class Workspace:
         target = self.canonical_target(root, target)
         return sitrep.details_map(self.read(root), target)
 
+    def write_target_list(self, root: Path, selected: Sequence[str]) -> tuple[Path, int]:
+        with self.locked(root):
+            available = {name.casefold(): name for name in self.targets(root)}
+            targets: list[str] = []
+            for value in selected:
+                target = available.get(value.casefold())
+                if target is None:
+                    raise ValidationError(f"unknown target: {value}")
+                if target not in targets:
+                    targets.append(target)
+            document = self.read(root)
+            endpoints = list(
+                dict.fromkeys(
+                    sitrep.details_map(document, target)["Endpoint"][0]
+                    for target in targets
+                )
+            )
+            path = self._contained(root, "targets.txt")
+            _atomic_write(path, "".join(f"{endpoint}\n" for endpoint in endpoints))
+            return path, len(endpoints)
+
     def set_target_detail(
         self, root: Path, target: str, field: str, value: str, notes: str | None = None
     ) -> None:

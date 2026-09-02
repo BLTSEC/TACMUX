@@ -69,6 +69,47 @@ def choose(
     return value
 
 
+def choose_many(choices: Sequence[tuple[str, str]], prompt: str) -> list[str]:
+    """Select one or more values with fzf without exposing hidden columns."""
+    if not choices:
+        raise ValidationError(f"nothing is available for {prompt.rstrip(': ')}")
+    binary = shutil.which("fzf")
+    if binary is None:
+        raise ExternalToolError("fzf is required; install it before using pickers")
+    payload = "".join(f"{display}\t{value}\n" for display, value in choices)
+    result = subprocess.run(
+        [
+            binary,
+            "--multi",
+            "--bind=ctrl-a:select-all,ctrl-d:deselect-all",
+            "--delimiter=\t",
+            "--with-nth=1",
+            "--prompt",
+            prompt,
+            "--height=60%",
+            "--reverse",
+            "--border=rounded",
+        ],
+        input=payload,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 130:
+        raise ValidationError("selection cancelled")
+    if result.returncode != 0:
+        raise ExternalToolError((result.stderr or "fzf selection failed").strip())
+    values: list[str] = []
+    for line in result.stdout.splitlines():
+        _, separator, value = line.partition("\t")
+        if not separator:
+            raise ExternalToolError("fzf returned an invalid selection")
+        values.append(value)
+    if not values:
+        raise ValidationError("no targets selected; use the None option to clear")
+    return values
+
+
 def open_editor(settings: Settings, path: Path, line: int | None = None) -> None:
     argv = list(settings.editor_argv)
     executable = Path(argv[0]).name

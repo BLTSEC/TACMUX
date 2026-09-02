@@ -46,6 +46,30 @@ def test_cli_operational_flow(monkeypatch, settings, workspace, engagement, caps
     assert sitrep.read_global(text, "TODO")[0][1] == "WEB01"
 
 
+def test_cli_target_export_all_multi_select_and_none(
+    monkeypatch, settings, workspace, engagement, capsys
+):
+    _configure(monkeypatch, settings)
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    workspace.add_target(engagement, "DB01", "192.0.2.20")
+    monkeypatch.chdir(engagement)
+
+    assert main(["target", "export", "--all"]) == 0
+    assert (engagement / "targets.txt").read_text().splitlines() == [
+        "192.0.2.20",
+        "192.0.2.10",
+    ]
+
+    monkeypatch.setattr("tacmux.cli.choose", lambda *_args, **_kwargs: "select")
+    monkeypatch.setattr("tacmux.cli.choose_many", lambda *_args, **_kwargs: ["WEB01"])
+    assert main(["target", "export"]) == 0
+    assert (engagement / "targets.txt").read_text() == "192.0.2.10\n"
+
+    assert main(["target", "export", "--none"]) == 0
+    assert (engagement / "targets.txt").read_text() == ""
+    assert "Wrote 0 target(s)" in capsys.readouterr().out
+
+
 def test_cli_ports_pipe(monkeypatch, settings, workspace, engagement, capsys):
     _configure(monkeypatch, settings)
     workspace.add_target(engagement, "WEB01", "192.0.2.10")

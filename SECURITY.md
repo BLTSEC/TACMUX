@@ -14,7 +14,7 @@ Foreground Nmap discovery accepts only a literal IP or CIDR and constructs a fix
 
 ## Sensitive data
 
-TACMUX can store raw passwords and hashes in `SITREP.md`, generated credential files, and operator-supplied SSH keys under `credentials/keys/`. `tacmux creds` intentionally prints password and hash values. Pane logs and NOCAP captures can also contain secrets, personal data, and client evidence.
+TACMUX can store raw passwords and hashes in `SITREP.md`, generated credential files, and operator-supplied SSH keys under `credentials/keys/`. `tacmux creds` intentionally prints password and hash values. Generated `targets.txt`, pane logs, and NOCAP captures can also contain sensitive client information.
 
 New engagement directories are `0700` and new TACMUX files are `0600` where supported. Shared folders, FAT filesystems, network mounts, removable media, and cloud-sync directories may ignore or broaden those permissions. Use an approved encrypted evidence location and protect backups separately.
 

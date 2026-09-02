@@ -17,7 +17,7 @@ from .context import Context, resolve
 from .discovery import create_reviewed_targets, review_candidates, run_host_discovery
 from .errors import TacmuxError, ValidationError
 from .hooks import LogController, clipboard_copy, status_segment
-from .interaction import ask, choose, edit_text, format_table, open_editor
+from .interaction import ask, choose, choose_many, edit_text, format_table, open_editor
 from .tmux import TmuxService
 from .workspace import (
     ACCESS_LEVELS,
@@ -38,6 +38,7 @@ Usage:
   tacmux stop [TARGET]           Stop a target or operations session
   tacmux target add [NAME] [IP]  Create a target and file tree
   tacmux target update [TARGET] [FIELD] [VALUE|--clear]
+  tacmux target export [--all|--none|TARGET...]
   tacmux target rename [OLD] [NEW]
   tacmux target delete [TARGET]
   tacmux status [TARGET]         Show target or engagement status
@@ -188,8 +189,14 @@ def _target_command(
     tmux: TmuxService,
     arguments: Sequence[str],
 ) -> int:
-    if not arguments or arguments[0] not in {"add", "update", "rename", "delete"}:
-        raise ValidationError("target requires add, update, rename, or delete")
+    if not arguments or arguments[0] not in {
+        "add",
+        "update",
+        "export",
+        "rename",
+        "delete",
+    }:
+        raise ValidationError("target requires add, update, export, rename, or delete")
     action, *rest = arguments
     context = resolve(settings, tmux)
     if action == "add":
@@ -198,6 +205,8 @@ def _target_command(
         workspace.add_target(context.root, name, endpoint)
         print(f"Created {name}: {context.root / 'targets' / name}")
         return 0
+    if action == "export":
+        return _export_targets(workspace, context, rest)
     old = rest[0] if rest else context.target
     if not old:
         old = _target_choice(workspace, context.root)
@@ -215,6 +224,49 @@ def _target_command(
         raise ValidationError("target deletion cancelled")
     workspace.delete_target(context.root, old)
     print(f"Deleted {old}")
+    return 0
+
+
+def _export_targets(
+    workspace: Workspace, context: Context, arguments: Sequence[str]
+) -> int:
+    available = workspace.targets(context.root)
+    if arguments:
+        if arguments == ["--all"]:
+            selected = available
+        elif arguments in (["--none"], ["--clear"]):
+            selected = []
+        elif any(value.startswith("--") for value in arguments):
+            raise ValidationError("target export supports --all, --none, or target names")
+        else:
+            selected = list(arguments)
+    else:
+        mode = choose(
+            [
+                (f"All targets ({len(available)})", "all"),
+                ("Select targets", "select"),
+                ("None (write an empty targets.txt)", "none"),
+            ],
+            "Target list> ",
+            default="all",
+        )
+        if mode == "all":
+            selected = available
+        elif mode == "none":
+            selected = []
+        else:
+            selected = choose_many(
+                [
+                    (
+                        f"{target:24} {workspace.target_details(context.root, target)['Endpoint'][0]}",
+                        target,
+                    )
+                    for target in available
+                ],
+                "Targets> ",
+            )
+    path, count = workspace.write_target_list(context.root, selected)
+    print(f"Wrote {count} target(s): {path}")
     return 0
 
 

@@ -12,10 +12,13 @@ def test_shell_scripts_parse_and_v3_has_no_full_tmux_preset():
     for script in (ROOT / "install.sh", ROOT / "uninstall.sh", ROOT / "bin/tacmux"):
         subprocess.run(["bash", "-n", str(script)], check=True)
     installer = (ROOT / "install.sh").read_text()
+    completion = (ROOT / "completions/_tacmux").read_text()
     subprocess.run(["zsh", "-n", str(ROOT / "completions/_tacmux")], check=True)
     assert "--full-tmux" not in installer
     assert "tacmux-v3" in installer
     assert not (ROOT / "tmux/tacmux.conf").exists()
+    assert "add update export rename delete" in completion
+    assert "_tacmux_dynamic target --all --none" in completion
 
 
 def test_uninstaller_refuses_unmarked_install(tmp_path):

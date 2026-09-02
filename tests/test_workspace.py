@@ -24,6 +24,27 @@ def test_create_engagement_and_target_tree(workspace, engagement):
     assert (engagement / "SITREP.md").stat().st_mode & 0o777 == 0o600
 
 
+def test_target_list_is_endpoint_only_private_and_replaceable(workspace, engagement):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    workspace.add_target(engagement, "DB01", "192.0.2.20")
+
+    path, count = workspace.write_target_list(
+        engagement, ["DB01", "WEB01", "DB01"]
+    )
+    assert count == 2
+    assert path == engagement / "targets.txt"
+    assert path.read_text() == "192.0.2.20\n192.0.2.10\n"
+    assert path.stat().st_mode & 0o777 == 0o600
+
+    with pytest.raises(ValidationError, match="unknown target"):
+        workspace.write_target_list(engagement, ["WEB01", "MISSING"])
+    assert path.read_text() == "192.0.2.20\n192.0.2.10\n"
+
+    _, count = workspace.write_target_list(engagement, [])
+    assert count == 0
+    assert path.read_text() == ""
+
+
 def test_existing_engagement_repairs_missing_key_directory(workspace, engagement):
     key_directory = engagement / "credentials/keys"
     key_directory.rmdir()

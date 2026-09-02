@@ -16,7 +16,7 @@ _tacmux() {
     'init:create or open an engagement'
     'switch:switch engagement or target session'
     'stop:stop a target or operations session'
-    'target:add, update, rename, or delete a target'
+    'target:add, update, export, rename, or delete a target'
     'status:show engagement or target status'
     'sitrep:edit or repair the situation report'
     'log:record an operational event'
@@ -53,7 +53,7 @@ _tacmux() {
       ;;
     target)
       if (( CURRENT == 3 )); then
-        _values 'target action' add update rename delete
+        _values 'target action' add update export rename delete
         return
       fi
       action="${words[3]}"
@@ -62,6 +62,10 @@ _tacmux() {
           (( CURRENT == 4 )) && _tacmux_dynamic target
           ;;
       esac
+      if [[ "$action" == export && CURRENT -ge 4 ]]; then
+        _tacmux_dynamic target --all --none
+        return
+      fi
       if [[ "$action" == update && CURRENT == 5 ]]; then
         _values 'target field' endpoint network status hostnames role os access principal method route
       elif [[ "$action" == update && CURRENT == 6 ]]; then

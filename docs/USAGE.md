@@ -31,6 +31,18 @@ tacmux target delete MISTAKE
 
 Deletion requires typing the exact target name. It refuses targets referenced by Narrative, ports, confirmed credentials, TODO, Completed, Cleanup, or NOCAP captures. Clear mistaken records explicitly; TACMUX never cascade-deletes operational history.
 
+Generate an endpoint-only tool input file from the current target inventory:
+
+```bash
+tm target export             # choose All, Select, or None
+tm target export --all
+tm target export WEB01 DC01
+tm target export --none      # write an empty file
+nmap -iL targets.txt
+```
+
+Interactive Select uses fzf multi-selection; `Ctrl+A` selects all visible rows and `Ctrl+D` deselects them. TACMUX atomically replaces owner-only `targets.txt` in the engagement root. It contains one Endpoint per line with no headings, names, or annotations. `SITREP.md` remains the source of truth, so rerun the export after inventory or selection changes.
+
 ## SITREP
 
 Open the whole file or jump directly to a section or target:

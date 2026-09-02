@@ -9,6 +9,8 @@
 - Native Zsh completion for `tacmux` and the recommended `tm` alias, with
   contextual engagement, target, record-ID, status, and file suggestions.
 - Interactive and direct `target update` helpers for durable target details.
+- Endpoint-only `targets.txt` generation with All, None, and fzf multi-select
+  modes for direct use by assessment tools.
 
 ### Changed
 

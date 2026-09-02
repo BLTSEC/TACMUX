@@ -65,7 +65,7 @@ tm status
 ```text
 tacmux                         fzf session/target switcher
 tacmux init [NAME]             create or open an engagement
-tacmux target add|update|rename|delete
+tacmux target add|update|export|rename|delete
 tacmux stop [TARGET]           stop a target or ops session
 tacmux status [TARGET]         concise operational status
 tacmux sitrep [SECTION]        edit SITREP at an optional heading
@@ -89,6 +89,7 @@ Missing values open short prompts or an `fzf` picker. Inline commands infer the 
 ~/workspace/ACME/
 ├── .tacmux/
 ├── SITREP.md
+├── targets.txt               # generated endpoint list when requested
 ├── credentials/
 │   ├── keys/
 │   ├── creds.txt
