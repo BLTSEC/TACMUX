@@ -16,11 +16,10 @@ INIT_VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
 CHANGELOG_HEADING_RE = re.compile(r"^## ([0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)", re.MULTILINE)
 
 REQUIRED_FILES = (
-    "assets/tacmux-v2-tour.gif",
-    "assets/tacmux-v2-targets.png",
-    "scripts/demo/setup-tacmux-demo.py",
-    "scripts/demo/tacmux-v2.tape",
-    "scripts/render-demo.sh",
+    "assets/TACMUX.jpg",
+    "docs/KEYBINDINGS.md",
+    "docs/USAGE.md",
+    "SECURITY.md",
 )
 
 
@@ -52,7 +51,9 @@ def git_output(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def validate(root: Path, version: str, require_head_main: bool) -> tuple[list[str], str | None]:
+def validate(
+    root: Path, version: str, require_head_main: bool
+) -> tuple[list[str], str | None]:
     failures: list[str] = []
 
     if not VERSION_RE.fullmatch(version):
@@ -67,7 +68,9 @@ def validate(root: Path, version: str, require_head_main: bool) -> tuple[list[st
     init_match = INIT_VERSION_RE.search(init_text)
     init_version = init_match.group(1) if init_match else None
     if init_version != version:
-        failures.append(f"src/tacmux/__init__.py has {init_version!r}, expected {version!r}")
+        failures.append(
+            f"src/tacmux/__init__.py has {init_version!r}, expected {version!r}"
+        )
 
     lock = load_toml(root / "uv.lock")
     lock_versions = [
@@ -76,7 +79,9 @@ def validate(root: Path, version: str, require_head_main: bool) -> tuple[list[st
         if package.get("name") == "tacmux"
     ]
     if lock_versions != [version]:
-        failures.append(f"uv.lock has TACMUX versions {lock_versions!r}, expected [{version!r}]")
+        failures.append(
+            f"uv.lock has TACMUX versions {lock_versions!r}, expected [{version!r}]"
+        )
 
     changelog = (root / "CHANGELOG.md").read_text()
     notes = changelog_notes(changelog, version)
@@ -88,12 +93,13 @@ def validate(root: Path, version: str, require_head_main: bool) -> tuple[list[st
             failures.append(f"required release artifact is missing: {relative_path}")
 
     readme = (root / "README.md").read_text()
-    if "assets/tacmux-v2-tour.gif" not in readme:
-        failures.append("README.md does not reference assets/tacmux-v2-tour.gif")
+    if "assets/TACMUX.jpg" not in readme:
+        failures.append("README.md does not reference assets/TACMUX.jpg")
 
     usage = (root / "docs/USAGE.md").read_text()
-    if "../assets/tacmux-v2-targets.png" not in usage:
-        failures.append("docs/USAGE.md does not reference ../assets/tacmux-v2-targets.png")
+    for required_text in ("tacmux switch", "NOCAP_ROUTE_PREFIX", "SITREP.md"):
+        if required_text not in usage:
+            failures.append(f"docs/USAGE.md does not describe {required_text}")
 
     if require_head_main:
         try:
@@ -110,14 +116,20 @@ def validate(root: Path, version: str, require_head_main: bool) -> tuple[list[st
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", required=True, help="stable release version without a v prefix")
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--version", required=True, help="stable release version without a v prefix"
+    )
+    parser.add_argument(
+        "--root", type=Path, default=Path(__file__).resolve().parents[1]
+    )
     parser.add_argument(
         "--require-head-main",
         action="store_true",
         help="require HEAD to equal refs/remotes/origin/main",
     )
-    parser.add_argument("--notes-output", type=Path, help="write the CHANGELOG section here")
+    parser.add_argument(
+        "--notes-output", type=Path, help="write the CHANGELOG section here"
+    )
     return parser.parse_args()
 
 

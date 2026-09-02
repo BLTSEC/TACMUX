@@ -2,407 +2,151 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import stat
 import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
+def test_shell_scripts_parse_and_v3_has_no_full_tmux_preset():
+    for script in (ROOT / "install.sh", ROOT / "uninstall.sh", ROOT / "bin/tacmux"):
+        subprocess.run(["bash", "-n", str(script)], check=True)
+    installer = (ROOT / "install.sh").read_text()
+    assert "--full-tmux" not in installer
+    assert "tacmux-v3" in installer
+    assert not (ROOT / "tmux/tacmux.conf").exists()
+
+
+def test_uninstaller_refuses_unmarked_install(tmp_path):
     home = tmp_path / "home"
-    home.mkdir()
-    (home / ".zshrc").write_text("# operator zsh config\n")
-    (home / ".bashrc").write_text("# operator bash config\n")
-    workspace = tmp_path / "workspace with spaces"
-    original_uv_cache = subprocess.run(
-        ["uv", "--color", "never", "cache", "dir"],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.strip()
-    env = os.environ.copy()
-    env.update(
-        HOME=str(home),
-        XDG_CONFIG_HOME=str(home / ".config"),
-        PATH=f"{home}/.local/bin:{env['PATH']}",
-        UV_CACHE_DIR=original_uv_cache,
-        UV_OFFLINE="1",
-    )
-    command = [
-        str(ROOT / "install.sh"),
-        "--unattended",
-        "--workspace",
-        str(workspace),
-    ]
-    for _ in range(2):
-        result = subprocess.run(
-            command, env=env, text=True, capture_output=True, check=False
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-
-    binary = home / ".local/bin/tacmux"
-    config = home / ".config/tacmux/config.toml"
-    assert binary.is_symlink()
-    assert (
-        subprocess.run(
-            [str(binary), "version"],
-            env=env,
-            text=True,
-            capture_output=True,
-            check=True,
-        ).stdout.strip()
-        == "tacmux 2.5.1"
-    )
-    installed_source = home / ".local/share/tacmux/app/src"
-    assert not list(installed_source.rglob("*.pyc"))
-    assert not list(installed_source.rglob("*.pyo"))
-    assert not list(installed_source.rglob("__pycache__"))
-    installed_css = list(
-        (home / ".local/share/tacmux/app/.venv/lib").glob(
-            "python*/site-packages/tacmux/tacmux.tcss"
-        )
-    )
-    assert len(installed_css) == 1
-    assert "workspace with spaces" in config.read_text()
-    assert stat.S_IMODE(config.stat().st_mode) == 0o600
-    assert stat.S_IMODE(workspace.stat().st_mode) == 0o700
-    assert (home / ".zshrc").read_text() == "# operator zsh config\n"
-    assert "tmux/tacmux.conf" in (home / ".tmux.conf").read_text()
-    assert (
-        home / ".config/tacmux/install-state"
-    ).read_text() == "TMUX_MODE=full\n"
-
-    evidence = workspace / "preserve.txt"
-    evidence.write_text("operator evidence")
-    result = subprocess.run(
-        [str(ROOT / "uninstall.sh")],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert not binary.exists()
-    assert not (home / ".local/share/tacmux").exists()
-    assert config.is_file()
-    assert evidence.read_text() == "operator evidence"
-    assert (home / ".zshrc").read_text() == "# operator zsh config\n"
-
-
-def test_installer_preserves_tmux_mode_and_explicit_full_override(tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
-    tmux_config = home / ".tmux.conf"
-    tmux_config.write_text("set -g mouse off\n")
-    original_uv_cache = subprocess.run(
-        ["uv", "--color", "never", "cache", "dir"],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.strip()
-    env = os.environ.copy()
-    env.update(
-        HOME=str(home),
-        XDG_CONFIG_HOME=str(home / ".config"),
-        PATH=f"{home}/.local/bin:{env['PATH']}",
-        UV_CACHE_DIR=original_uv_cache,
-        UV_OFFLINE="1",
-    )
-    command = [str(ROOT / "install.sh"), "--unattended"]
-
-    result = subprocess.run(
-        command, env=env, text=True, capture_output=True, check=False
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "set -g mouse off" in tmux_config.read_text()
-    assert "tmux/tacmux-integration.conf" in tmux_config.read_text()
-
-    result = subprocess.run(
-        command, env=env, text=True, capture_output=True, check=False
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "tmux/tacmux-integration.conf" in tmux_config.read_text()
-
-    result = subprocess.run(
-        [*command, "--full-tmux"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "tmux/tacmux.conf" in tmux_config.read_text()
-    assert "tmux/tacmux-integration.conf" not in tmux_config.read_text()
-
-    result = subprocess.run(
-        command, env=env, text=True, capture_output=True, check=False
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "tmux/tacmux.conf" in tmux_config.read_text()
-    assert "TMUX_MODE=full\n" == (
-        home / ".config/tacmux/install-state"
-    ).read_text()
-
-
-def test_uninstaller_refuses_unmarked_install_directory(tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
     install = home / ".local/share/tacmux"
     install.mkdir(parents=True)
-    sentinel = install / "keep"
-    sentinel.write_text("safe")
-    env = os.environ.copy()
-    env.update(HOME=str(home))
+    sentinel = install / "operator-data"
+    sentinel.write_text("keep")
+    env = os.environ | {"HOME": str(home)}
     result = subprocess.run(
-        [str(ROOT / "uninstall.sh")],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
+        [str(ROOT / "uninstall.sh")], env=env, text=True, capture_output=True
     )
     assert result.returncode == 0
-    assert sentinel.read_text() == "safe"
+    assert sentinel.read_text() == "keep"
     assert "Skipped unmarked" in result.stderr
 
 
-def test_uninstall_preserves_unrelated_command_and_unmatched_config(tmp_path):
+def test_installer_refuses_unrelated_command(tmp_path):
     home = tmp_path / "home"
-    install = home / ".local/share/tacmux"
     binary = home / ".local/bin/tacmux"
-    install.mkdir(parents=True)
     binary.parent.mkdir(parents=True)
-    (install / ".tacmux-install").write_text("tacmux-v2\n")
-    binary.write_text("operator command\n")
-    shell_config = home / ".tmux.conf"
-    original = "before\n# >>> TACMUX >>>\nafter must survive\n"
-    shell_config.write_text(original)
-    env = os.environ.copy()
-    env.update(HOME=str(home))
-
+    binary.write_text("operator command")
+    env = os.environ | {"HOME": str(home)}
     result = subprocess.run(
-        [str(ROOT / "uninstall.sh")],
+        [str(ROOT / "install.sh"), "--skip-tmux"],
         env=env,
         text=True,
         capture_output=True,
-        check=False,
     )
     assert result.returncode != 0
-    assert shell_config.read_text() == original
-    assert binary.read_text() == "operator command\n"
-    assert install.is_dir()
+    assert binary.read_text() == "operator command"
+    assert "unrelated command" in result.stderr
 
-    shell_config.write_text("# operator config\n")
+
+def test_tmux_fragment_contains_only_tacmux_integration():
+    text = (ROOT / "tmux/tacmux-integration.conf").read_text()
+    assert "tacmux switch" in text
+    for general_setting in (
+        "prefix C-space",
+        "mouse on",
+        "status-format",
+        "split-window -v",
+    ):
+        assert general_setting not in text
+
+
+def test_installer_refuses_linked_tmux_config_without_skip(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    managed = tmp_path / "managed-tmux.conf"
+    managed.write_text("set -g mouse on\n")
+    os.symlink(managed, home / ".tmux.conf")
+    env = os.environ | {
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+    }
     result = subprocess.run(
-        [str(ROOT / "uninstall.sh")],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
+        [str(ROOT / "install.sh")], env=env, text=True, capture_output=True
+    )
+    assert result.returncode != 0
+    assert "Refusing to edit linked tmux config" in result.stderr
+    assert managed.read_text() == "set -g mouse on\n"
+    assert not (home / ".local/share/tacmux").exists()
+
+
+def test_uninstaller_preserves_linked_tmux_config(tmp_path):
+    home = tmp_path / "home"
+    install = home / ".local/share/tacmux"
+    install.mkdir(parents=True)
+    (install / ".tacmux-install").write_text("tacmux-v3\n")
+    managed = tmp_path / "managed-tmux.conf"
+    managed.write_text("set -g mouse on\n")
+    os.symlink(managed, home / ".tmux.conf")
+    env = os.environ | {
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+    }
+    result = subprocess.run(
+        [str(ROOT / "uninstall.sh")], env=env, text=True, capture_output=True
     )
     assert result.returncode == 0
-    assert binary.read_text() == "operator command\n"
-    assert "Preserved unrelated command" in result.stderr
+    assert managed.read_text() == "set -g mouse on\n"
+    assert (home / ".tmux.conf").is_symlink()
+    assert not install.exists()
 
 
-def test_installer_refuses_unmarked_or_custom_install_directory(tmp_path):
+def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
     home = tmp_path / "home"
-    install = home / ".local/share/tacmux"
-    install.mkdir(parents=True)
-    sentinel = install / "src/keep"
-    sentinel.parent.mkdir()
-    sentinel.write_text("operator data")
-    env = os.environ.copy()
-    env.update(HOME=str(home))
-    result = subprocess.run(
-        [str(ROOT / "install.sh"), "--unattended", "--skip-tmux"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode != 0
-    assert sentinel.read_text() == "operator data"
-    assert "unmarked install directory" in result.stderr
-
-    env["TACMUX_HOME"] = str(tmp_path / "custom")
-    result = subprocess.run(
-        [str(ROOT / "install.sh"), "--unattended", "--skip-tmux"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode != 0
-    assert "TACMUX_HOME is not supported" in result.stderr
-
-
-def test_failed_upgrade_restores_previous_application(tmp_path):
-    home = tmp_path / "home"
-    install = home / ".local/share/tacmux"
-    old_app = install / "app"
-    old_app.mkdir(parents=True)
-    (install / ".tacmux-install").write_text("tacmux-v2\n")
-    sentinel = old_app / "previous-version"
-    sentinel.write_text("still usable")
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_uv = fake_bin / "uv"
-    fake_uv.write_text("#!/bin/sh\nexit 42\n")
-    fake_uv.chmod(0o700)
-    env = os.environ.copy()
-    env.update(HOME=str(home), PATH=f"{fake_bin}:{env['PATH']}")
-    result = subprocess.run(
-        [str(ROOT / "install.sh"), "--unattended", "--skip-tmux"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 42
-    assert sentinel.read_text() == "still usable"
-    assert not list(install.glob(".app-*"))
-
-
-def test_installer_refuses_unmatched_configuration_block_before_upgrade(tmp_path):
-    home = tmp_path / "home"
-    install = home / ".local/share/tacmux"
-    app = install / "app"
-    app.mkdir(parents=True)
-    (install / ".tacmux-install").write_text("tacmux-v2\n")
-    sentinel = app / "previous-version"
-    sentinel.write_text("unchanged")
-    shell_config = home / ".tmux.conf"
-    original = "before\n# <<< TACMUX <<<\nmiddle\n# >>> TACMUX >>>\nafter\n"
-    shell_config.write_text(original)
-    env = os.environ.copy()
-    env.update(HOME=str(home))
-    result = subprocess.run(
-        [str(ROOT / "install.sh"), "--unattended"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode != 0
-    assert "malformed TACMUX markers" in result.stderr
-    assert shell_config.read_text() == original
-    assert sentinel.read_text() == "unchanged"
-
-
-def test_reinstall_uses_existing_config_paths_without_touching_guessed_paths(
-    tmp_path
-):
-    home = tmp_path / "home"
+    workspace = tmp_path / "engagements with spaces"
     home.mkdir()
-    config = home / ".config/tacmux/config.toml"
-    config.parent.mkdir(parents=True)
-    configured_workspace = tmp_path / "configured workspace"
-    configured_archive = tmp_path / "configured archives"
-    configured_logs = tmp_path / "configured logs"
-    config.write_text(
-        "[paths]\n"
-        f'workspace = "{configured_workspace}"\n'
-        f'archive_dir = "{configured_archive}"\n'
-        f'log_dir = "{configured_logs}"\n'
-    )
-    cache = subprocess.run(
-        ["uv", "--color", "never", "cache", "dir"],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.strip()
-    env = os.environ.copy()
-    env.update(
-        HOME=str(home),
-        XDG_CONFIG_HOME=str(home / ".config"),
-        PATH=f"{home}/.local/bin:{env['PATH']}",
-        UV_CACHE_DIR=cache,
-        UV_OFFLINE="1",
-    )
-
-    result = subprocess.run(
-        [str(ROOT / "install.sh"), "--unattended", "--skip-tmux"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert configured_workspace.is_dir()
-    assert configured_archive.is_dir()
-    assert configured_logs.is_dir()
-    assert not (home / "workspace").exists()
-    assert not (home / "archives").exists()
-    assert not (home / "logs").exists()
-
-
-def test_installer_refuses_foreign_command_before_replacing_application(tmp_path):
-    home = tmp_path / "home"
-    install = home / ".local/share/tacmux"
-    app = install / "app"
-    app.mkdir(parents=True)
-    (install / ".tacmux-install").write_text("tacmux-v2\n")
-    sentinel = app / "previous-version"
-    sentinel.write_text("unchanged")
-    command = home / ".local/bin/tacmux"
-    command.parent.mkdir(parents=True)
-    command.symlink_to("/usr/bin/true")
-    env = os.environ.copy()
-    env.update(HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"))
-
-    result = subprocess.run(
-        [str(ROOT / "install.sh"), "--unattended", "--skip-tmux"],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    assert "unrelated command" in result.stderr
-    assert sentinel.read_text() == "unchanged"
-    assert command.resolve() == Path("/usr/bin/true")
-
-
-def test_skip_tmux_mode_persists_across_unflagged_reinstall(tmp_path):
-    home = tmp_path / "home"
-    home.mkdir()
-    tmux_config = home / ".tmux.conf"
-    tmux_config.write_text("set -g mouse off\n")
-    cache = subprocess.run(
-        ["uv", "--color", "never", "cache", "dir"],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.strip()
-    env = os.environ.copy()
-    env.update(
-        HOME=str(home),
-        XDG_CONFIG_HOME=str(home / ".config"),
-        PATH=f"{home}/.local/bin:{env['PATH']}",
-        UV_CACHE_DIR=cache,
-        UV_OFFLINE="1",
-    )
-    base = [str(ROOT / "install.sh"), "--unattended"]
-
+    env = os.environ | {
+        "HOME": str(home),
+        "UV_OFFLINE": "1",
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+    }
     first = subprocess.run(
-        [*base, "--skip-tmux"],
+        [
+            str(ROOT / "install.sh"),
+            "--workspace",
+            str(workspace),
+            "--skip-tmux",
+        ],
         env=env,
         text=True,
         capture_output=True,
-        check=False,
     )
-    second = subprocess.run(
-        base,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
+    assert first.returncode == 0, first.stderr
+    command = home / ".local/bin/tacmux"
+    version = subprocess.run(
+        [str(command), "version"], env=env, text=True, capture_output=True, check=True
     )
+    assert version.stdout.strip() == "tacmux 3.0.0"
 
-    assert first.returncode == 0, first.stdout + first.stderr
-    assert second.returncode == 0, second.stdout + second.stderr
-    assert tmux_config.read_text() == "set -g mouse off\n"
-    assert (home / ".config/tacmux/install-state").read_text() == "TMUX_MODE=skip\n"
+    subprocess.run([str(command), "init", "ACME"], env=env, text=True, check=True)
+    evidence = workspace / "ACME/targets/operator-evidence.txt"
+    evidence.write_text("keep\n")
+
+    second = subprocess.run(
+        [str(ROOT / "install.sh"), "--skip-tmux"],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert second.returncode == 0, second.stderr
+    assert evidence.read_text() == "keep\n"
+
+    removed = subprocess.run(
+        [str(ROOT / "uninstall.sh")],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert removed.returncode == 0, removed.stderr
+    assert evidence.read_text() == "keep\n"
+    assert not command.exists()

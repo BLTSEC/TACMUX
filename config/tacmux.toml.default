@@ -1,17 +1,8 @@
-# TACMUX v2 configuration. Markdown remains in the engagement workspace and
-# opens through $VISUAL, then $EDITOR, then vi.
+# TACMUX v3 keeps engagement state in each workspace's SITREP.md.
 
 [paths]
 workspace = "~/workspace"
-archive_dir = "~/archives"
-log_dir = "~/logs"
 
 [behavior]
 auto_log = true
-# Automatic hooks log TACMUX sessions only. Set true to restore global tmux logging.
-log_outside_tacmux = false
-startup = "resume_last"
-include_mermaid = true
-
-[nocap]
-enabled = false
+session_prefix = "tacmux-"

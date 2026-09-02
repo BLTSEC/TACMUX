@@ -26,7 +26,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y tmux zsh ripgrep
+        run: sudo apt-get update && sudo apt-get install -y fzf tmux zsh ripgrep
 
       - name: Sync locked environment
         run: uv sync --frozen
@@ -34,17 +34,19 @@ jobs:
       - name: Check shell syntax
         run: |
           sh -n bin/tacmux
-          bash -n install.sh uninstall.sh tests/bin/tmux lib/tacmux-pane-guard.sh scripts/public-audit.sh
+          bash -n install.sh uninstall.sh tests/bin/tmux scripts/public-audit.sh
           zsh -n tests/test_tmux_integration.zsh
 
       - name: Run unit and installer tests
         run: uv run pytest -q
 
       - name: Validate release metadata and artifacts
-        run: uv run python scripts/release-preflight.py --version 2.5.1
+        run: uv run python scripts/release-preflight.py --version 3.0.0
 
       - name: Check Python lint
-        run: uv run ruff check src tests scripts/release-preflight.py
+        run: |
+          uv run ruff format --check src tests scripts/release-preflight.py
+          uv run ruff check src tests scripts/release-preflight.py
 
       - name: Run isolated tmux integration test
         run: tests/test_tmux_integration.zsh

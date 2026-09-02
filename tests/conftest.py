@@ -5,23 +5,15 @@ from pathlib import Path
 import pytest
 
 from tacmux.config import Settings
-from tacmux.model import AssessmentType
-from tacmux.store import Workspace
+from tacmux.workspace import Workspace
 
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    config_file = tmp_path / "config" / "config.toml"
     return Settings(
         workspace=tmp_path / "workspace",
-        archive_dir=tmp_path / "archives",
-        log_dir=tmp_path / "logs",
-        config_file=config_file,
-        state_file=config_file.parent / "state.json",
+        config_file=tmp_path / "config" / "config.toml",
         auto_log=True,
-        startup="picker",
-        include_mermaid=True,
-        nocap_enabled=False,
     )
 
 
@@ -33,7 +25,5 @@ def workspace(settings: Settings) -> Workspace:
 
 
 @pytest.fixture
-def record(workspace: Workspace):
-    return workspace.create_engagement(
-        "ACME", "2026 Security Assessment", AssessmentType.BOTH
-    )
+def engagement(workspace: Workspace) -> Path:
+    return workspace.create_engagement("ACME")

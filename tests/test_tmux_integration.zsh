@@ -4,19 +4,18 @@ emulate -L zsh
 setopt pipe_fail
 
 ROOT="${0:A:h:h}"
-export TEST_ROOT=$(mktemp -d /tmp/tacmux-v2-integration.XXXXXX) || exit 1
+export TEST_ROOT=$(mktemp -d /tmp/tacmux-v3-integration.XXXXXX) || exit 1
 export TACMUX_REAL_TMUX=$(command -v tmux)
 export TACMUX_TEST_SOCKET="$TEST_ROOT/tmux.sock"
 export HOME="$TEST_ROOT/home"
 export PATH="$HOME/.local/bin:$ROOT/tests/bin:$PATH"
 export PYTHONPATH="$ROOT/src"
 export TACMUX_CONFIG="$HOME/.config/tacmux/config.toml"
-export TMUX=test
 export HISTFILE=/dev/null
 
 cleanup() {
     "$TACMUX_REAL_TMUX" -S "$TACMUX_TEST_SOCKET" kill-server >/dev/null 2>&1 || true
-    [[ "$TEST_ROOT" == /tmp/tacmux-v2-integration.* ]] && rm -rf -- "$TEST_ROOT"
+    [[ "$TEST_ROOT" == /tmp/tacmux-v3-integration.* ]] && rm -rf -- "$TEST_ROOT"
 }
 trap cleanup EXIT INT TERM
 
@@ -30,114 +29,44 @@ wait_for() {
     return 1
 }
 
-mkdir -p "$HOME/.local/share" "$HOME/.config/tacmux" "$HOME/.local/bin"
-ln -s "$ROOT" "$HOME/.local/share/tacmux"
+mkdir -p "$HOME/.local/bin" "$HOME/.config/tacmux"
 ln -s "$ROOT/bin/tacmux" "$HOME/.local/bin/tacmux"
 print -r -- "[paths]
 workspace = \"$TEST_ROOT/workspace\"
-archive_dir = \"$TEST_ROOT/archives\"
-log_dir = \"$TEST_ROOT/logs\"
 
 [behavior]
-auto_log = true
-startup = \"picker\"
-include_mermaid = false
+auto_log = true" > "$TACMUX_CONFIG"
 
-[nocap]
-enabled = false" > "$TACMUX_CONFIG"
-
-# Load hooks first so this covers startup ordering and the bootstrap guard.
 tmux new-session -d -s bootstrap -c "$TEST_ROOT" || exit 1
+prefix_before=$(tmux show-option -gv prefix)
 tmux source-file "$ROOT/tmux/tacmux-integration.conf" || exit 1
-q_binding=$(tmux list-keys -T prefix | rg '^bind-key[[:space:]]+-T prefix q[[:space:]]')
-[[ "$q_binding" != *'_internal log stop'* ]] || \
-    fail "integration mode overrode prefix-q" || exit 1
-l_binding=$(tmux list-keys -T prefix | rg '^bind-key[[:space:]]+-T prefix L[[:space:]]')
-[[ "$l_binding" != *'Logging:'* ]] || \
-    fail "integration mode overrode prefix-L" || exit 1
+[[ "$(tmux show-option -gv prefix)" == "$prefix_before" ]] || \
+    fail "integration changed the operator prefix" || exit 1
 
-"$ROOT/.venv/bin/python" -c '
-from pathlib import Path
-import os
-from tacmux.config import load_settings
-from tacmux.model import AssessmentType, ScopeGroup, TargetAddress
-from tacmux.store import Workspace
-settings = load_settings(); workspace = Workspace(settings)
-record = workspace.create_engagement("ACME", "Integration", AssessmentType.BOTH)
-scope = record.engagement.add_scope("LAN", ScopeGroup.INTERNAL, "10.20.0.0/24")
-workspace.save(record.root, record.engagement)
-target = workspace.create_target(
-    record.root,
-    record.engagement,
-    "host20",
-    addresses=[TargetAddress("10.20.0.20", scope.id)],
-    primary_endpoint="10.20.0.20",
-)
-root = Path(os.environ["TEST_ROOT"])
-(root / "engagement-id").write_text(record.engagement.id)
-(root / "target-id").write_text(target.id)
-(root / "target-dir").write_text(target.directory)
-' || exit 1
+tacmux init ACME >/dev/null || exit 1
+cd "$TEST_ROOT/workspace/ACME" || exit 1
+tacmux target add WEB01 192.0.2.10 >/dev/null || exit 1
+session=$(python -c 'from pathlib import Path; from tacmux.config import load_settings; from tacmux.tmux import TmuxService; s=load_settings(); print(TmuxService(s).start(Path.cwd(), "WEB01").name)') || exit 1
 
-engagement_id=$(<"$TEST_ROOT/engagement-id")
-target_id=$(<"$TEST_ROOT/target-id")
-target_dir=$(<"$TEST_ROOT/target-dir")
-session="tacmux-${engagement_id}-${target_id}"
-
-"$ROOT/.venv/bin/python" -c '
-from tacmux.config import load_settings
-from tacmux.store import Workspace
-from tacmux.tmux import TmuxService
-settings = load_settings(); workspace = Workspace(settings); record = workspace.list_engagements()[0]
-TmuxService(settings).start_target(record.root, record.engagement, record.engagement.targets[0])
-' || exit 1
-
-[[ "$(tmux show-environment -t "$session" TACMUX_TARGET_ID)" == "TACMUX_TARGET_ID=$target_id" ]] || \
-    fail "target ID was not exported" || exit 1
-[[ "$(tmux show-environment -t "$session" TARGET)" == 'TARGET=10.20.0.20' ]] || \
+[[ "$(tmux show-environment -t "$session" TACMUX_ROOT)" == "TACMUX_ROOT=$PWD" ]] || \
+    fail "engagement root was not exported" || exit 1
+[[ "$(tmux show-environment -t "$session" TACMUX_TARGET)" == "TACMUX_TARGET=captures" ]] || \
+    fail "central NOCAP root was not exported" || exit 1
+[[ "$(tmux show-environment -t "$session" NOCAP_ROUTE_PREFIX)" == "NOCAP_ROUTE_PREFIX=WEB01" ]] || \
+    fail "target capture route was not exported" || exit 1
+[[ "$(tmux show-environment -t "$session" TARGET)" == "TARGET=192.0.2.10" ]] || \
     fail "primary endpoint was not exported" || exit 1
-[[ "$(tmux show-environment -t "$session" NOCAP_WORKSPACE)" == '-NOCAP_WORKSPACE' ]] || \
-    fail "disabled NOCAP workspace was not removed" || exit 1
-[[ "$(tmux show-option -t "$session" -qv @tacmux_engagement_id)" == "$engagement_id" ]] || \
-    fail "engagement option missing" || exit 1
+[[ "$(tmux show-option -t "$session" -qv @tacmux_log_dir)" == "$PWD/logs" ]] || \
+    fail "central log path was not configured" || exit 1
+
 wait_for '[[ "$(tmux display-message -t "$session:0.0" -p "#{pane_pipe}")" == 1 ]]' || \
     fail "landing pane did not start logging" || exit 1
+tmux send-keys -t "$session:0.0" 'printf "TACMUX_V3_MARKER\n"' Enter
+wait_for 'rg -q TACMUX_V3_MARKER "$PWD/logs"' || \
+    fail "pane output was not logged centrally" || exit 1
 
-target_root="$TEST_ROOT/workspace/${engagement_id}-Integration/targets/$target_dir"
-tmux send-keys -t "$session:0.0" 'printf "TACMUX_V2_MARKER\n"' Enter
-tmux split-window -t "$session:" -v -c "$target_root"
+tmux split-window -t "$session:" -v -c "$PWD/targets/WEB01"
 wait_for '[[ "$(tmux display-message -t "$session:0.1" -p "#{pane_pipe}")" == 1 ]]' || \
     fail "split pane did not inherit logging" || exit 1
-wait_for 'rg -q TACMUX_V2_MARKER "$target_root/logs"' || \
-    fail "target output was not logged" || exit 1
 
-tacmux _internal log capture "$session:0.0" || exit 1
-[[ "$(tmux display-message -t "$session:0.0" -p '#{pane_pipe}')" == 1 ]] || \
-    fail "scrollback capture interrupted continuous logging" || exit 1
-scrollback_logs=("$target_root"/logs/*/scrollback_*.log(N))
-(( ${#scrollback_logs} == 1 )) || fail "scrollback evidence was not created" || exit 1
-rg -q TACMUX_V2_MARKER "$scrollback_logs[1]" || \
-    fail "scrollback evidence did not contain pane history" || exit 1
-
-printf 'clipboard-v2' | tacmux clip
-[[ "$(tmux show-buffer)" == clipboard-v2 ]] || fail "clipboard buffer mismatch" || exit 1
-
-tmux new-session -d -s plain -c "$TEST_ROOT"
-sleep 0.2
-[[ "$(tmux display-message -t "=plain:" -p "#{pane_pipe}")" == 0 ]] || \
-    fail "ordinary session was logged automatically" || exit 1
-tacmux _internal log force '=plain:' fallback || exit 1
-wait_for '[[ "$(tmux display-message -t "=plain:" -p "#{pane_pipe}")" == 1 ]]' || \
-    fail "explicit fallback logging did not start" || exit 1
-plain_log=$(tmux show-option -p -t '=plain:' -qv @tacmux_log_file)
-[[ "$plain_log" == "$TEST_ROOT/logs"/* ]] || fail "fallback log path was incorrect" || exit 1
-
-tmux source-file "$ROOT/tmux/tacmux.conf" || exit 1
-[[ "$(tmux show-option -gv prefix)" == C-Space ]] || \
-    fail "complete configuration did not restore the expected prefix" || exit 1
-tmux list-keys -T prefix | rg -q '^bind-key[[:space:]]+-T prefix q[[:space:]].*_internal log stop' || \
-    fail "complete configuration did not restore prefix-q" || exit 1
-tmux list-keys -T prefix | rg -q '^bind-key[[:space:]]+-T prefix L[[:space:]].*Logging:' || \
-    fail "complete configuration did not restore prefix-L" || exit 1
-
-print -- '[PASS] v2 session context, bounded logging, scrollback, and clipboard'
+print -- '[PASS] v3 central logging, context, and NOCAP environment'

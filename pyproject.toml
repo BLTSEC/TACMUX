@@ -4,14 +4,12 @@ build-backend = "uv_build"
 
 [project]
 name = "tacmux"
-version = "2.5.1"
-description = "Operator-first engagement workspaces and tmux control for authorized security assessments"
+version = "3.0.0"
+description = "Lean tmux-native engagement workspaces for authorized security assessments"
 readme = "README.md"
-requires-python = ">=3.11.4"
+requires-python = ">=3.11"
 license = { text = "MIT" }
-dependencies = [
-  "textual>=8.2,<9",
-]
+dependencies = []
 
 [project.scripts]
 tacmux = "tacmux.cli:main"
@@ -19,7 +17,6 @@ tacmux = "tacmux.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "pytest-asyncio>=0.24",
     "ruff>=0.14.14,<0.15",
 ]
 
@@ -29,4 +26,3 @@ package = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-asyncio_mode = "auto"

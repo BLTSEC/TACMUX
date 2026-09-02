@@ -13,7 +13,7 @@ import sys
 
 from .config import Settings
 from .errors import ExternalToolError, ValidationError
-from .store import _private_directory
+from .workspace import Workspace, _private_directory
 from .tmux import TmuxService
 
 
@@ -55,12 +55,7 @@ class LogController:
         return result.stdout.strip() if result.returncode == 0 else ""
 
     def _disabled(self, pane: str) -> bool:
-        if not self.settings.auto_log:
-            return True
-        if (
-            not self.settings.log_outside_tacmux
-            and not self._session_option(pane, "@tacmux_engagement_id")
-        ):
+        if not self.settings.auto_log or not self._session_option(pane, "@tacmux_root"):
             return True
         return (
             self._session_environment(pane, "TACMUX_NO_AUTOLOG") == "1"
@@ -72,20 +67,22 @@ class LogController:
             pane, "#S\t#W\t#{pane_title}\t#P"
         ).split("\t", 3)
         log_root_value = self._session_option(pane, "@tacmux_log_dir")
-        log_root = (
-            self._validated_session_log_root(log_root_value)
-            if log_root_value
-            else self.settings.log_dir
-        )
+        if not log_root_value:
+            raise ValidationError("pane is not attached to a TACMUX engagement")
+        engagement_root = self._session_option(pane, "@tacmux_root")
+        log_root = self._validated_session_log_root(log_root_value, engagement_root)
         date = datetime.now(timezone.utc).strftime("%Y%m%d")
-        log_dir = log_root / date if log_root_value else log_root
+        log_dir = log_root / date
         _private_directory(log_dir)
         prefix = "scrollback_" if kind == "scrollback" else ""
-        stem = f"{prefix}{_clean(window)}_{_clean(title)}_p{_clean(index, '0')}"
+        target = self._session_option(pane, "@tacmux_target_name") or "ENGAGEMENT"
+        stem = (
+            f"{prefix}{_clean(target)}_{_clean(window)}_"
+            f"{_clean(title)}_p{_clean(index, '0')}"
+        )
         stamp = datetime.now(timezone.utc).strftime("%H%M%S_%f")
         path = log_dir / f"{stem}_{stamp}.log"
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        target = self._session_option(pane, "@tacmux_target_name") or session
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             stream.write(
                 f"=== TACMUX {kind} log {datetime.now(timezone.utc).isoformat()} ===\n"
@@ -93,24 +90,29 @@ class LogController:
             )
         return path
 
-    def _validated_session_log_root(self, value: str) -> Path:
+    def _validated_session_log_root(self, value: str, engagement: str) -> Path:
         workspace = Path(os.path.abspath(self.settings.workspace))
+        root = Path(os.path.abspath(engagement))
         candidate = Path(os.path.abspath(value))
         try:
-            relative = candidate.relative_to(workspace)
-            current = workspace
+            root.resolve(strict=True).relative_to(workspace.resolve(strict=True))
+            Workspace(self.settings).require_engagement(root)
+            if candidate != root / "logs":
+                raise ValidationError(
+                    "TACMUX session log directory does not match its engagement"
+                )
+            relative = candidate.relative_to(root)
+            current = root
             for part in relative.parts:
                 current /= part
                 if current.is_symlink():
                     raise ValidationError(
                         f"refusing linked TACMUX log directory: {value}"
                     )
-            candidate.resolve(strict=False).relative_to(
-                self.settings.workspace.resolve(strict=True)
-            )
+            candidate.resolve(strict=False).relative_to(root.resolve(strict=True))
         except (OSError, ValueError) as exc:
             raise ValidationError(
-                f"TACMUX session log directory is outside the workspace: {value}"
+                f"invalid TACMUX session log directory: {value}"
             ) from exc
         return candidate
 
@@ -184,9 +186,7 @@ def clipboard_copy(tmux: TmuxService, data: bytes) -> int:
     close_descriptor = False
     if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
         try:
-            descriptor = os.open(
-                "/dev/tty", os.O_WRONLY | getattr(os, "O_NOCTTY", 0)
-            )
+            descriptor = os.open("/dev/tty", os.O_WRONLY | getattr(os, "O_NOCTTY", 0))
             close_descriptor = True
         except OSError:
             pass
@@ -210,17 +210,17 @@ def status_segment(settings: Settings, tmux: TmuxService) -> str:
         [
             "display-message",
             "-p",
-            "#{@tacmux_target_name}\t#{@tacmux_target_id}\t#{pane_pipe}",
+            "#{@tacmux_target_name}\t#{@tacmux_root}\t#{pane_pipe}",
         ],
         check=False,
     )
     name, separator, remainder = result.stdout.strip().partition("\t")
     if not separator:
         return ""
-    target_id, separator, active = remainder.partition("\t")
-    if not target_id:
+    root, separator, active = remainder.partition("\t")
+    if not root:
         return ""
     state = "LOG" if active == "1" else "---"
     color = "green,bold" if active == "1" else "yellow"
-    label = (name or target_id).replace("#", "").replace("\n", " ")
+    label = (name or Path(root).name).replace("#", "").replace("\n", " ")
     return f"#[fg={color}][{label} {state}]#[default]"

@@ -20,11 +20,11 @@ def run_preflight(*args: str) -> subprocess.CompletedProcess[str]:
 
 def test_current_release_tree_is_complete(tmp_path: Path) -> None:
     notes = tmp_path / "notes.md"
-    result = run_preflight("--version", "2.5.1", "--notes-output", str(notes))
+    result = run_preflight("--version", "3.0.0", "--notes-output", str(notes))
 
     assert result.returncode == 0, result.stderr
-    assert "### Added" in notes.read_text()
-    assert "2.5.0" not in notes.read_text()
+    assert "### Changed" in notes.read_text()
+    assert "2.5.1" not in notes.read_text()
 
 
 def test_version_mismatch_is_rejected() -> None:
@@ -38,7 +38,7 @@ def test_version_mismatch_is_rejected() -> None:
 
 
 def test_non_stable_version_is_rejected() -> None:
-    result = run_preflight("--version", "2.5.2-rc1")
+    result = run_preflight("--version", "3.0.0-rc1")
 
     assert result.returncode == 1
     assert "stable X.Y.Z" in result.stderr

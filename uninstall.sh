@@ -12,7 +12,7 @@ CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tacmux"
 }
 
 if [[ ! -f "$INSTALL_DIR/.tacmux-install" ]] || \
-   [[ "$(<"$INSTALL_DIR/.tacmux-install")" != tacmux-v2 ]]; then
+   [[ "$(<"$INSTALL_DIR/.tacmux-install")" != tacmux-v3 ]]; then
     [[ ! -e "$INSTALL_DIR" ]] || printf 'Skipped unmarked install directory: %s\n' "$INSTALL_DIR" >&2
     exit 0
 fi
@@ -43,8 +43,12 @@ remove_block() {
     rm -f "$temporary"
 }
 
-validate_block "$HOME/.tmux.conf"
-remove_block "$HOME/.tmux.conf"
+if [[ -L "$HOME/.tmux.conf" ]]; then
+    printf 'Preserved linked tmux config: %s\n' "$HOME/.tmux.conf" >&2
+else
+    validate_block "$HOME/.tmux.conf"
+    remove_block "$HOME/.tmux.conf"
+fi
 
 if [[ -L "$BIN" ]] && \
    [[ "$(readlink -f "$BIN")" == "$INSTALL_DIR/app/.venv/bin/tacmux" ]]; then
@@ -54,6 +58,6 @@ elif [[ -e "$BIN" || -L "$BIN" ]]; then
 fi
 rm -rf -- "$INSTALL_DIR"
 
-echo "TACMUX removed. Configuration, archives, and workspace evidence were preserved."
+echo "TACMUX removed. Configuration and engagement workspaces were preserved."
 [[ -d "$CONFIG_DIR" ]] && echo "Preserved: $CONFIG_DIR"
 exit 0

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## 3.0.0 — 2026-09-02
+
+### Changed
+
+- Rebuilt TACMUX around tmux, fzf, `$EDITOR`, target directories, and one
+  operator-editable `SITREP.md`; Textual and the engagement-management model
+  are no longer part of the runtime.
+- Engagements now use human-readable parent and target directories, central
+  pane logs, engagement-wide NOCAP captures, and full per-target working trees.
+- Narrative, notes, and completed operational steps are one lightweight
+  timeline driven by `tacmux log`, `tacmux done`, and `tacmux history`.
+
+### Added
+
+- Focused helpers for credentials and hashes, credential checks, normalized
+  Nmap port ingestion, TODO/Completed work, cleanup obligations, target status,
+  guarded target deletion, and foreground reviewed host identification.
+- A unified fzf switcher that starts stopped target/operations sessions and
+  switches to live ones from inside or outside tmux.
+
+### Removed
+
+- Scope, authorization windows, lifecycle state, findings, attack paths,
+  archives, exports, detached discovery jobs, themes, and legacy imports.
+- TACMUX's complete tmux preset; v3 ships integration bindings only.
+
 ## 2.5.1 — 2026-09-01
 
 ### Added

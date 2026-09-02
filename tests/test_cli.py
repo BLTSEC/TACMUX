@@ -1,250 +1,94 @@
 from __future__ import annotations
 
-from io import BytesIO, TextIOWrapper
-import os
-import subprocess
-import sys
-from pathlib import Path
-
-import pytest
-
-from tacmux.archive import create_archive
+from tacmux import sitrep
 from tacmux.cli import main
-from tacmux.context import resolve
-from tacmux.errors import ValidationError
-from tacmux.hooks import clipboard_copy
-from tacmux.model import EngagementStatus, ScopeGroup, TargetAddress
 
 
-ROOT = Path(__file__).resolve().parents[1]
+def _configure(monkeypatch, settings):
+    monkeypatch.setenv("TACMUX_WORKSPACE", str(settings.workspace))
+    monkeypatch.setenv("TACMUX_CONFIG", str(settings.config_file))
 
 
-def test_version_help_unknown_and_non_tty(capsys, monkeypatch):
+def test_version_help_and_unknown(monkeypatch, settings, capsys):
+    _configure(monkeypatch, settings)
     assert main(["version"]) == 0
-    assert capsys.readouterr().out.strip() == "tacmux 2.5.1"
+    assert "3.0.0" in capsys.readouterr().out
     assert main(["help"]) == 0
-    assert "interactive operator cockpit" in capsys.readouterr().out
-    assert main(["not-a-command"]) == 2
-    assert "Usage:" in capsys.readouterr().err
-    assert main(["activity", "maybe", "attempted", "access"]) == 1
-    assert "confirmed, failed, no-result" in capsys.readouterr().err
+    assert "tacmux log" in capsys.readouterr().out
+    assert main(["unknown"]) == 1
+    assert "unknown command" in capsys.readouterr().err
 
 
-def test_context_prefers_tmux_pane_metadata_and_rejects_stale_environment(
-    settings, workspace, record, monkeypatch
-):
-    class PaneContext:
-        def __init__(self, value):
-            self.value = value
-
-        def current_context(self):
-            return self.value
-
-    monkeypatch.setenv("TMUX", "/tmp/tmux,1,0")
-    monkeypatch.setenv("TACMUX_ENGAGEMENT_ID", record.engagement.id)
-    resolved, target = resolve(settings, PaneContext((record.engagement.id, "")))
-    assert resolved.engagement.id == record.engagement.id
-    assert target is None
-
-    monkeypatch.setenv("TACMUX_ENGAGEMENT_ID", "E-stale")
-    with pytest.raises(ValidationError, match="disagrees"):
-        resolve(settings, PaneContext((record.engagement.id, "")))
-
-    monkeypatch.setenv("TACMUX_ENGAGEMENT_ID", record.engagement.id)
-    with pytest.raises(ValidationError, match="not owned"):
-        resolve(settings, PaneContext(("", "")))
-
-    monkeypatch.delenv("TMUX")
-    resolved, target = resolve(settings, PaneContext(("", "")))
-    assert resolved.engagement.id == record.engagement.id
-    assert target is None
-
-
-def test_public_clip_and_ssh_tty_fallback(settings, monkeypatch):
-    copied: list[bytes] = []
-    monkeypatch.setattr("tacmux.cli.load_settings", lambda: settings)
+def test_prompt_eof_is_a_clean_cancel(monkeypatch, settings, capsys):
+    _configure(monkeypatch, settings)
     monkeypatch.setattr(
-        "tacmux.cli.clipboard_copy",
-        lambda _tmux, data: copied.append(data) or 0,
+        "builtins.input", lambda _prompt: (_ for _ in ()).throw(EOFError)
     )
-    stdin = TextIOWrapper(BytesIO(b"public clipboard"), encoding="utf-8")
-    monkeypatch.setattr("sys.stdin", stdin)
-    assert main(["clip"]) == 0
-    assert copied == [b"public clipboard"]
+    assert main(["init"]) == 130
+    assert "cancelled" in capsys.readouterr().err
 
-    class NoTmux:
-        def available(self):
+
+def test_cli_operational_flow(monkeypatch, settings, workspace, engagement, capsys):
+    _configure(monkeypatch, settings)
+    monkeypatch.chdir(engagement)
+    assert main(["target", "add", "WEB01", "192.0.2.10"]) == 0
+    monkeypatch.chdir(engagement / "targets/WEB01")
+    assert main(["log", "partial", "Shell", "drops"]) == 0
+    assert main(["done", "Obtained", "shell"]) == 0
+    assert main(["todo", "add", "Enumerate", "SMB"]) == 0
+    assert main(["cleanup", "add", "Remove", "payload"]) == 0
+    assert main(["history", "WEB01"]) == 0
+    output = capsys.readouterr().out
+    assert "Shell drops" in output
+    assert "Obtained shell" in output
+    text = workspace.read(engagement)
+    assert len(sitrep.read_global(text, "NARRATIVE")) == 2
+    assert sitrep.read_global(text, "TODO")[0][1] == "WEB01"
+
+
+def test_cli_ports_pipe(monkeypatch, settings, workspace, engagement, capsys):
+    _configure(monkeypatch, settings)
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    monkeypatch.chdir(engagement)
+
+    class Input:
+        def isatty(self):
             return False
 
-    writes: list[tuple[int, bytes]] = []
-    closed: list[int] = []
-    for name in ("TMUX", "WAYLAND_DISPLAY", "DISPLAY"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("SSH_CONNECTION", "client server")
-    monkeypatch.setattr("tacmux.hooks.shutil.which", lambda _name: None)
-    monkeypatch.setattr("tacmux.hooks.os.isatty", lambda _fd: False)
-    monkeypatch.setattr("tacmux.hooks.os.open", lambda *_args: 42)
-    monkeypatch.setattr(
-        "tacmux.hooks.os.write", lambda fd, data: writes.append((fd, data)) or len(data)
+        def read(self):
+            return "445/tcp open microsoft-ds Windows Server\n"
+
+    monkeypatch.setattr("sys.stdin", Input())
+    assert main(["ports", "add", "WEB01"]) == 0
+    assert "Imported 1 port" in capsys.readouterr().out
+    assert (
+        sitrep.read_target(workspace.read(engagement), "WEB01", "PORTS")[0][0] == "445"
     )
-    monkeypatch.setattr("tacmux.hooks.os.close", lambda fd: closed.append(fd))
-    assert clipboard_copy(NoTmux(), b"remote") == 0
-    assert writes == [(42, b"\x1b]52;c;cmVtb3Rl\x07")]
-    assert closed == [42]
 
 
-def test_archive_verify_cli(tmp_path, capsys):
-    source = tmp_path / "evidence"
-    source.mkdir()
-    (source / "proof.txt").write_text("proof")
-    archive, _ = create_archive(
-        source,
-        tmp_path / "archives",
-        kind="targets",
-        engagement_id="E-0123456789ab",
-        object_id="T0001",
-        object_metadata={"id": "T0001", "directory": source.name},
-    )
-    assert main(["archive", "verify", str(archive)]) == 0
-    output = capsys.readouterr().out
-    assert "Verified:" in output and "Files: 1" in output
+def test_cli_credential_first_colon(monkeypatch, settings, workspace, engagement):
+    _configure(monkeypatch, settings)
+    monkeypatch.chdir(engagement)
+    assert main(["creds", "add", "hash", "alice:aad3:31d6"]) == 0
+    assert (engagement / "credentials/hashes.txt").read_text() == "aad3:31d6\n"
 
 
-def test_repository_wrapper_reports_v2():
-    result = subprocess.run(
-        [str(ROOT / "bin/tacmux"), "version"],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert result.returncode == 0
-    assert result.stdout.strip() == "tacmux 2.5.1"
-
-
-def test_cli_import_does_not_load_textual():
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(ROOT / "src")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import sys, tacmux.cli; "
-            "print(any(name == 'textual' or name.startswith('textual.') "
-            "for name in sys.modules))",
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    assert result.stdout.strip() == "False"
-
-
-def test_health_reports_invalid_engagement_manifests(tmp_path, capsys, monkeypatch):
-    workspace = tmp_path / "workspace"
-    archive = tmp_path / "archives"
-    logs = tmp_path / "logs"
-    manifest = workspace / "E-bad/.tacmux/engagement.json"
-    manifest.parent.mkdir(parents=True)
-    archive.mkdir()
-    logs.mkdir()
-    manifest.write_text("[]")
-    config = tmp_path / "config.toml"
-    config.write_text(
-        "[paths]\n"
-        f'workspace = "{workspace}"\n'
-        f'archive_dir = "{archive}"\n'
-        f'log_dir = "{logs}"\n'
-    )
-    monkeypatch.setenv("TACMUX_CONFIG", str(config))
-    monkeypatch.setattr("tacmux.cli.TmuxService.available", lambda *_: True)
-    monkeypatch.setattr("tacmux.cli.TmuxService.version", lambda *_: "tmux test")
-    monkeypatch.setattr("tacmux.cli.shutil.which", lambda name: f"/usr/bin/{name}")
-    assert main(["health"]) == 1
-    output = capsys.readouterr().out
-    assert "1 invalid" in output
-    assert str(manifest) in output
-
-
-def test_health_reports_workspace_level_delete_staging(
-    tmp_path, capsys, monkeypatch
+def test_cli_credential_view_alias(
+    monkeypatch, settings, workspace, engagement, capsys
 ):
-    workspace = tmp_path / "workspace"
-    archive = tmp_path / "archives"
-    logs = tmp_path / "logs"
-    staged = workspace / ".tacmux/deleting/E-deleted-recovery"
-    staged.mkdir(parents=True)
-    archive.mkdir()
-    logs.mkdir()
-    config = tmp_path / "config.toml"
-    config.write_text(
-        "[paths]\n"
-        f'workspace = "{workspace}"\n'
-        f'archive_dir = "{archive}"\n'
-        f'log_dir = "{logs}"\n'
-    )
-    monkeypatch.setenv("TACMUX_CONFIG", str(config))
-    monkeypatch.setattr("tacmux.cli.TmuxService.available", lambda *_: True)
-    monkeypatch.setattr("tacmux.cli.TmuxService.version", lambda *_: "tmux test")
-    monkeypatch.setattr("tacmux.cli.shutil.which", lambda name: f"/usr/bin/{name}")
-    assert main(["health"]) == 0
-    output = capsys.readouterr().out
-    assert "1 item(s) require manual review" in output
-    assert f"staged deletion: {staged}" in output
+    _configure(monkeypatch, settings)
+    workspace.add_credential(engagement, "alice", "secret", "password")
+    monkeypatch.chdir(engagement)
+    assert main(["creds", "view"]) == 0
+    assert "alice" in capsys.readouterr().out
 
 
-def test_in_pane_note_activity_and_sitrep(
-    settings, workspace, record, monkeypatch, capsys
+def test_sync_prompts_for_missing_target_section(
+    monkeypatch, settings, workspace, engagement
 ):
-    scope = workspace.add_scope(
-        record.root,
-        record.engagement,
-        "LAN",
-        ScopeGroup.INTERNAL,
-        "10.90.0.0/24",
-    )
-    target = workspace.create_target(
-        record.root,
-        record.engagement,
-        "host",
-        addresses=[TargetAddress("10.90.0.10", scope.id)],
-        primary_endpoint="10.90.0.10",
-    )
-    settings.config_file.parent.mkdir(parents=True, exist_ok=True)
-    settings.config_file.write_text(
-        "[paths]\n"
-        f'workspace = "{settings.workspace}"\n'
-        f'archive_dir = "{settings.archive_dir}"\n'
-        f'log_dir = "{settings.log_dir}"\n'
-    )
-    monkeypatch.setenv("TACMUX_CONFIG", str(settings.config_file))
-    monkeypatch.setenv("TACMUX_ENGAGEMENT_ID", record.engagement.id)
-    monkeypatch.setenv("TACMUX_TARGET_ID", target.id)
-    monkeypatch.setattr("tacmux.cli.TmuxService.available", lambda *_: False)
-
-    assert main(["note", "shell", "as", "web_operator"]) == 0
-    notes = record.root / "targets" / target.directory / "NOTES.md"
-    assert "shell as web_operator" in notes.read_text()
-
-    assert main(["activity", "confirmed", "Established", "route"]) == 0
-    loaded = workspace.load(record.root)
-    assert loaded.activities[-1].summary == "Established route"
-    assert loaded.activities[-1].target_id == target.id
-
-    assert main(["sitrep"]) == 0
-    output = capsys.readouterr().out
-    assert "# SITREP" in output and "Established route" in output
-
-    assert main(["export"]) == 0
-    export_path = Path(capsys.readouterr().out.strip())
-    assert export_path.is_file()
-    assert export_path.name.endswith(f"-{record.engagement.id}-handoff.md")
-    assert "Established route" in export_path.read_text()
-
-    assert main(["export", "not-a-profile"]) == 1
-    assert "handoff or full" in capsys.readouterr().err
-
-    workspace.set_status(record.root, loaded, EngagementStatus.CLOSED)
-    assert main(["note", "late", "note"]) == 1
-    assert main(["activity", "confirmed", "Late", "activity"]) == 1
-    assert capsys.readouterr().err.count("engagement is closed") == 2
+    _configure(monkeypatch, settings)
+    (engagement / "targets/MANUAL").mkdir()
+    monkeypatch.chdir(engagement)
+    monkeypatch.setattr("tacmux.cli.ask", lambda _label: "192.0.2.30")
+    assert main(["sitrep", "sync"]) == 0
+    assert workspace.target_details(engagement, "MANUAL")["Endpoint"][0] == "192.0.2.30"

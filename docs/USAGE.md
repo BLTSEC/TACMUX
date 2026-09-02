@@ -2,489 +2,143 @@
 
 ## Operating model
 
-An engagement is the authorization, reporting, retention, and evidence boundary. External and internal networks stay in the same engagement when they belong to the same assessment. Create separate engagements for a real client operation, CTF, certification lab, or other training environment so their context and evidence cannot be confused.
+An engagement is an ordinary parent directory marked by `.tacmux/version`. Its target directories define inventory and its single `SITREP.md` holds operational state. TACMUX does not create hidden target records or maintain a second database.
 
-TACMUX keeps one `tacmux.engagement/v2` JSON manifest as durable state. The TUI is transient: closing it does not stop detached tmux sessions or discovery jobs.
+Use one engagement for one authorized body of work. Keep unrelated client, lab, and training activity in separate parents.
 
-## Create and front-load scope
+## Engagement and target workflow
 
-Run `tacmux`, press `n`, and supply:
+Create an engagement and targets:
 
-- **Client, Lab, or Platform:** the customer, organization, private lab,
-  certification environment, or training platform that owns the work.
-- **Engagement Name:** a recognizable assessment, project, lab, or exercise name.
-- **Assessment Type:** External, Internal, External + Internal, or Single-machine Lab.
-- **Authorization:** optional authorizing party, SOW/ticket/contract reference,
-  UTC start/end window, and emergency contact. Front-load what is known; the
-  same fields remain editable from the cockpit.
-- **External/Internal scope:** optional IPs, CIDRs, or domain patterns already known. Use `Label=value` when a friendly label helps.
-- **Internal scope reachability:** whether the internal scope is reachable now
-  through a direct, on-site, or VPN connection, or requires later access and a
-  pivot.
-- **Pane logging:** per-engagement default.
+```bash
+tacmux init ACME
+cd ~/workspace/ACME
+tacmux target add EDGE01 198.51.100.20
+tacmux target add DC01 10.20.30.10
+```
 
-Known `/32` hosts, networks, and web domains can be entered before testing. Scope groups are intentionally limited to **external** and **internal**.
+Every target receives `scans`, `payloads`, `loot`, `screenshots`, and `working`. Target creation adds its Details and Ports tables to SITREP but does not start a session.
 
-## Cockpit workflow
+Run `tacmux` or `tacmux switch` to select any engagement's operations session, live target, or stopped target. Selecting a stopped entry creates the tmux session; selecting a live entry switches or attaches. `tacmux stop [TARGET]` stops a session.
 
-The five views answer different operator questions:
+Rename and delete require a stopped target session:
 
-| View | Operator question |
-|---|---|
-| Targets | What host am I working on, is its session live, and what access is confirmed? |
-| Scope | What may I touch, what is excluded, and what discovery jobs/results need review? |
-| Records | What happened most recently, and what access, activity, findings, paths, or cleanup obligations are recorded? |
-| Situation | What does the network look like, and what confirmed chain has been demonstrated? |
-| Documents | Where are the narrative, findings, notes, logs, and evidence? |
+```bash
+tacmux target rename EDGE01 WEB01
+tacmux target delete MISTAKE
+```
 
-![The TACMUX Targets view listing synthetic targets with session state and confirmed access](../assets/tacmux-v2-targets.png)
+Deletion requires typing the exact target name. It refuses targets referenced by Narrative, ports, credential checks, TODO, Completed, Cleanup, or NOCAP captures. Clear mistaken records explicitly; TACMUX never cascade-deletes operational history.
 
-Targets opens first. The still above and the tour in the README are rendered
-from the public synthetic fixture by `scripts/render-demo.sh`.
+## SITREP
 
-Press `a` for the contextual Actions menu. Press `Ctrl+P` for Textual's Command
-Palette (fuzzy command search). The palette exposes the same actions as the
-visible workflow and does not require fzf.
-Press `?` for the keyboard reference available inside the cockpit.
-Press `/` on Scope to filter declared scope and discovery jobs together. Records
-is newest-first and has a visible kind filter in addition to `/` text search.
+Open the whole file or jump directly to a section or target:
 
-TACMUX uses a dedicated BLTSEC palette throughout the cockpit. Use a Nerd
-Font-enabled terminal for the intended icons.
-
-## Scope and pivots
-
-Each address is stored with a scope-entry ID, not as a globally unique host key. That permits:
-
-- a dual-homed host with one external and one internal address;
-- the same RFC1918 address in two distinct scope entries;
-- multiple networks accessed through one pivot;
-- an internal range that begins unavailable.
-
-Each scope entry may carry exclusions inside its own network or domain. This is
-important when two engagements or routes reuse the same RFC1918 space. TACMUX
-enforces exclusions in manifest validation, import review, and Nmap
-`--exclude`. Select overlapping network entries in separate discovery jobs so
-an address is never assigned by guesswork.
-
-Domain entries accept exact names (`acme.test`) and strict wildcards
-(`*.acme.test`). A wildcard matches subdomains, not the apex. TACMUX never
-resolves or scans a domain entry. Import a bare-hostname list through discovery.
-Hostname-only targets must match declared domain scope when domain entries
-exist; aliases on an IP-backed target remain visible even when they are not
-domain scoped.
-
-After a foothold creates an approved route:
-
-1. Open **Scope**.
-2. Highlight the internal scope and press Enter or `a`.
-3. Set availability to **Reachable now** and select the target through which it
-   is reachable.
-4. Refresh the Situation view.
-
-TACMUX records the route relationship; it does not configure VPNs, SOCKS proxies, Ligolo, SSH forwarding, or firewall rules.
-
-## Discovery and reconciliation
-
-Press `d` and choose one of three inputs:
-
-1. **Run Nmap discovery (detached)** — choose one profile:
-
-   **Host discovery only** preserves the small original profile:
-
-   ```text
-   nmap -sn --reason [--exclude <declared-carve-outs>] -oX <job>/results.xml <selected-ready-scope...>
-   ```
-
-   **Hosts + all TCP ports + service versions** runs three bounded stages:
-
-   ```text
-   nmap -sn --reason [--exclude <declared-carve-outs>] <selected-ready-scope...>
-   nmap -Pn -p- --open --reason <scope-validated-live-IPs...>
-   nmap -Pn -sV --open -p <ports-open-on-this-host-group> <matching-live-IPs...>
-   ```
-
-   **Careful** uses Nmap's default timing. **Fast** adds `-T4` to the TCP-port
-   and service stages; TACMUX does not add `--min-rate`. IPv4 and IPv6 run
-   separately, with `-6` added for IPv6. UDP discovery remains import-only.
-
-2. **Import XML or pasted hosts** — accepts Nmap XML, `IP [hostname]`, or one bare hostname per line.
-3. **Review a completed detached scan** — opens a successful or partial job's results.
-
-Highlight a job and press Enter to import a successful or partial result,
-cancel an active scan, or view its current log. A port-stage failure leaves
-discovered hosts reviewable; a service-stage failure leaves hosts and identified
-ports reviewable. Imported jobs remain visible and are marked as imported.
-
-Every later stage receives only literal IP addresses revalidated against the
-selected ready scope and its exclusions. Intermediate XML cannot authorize a
-new scan target. Service detection is grouped by the exact TCP-port set found
-open, so `-sV` does not expand back to all ports.
-
-Every candidate must be reviewed:
-
-- **Add** creates a stable target and evidence directory.
-- **Merge** adds a scope-qualified address/hostname to an existing host. Press `m` to select the intended target when a second interface was discovered.
-- **Ignore** makes no target change.
-
-TACMUX defaults accepted results to detached target sessions when ten or fewer
-targets are accepted. Above ten, session creation defaults off and must be
-enabled deliberately. An address matching more than one selected scope entry is
-ignored rather than guessed; re-import it with only the intended scope selected
-or add it explicitly through **Edit target identity**.
-
-Out-of-scope, partially matched, and overlapping-scope discovery results are
-locked to **Ignore**. Discovery never creates an addressless target. Manually
-created targets may be intentionally unresolved while their identity is
-still being established; add a scope-qualified address or hostname later
-through **Edit target identity**.
-
-Discovered hostnames are retained as aliases, but the accepted scope-qualified
-IP is the initial primary endpoint exported as `TARGET`. A hostname-only
-candidate is accepted only through selected domain scope.
-
-## Target work
-
-Highlight a target and press Enter. TACMUX creates the tmux session if necessary, exports stable engagement/target context, starts context-aware logging when enabled, and attaches or switches the current client.
-
-Target actions include:
-
-- start/attach or stop session;
-- edit display name, scope-qualified addresses, hostnames, and primary endpoint;
-- edit `NOTES.md` through `$VISUAL`, `$EDITOR`, or `vi`;
-- inspect imported services;
-- record confirmed access or activity;
-- create and edit a finding;
-- record an item that must be removed during cleanup;
-- view a NOCAP timeline when enabled;
-- create a verified target archive;
-- permanently delete an unreferenced mistaken target.
-
-Display-name changes do not rename the stable target directory or tmux identity. Starting or attaching refreshes session context; panes created afterward inherit the current primary endpoint as `TARGET`.
-The target Actions menu can copy that primary endpoint through the same trusted
-clipboard path used by `tacmux clip`.
-
-The optional engagement operations session starts in the engagement root. Stop-all cancels active discovery jobs and stops target and operations sessions before archival.
-
-## Recording activity, access, and findings
-
-### Activity
-
-Use activity for concise, relevant events—not every command. Select one result:
-
-- **Confirmed:** the described outcome was demonstrated.
-- **Failed:** the attempt conclusively failed.
-- **No Result:** the attempt did not establish an outcome.
-
-Attach a relative evidence path when one exists. Failed and no-result records remain useful in the timeline but cannot become attack-path steps.
-
-### Access
-
-Record a principal, authority/realm, method, target, evidence, and the strongest demonstrated level:
-
-1. **Authenticated** — credentials/session accepted; no command execution implied.
-2. **User Execution** — code/command execution in a non-administrative context.
-3. **Administrative Execution** — administrative execution demonstrated.
-4. **Privileged Execution** — the platform's highest relevant execution context demonstrated.
-
-Do not promote authenticated SMB access to execution merely because credentials work.
-If a principal, authority, or method resembles credential material, TACMUX warns
-before saving. The warning does not block an authorized operator from preserving
-necessary evidence.
-
-### Findings
-
-Create a finding only after selecting affected targets. TACMUX records title, severity, state, targets, and evidence, then opens a Markdown narrative with Summary, Evidence, Impact, and Recommendation sections.
-
-New findings default to **Draft**. Keep that state while validation or reporting
-language remains incomplete, use **Confirmed** when evidence supports the
-finding, and use **Closed** for a resolved/retested record. Draft findings
-cannot be attack-path steps.
-
-Open **Records** to correct or delete access, activity, finding, attack-path, and cleanup records. A record used by an attack path must be removed from that path first. Scope entries can likewise be fully edited or deleted when no target address uses them.
-The Records Actions menu also creates activity, findings, cleanup items, and
-attack paths. Confirmed access remains target-centric so it cannot be recorded
-without an explicit host context.
-
-### Cleanup
-
-Record files, accounts, services, scheduled tasks, or configuration changes left
-on a target. Mark an item removed only after verifying cleanup. Both outstanding
-and removed cleanup records retain their target reference; remove the cleanup
-record itself before deleting a mistaken target.
-
-### Service inventory
-
-The enhanced detached profile records open TCP ports and version details in the
-same Add/Merge/Ignore review used for hosts. Operator-produced Nmap XML remains
-supported for custom TCP or UDP work; for example, import an authorized
-`nmap -sV -oX services.xml <in-scope-hosts>` result through discovery. Observed
-TCP `open` and UDP `open` or `open|filtered` services attach to scope-qualified
-targets. External XML is copied into `.tacmux/imports/` only after a confirmed
-import so the service snapshot retains provenance.
-
-## Building an attack path
-
-Network topology and attack path are separate views:
-
-- topology maps external/internal scope, hosts, interfaces, access level, pivots,
-  and unresolved or hostname-only targets not yet assigned to an address;
-- an attack path is an ordered sequence of demonstrated findings, access records, and confirmed activities.
-
-Open **Situation**, press `a`, and choose **Build confirmed attack path**. Press Enter on eligible records to add them. In the chosen list, Delete removes a step and `Ctrl+Up` / `Ctrl+Down` changes order. The optional note field belongs to the highlighted step and follows that record when the path is reordered.
-
-Each step may only reference structured confirmed state. The generated `notes/attack-path.md` and `SITREP.md` therefore cannot accidentally promote a failed responder attempt into a demonstrated compromise.
-
-## Authorization window and engagement lifecycle
-
-Authorization can be entered while creating the engagement. From the engagement
-picker, or from **Situation** inside the cockpit, choose
-**Edit engagement details and authorization** to record the authorizing party,
-reference, emergency contact, and optional UTC start/end times. The banner
-distinguishes an unconfigured, start-only, end-only, bounded, or currently
-out-of-window authorization period. Starting a target, operations session,
-detached discovery, or an import that creates sessions outside a configured
-window requires confirmation. The warning never overrides operator authority.
-
-Close an engagement after stopping target/operations sessions and discovery
-jobs. A closed engagement is review-only: TACMUX blocks changes to scope,
-targets, notes, records, documents, and discovery state until it is explicitly
-reopened. Review, paging, export, archive, and engagement deletion remain
-available. The cockpit hides active-only shortcuts and palette commands while
-closed, and the close confirmation reports outstanding cleanup items.
-
-If a manifest is damaged or manually edited into an invalid state, its
-workspace remains visible as **INVALID** in the engagement picker. Enter shows
-the manifest path and validation failure; TACMUX refuses to open, archive, or
-delete a workspace it cannot validate. Use `tacmux health` for the same details
-from the shell.
-
-## Capture from a working pane
-
-TACMUX target and operations sessions export stable context, so a small CLI can
-capture facts without leaving the shell:
-
-```text
-tacmux note "shell as web_operator"
-tacmux activity confirmed --evidence targets/T0002-app/recon/artifacts.txt "Artifact repository was readable"
-tacmux activity no-result "Delegation review did not establish another path"
+```bash
 tacmux sitrep
-tacmux export handoff
+tacmux sitrep narrative
+tacmux sitrep cleanup
+tacmux sitrep WEB01
 ```
 
-`--evidence` must appear immediately after the activity result. Notes append to
-the current target's `NOTES.md`, or the engagement operator notes in an
-operations session. Structured activity appears in the cockpit automatically;
-press `r` after appending a note if its document preview is already open.
+Neovim, Vim, and Vi open at the resolved heading line. Other editors open the file normally. When the editor closes, TACMUX validates the managed tables, refreshes credential derivative files, and restores the SITREP to owner-only permissions.
 
-## Synthetic external-to-internal example
+Managed table schemas are intentionally exact. Every record ends in a free-form `Notes` field. Values added through helpers must be one line; use operator-owned prose outside managed markers for longer material.
 
-This example uses documentation-only addresses and mirrors a realistic flow without performing network actions.
+`tacmux sitrep sync` restores absent empty managed tables, adds a section for a manually created target directory after requesting its endpoint, regenerates credential derivative files, and reports bad IDs or references. It refuses malformed or partial markers and never rewrites operator prose.
 
-### 1. Start with known scope
+## Narrative and tasks
 
-Create:
+Use Narrative for the chronological flow:
+
+```bash
+tm log "Identified IIS on the external host"
+tm log failed "Password spray produced no valid login"
+tm log partial "Responder captured a challenge but it did not crack"
+tm log success "Validated command execution as svc_web"
+tm done "Established the approved internal pivot"
+```
+
+Inline logging uses the current target, or `ENGAGEMENT` from the operations session. `tm log` with no arguments prompts for an optional target override, outcome, summary, and Notes. `tm history` shows the newest engagement events first; pass a target to filter it.
+
+TODO and Completed are work queues, not history:
+
+```bash
+tm todo add "Enumerate SMB shares"
+tm todo
+tm todo done                 # choose with fzf
+```
+
+Completing a TODO moves the same generated ID into Completed. A successful action worth remembering should also be captured with `tm done`; task completion alone does not invent a narrative claim.
+
+Cleanup remains separate because it is a release gate:
+
+```bash
+tm cleanup add "Remove /tmp/update.sh"
+tm cleanup
+tm cleanup done              # choose only after verification
+```
+
+## Target status
+
+Target Details contain only Endpoint, Network, Status, Hostnames, Role, OS, Access, Principal, Method/Path, and Capture Route. Status is `new`, `active`, `blocked`, or `complete`. Edit durable facts through `tm sitrep TARGET`.
+
+`tm status` inside a target shows Details, ports, credential checks, tasks, cleanup, and recent Narrative. In the operations session it shows the engagement's target summary. Pass a target name for its detailed view.
+
+## Credentials
+
+Run `tm creds add` and choose Password or Hash. Interactive entry avoids putting the secret in shell history; bulk or deliberate direct entry also accepts:
+
+```bash
+tm creds add password 'alice:correct horse battery staple'
+tm creds add hash 'alice:aad3b435b51404ee:31d6cfe0d16ae931'
+```
+
+Input splits on the first colon. SITREP is the source of truth. TACMUX generates deduplicated `creds.txt`, `users.txt`, `passwords.txt`, and `hashes.txt` under `credentials/`.
+
+`tm creds` and `tm creds view` display raw values. `tm creds check` records the credential, target, result, optional access obtained, timestamp, and Notes. A working authentication does not imply code execution: target access changes only when the operator explicitly selects a non-`none` access level.
+
+## Ports
+
+Run custom service enumeration from the target shell and ingest Nmap's normal port rows:
+
+```bash
+nmap -sV "$TARGET" | tm ports add
+```
+
+With saved Nmap output:
+
+```bash
+tm ports add WEB01 targets/WEB01/scans/manual-nmap.txt
+```
+
+The raw input is copied into the target's `scans/` directory. TCP, UDP, and SCTP rows merge on `(port, protocol)`; new observations update state, service, and version while preserving Notes. Input containing no valid port rows makes no change.
+
+## Host identification
+
+`tm discover` offers three foreground inputs:
+
+- `nmap`: fixed `nmap -sn --reason -oG - IP_OR_CIDR` after confirmation
+- `hosts`: pasted or piped `NAME IP`, `IP`, or Nmap report lines
+- `netexec`: pasted or piped NetExec SMB output
+
+Candidates open in `$EDITOR` as `TARGET_NAME<TAB>IP`. Delete gateways or unwanted entries, rename targets, save, and close. Accepted entries receive full target trees. Existing names or endpoints are skipped, and sessions never auto-start.
+
+TACMUX has no formal scope engine. Supplying an active discovery destination is an operator authorization decision.
+
+## NOCAP and pane logs
+
+Target sessions export:
 
 ```text
-Client, Lab, or Platform: Northstar Example
-Engagement Name: Synthetic External and Internal Assessment
-Assessment Type: External + Internal
-External: Public Services=203.0.113.0/24
-Internal: Application Network=10.44.20.0/24
-Internal scope reachability: Not reachable yet (requires access or pivot)
+TARGET=<endpoint>
+NOCAP_WORKSPACE=<engagement>
+TACMUX_TARGET=captures
+NOCAP_ROUTE_PREFIX=<stable capture route>
 ```
 
-Run detached discovery against the external entry. Review the result:
+This keeps one NOCAP metadata root at `captures/.nocap` while routing files beneath `captures/<target>/`. Consequently `cap timeline` and `cap browse` can review the complete engagement. After a target has captures, renaming it retains the old Capture Route rather than rewriting evidence metadata.
 
-```text
-ADD  edge.northstar.example  203.0.113.25
-```
+This route-prefix behavior requires NOCAP 2.3 or newer. `tacmux health` rejects an installed older version while continuing to treat an absent NOCAP installation as optional.
 
-TACMUX creates `T0001` and its detached target session.
-
-### 2. Record initial access
-
-On EDGE-WEB, preserve proof under `exploitation/`, then create:
-
-```text
-Finding F0001: Internet-exposed administrative console
-Severity: High
-State: Confirmed
-Targets: EDGE-WEB
-
-Access AR0001:
-Principal: assessor
-Authority: NORTHSTAR
-Method: authorized web console
-Level: User Execution
-
-Activity A0001 (Confirmed):
-Established the approved route from EDGE-WEB to the application network
-```
-
-Update **Application Network** to Reachable now via EDGE-WEB. The terminal topology now
-reads conceptually:
-
-```text
-EXTERNAL
-└─ Public Services: 203.0.113.0/24
-  └─ EDGE-WEB [T0001] — User Execution (203.0.113.25)
-INTERNAL
-└─ Application Network: 10.44.20.0/24 via EDGE-WEB
-  └─ No identified hosts
-```
-
-### 3. Identify internal hosts
-
-Run discovery on Application Network through the operator-established route, or import externally produced XML. Review:
-
-```text
-MERGE  edge.northstar.example    10.44.20.5   -> EDGE-WEB
-ADD    jump01.northstar.example  10.44.20.10  -> JUMP01
-ADD    app01.northstar.example   10.44.20.20  -> APP01
-ADD    db01.northstar.example    10.44.20.30  -> DB01
-```
-
-EDGE-WEB is now correctly dual-homed. The other hosts receive independent evidence/session contexts.
-
-### 4. Preserve negative and positive results accurately
-
-Record:
-
-```text
-Activity A0002 (No Result):
-Delegation review did not establish an additional access path
-
-Finding F0002 (Confirmed, Medium):
-Artifact repository permitted unintended reads
-Targets: JUMP01, APP01
-
-Access AR0002:
-NORTHSTAR\build_reader authenticated to APP01 through the artifact portal
-Level: Authenticated
-```
-
-AR0002 does not claim command execution. A0002 remains visible in activity but is not eligible for an attack path.
-
-### 5. Order the demonstrated chain
-
-Create **Public console to internal authenticated access** in this order:
-
-1. F0001 — validated public administrative console.
-2. AR0001 — user execution on EDGE-WEB.
-3. A0001 — approved internal route established.
-4. F0002 — unintended artifact-repository read access.
-5. AR0002 — authenticated portal access on APP01.
-
-The topology still shows all identified systems, including DB01. The attack path shows only the demonstrated chain. No administrative or privileged compromise is inferred.
-
-The repository includes this independently authored state as
-`tests/fixtures/external_internal_example.json`; it is offline, uses reserved
-mock addresses, and contains no credentials or live-environment dependency.
-
-## Documents and evidence
-
-The Documents tab indexes evidence when opened (or refreshed) and previews:
-
-- editable Markdown;
-- generated Markdown;
-- UTF-8 terminal evidence and logs, with control sequences cleaned;
-- binary metadata and a SHA-256 for binary files up to 2 MiB.
-
-Text previews stop at 256 KiB. Press Enter on read-only text or choose **View
-full file in pager** from `a` to open the complete file through `$PAGER`,
-`less -SR`, or `more`. Captured terminal output is cleaned for carriage returns,
-backspaces, and common cursor redraws. Evidence indexing stops at 500 files or a
-bounded directory-scan budget; use ordinary filesystem tools for larger
-collections. Generated Markdown is changed through its structured TACMUX record,
-not edited directly.
-
-Structured evidence references are listed before the bounded directory walk.
-Unsafe linked files and paths outside the active engagement are ignored and
-cannot be opened through TACMUX's editor or pager handoff.
-
-### Single-file handoff export
-
-Choose **Export engagement handoff** from the Command Palette or Documents
-actions. TACMUX creates a private, timestamped Markdown snapshot under
-`exports/`:
-
-- **Handoff** is the default for AI-assisted report development, another human
-  operator, or an external notes system. It renders one readable copy of the
-  authorization, scope, topology, targets, services, records, finding
-  narratives, and operator-authored Markdown. It also includes handoff attention
-  items, discovery history, an evidence path/size/SHA-256 inventory, and the
-  exact manifest JSON.
-- **Full context** adds prioritized text evidence. Finding evidence is embedded
-  first, followed by access, activity, and service evidence, then useful target
-  text and human-readable scan logs. Unreferenced discovery JSON and raw scanner
-  XML remain indexed. Excerpts are limited to 128 KiB per file and 1 MiB total;
-  coverage, truncation, binary files, and omissions are labeled.
-
-Exports never follow symlinks or embed binary evidence. They may still contain
-credentials, client data, and other sensitive material. An export is intended
-for AI-assisted report drafting, human handoff, or manual copying into another
-notes system; it is not a verified archive. The full-context profile replaces
-the local engagement directory in excerpts with `<ENGAGEMENT_ROOT>`, but this
-is portability normalization, not credential, identity, or client-data
-redaction. Embedded evidence is untrusted quoted data and must not be treated as
-instructions.
-
-Use `tacmux export [handoff|full]` inside a TACMUX session for the same workflow.
-
-## Archives, restore, and permanent deletion
-
-Target and engagement archives are private `.tar.gz` files with adjacent `.manifest.json` documents. Creation verifies the completed archive immediately. `tacmux archive verify FILE` checks archive size, SHA-256, member hashes, paths, links, and root structure.
-
-Restore refuses an existing destination and extracts through a private staging
-directory. Engagement restores validate the embedded manifest and identity;
-target restores validate archived metadata against the current engagement.
-Press `r` in the engagement picker to restore an engagement archive, including
-when the picker is empty. In an open engagement, use **Restore verified archive**
-from the Command Palette to restore a missing target or another engagement.
-
-Closing an engagement makes TACMUX-managed data review-only. Viewing, paging,
-exporting, archiving, stopping sessions, reopening, and guarded engagement
-deletion remain available. Reopen the engagement before correcting scope,
-targets, notes, records, editable Markdown, or discovery state.
-
-Permanent target deletion is deliberately stricter than archive:
-
-- the tmux target session must be stopped;
-- no scope pivot, access, activity, finding, or cleanup record may reference the target;
-- the exact displayed confirmation must be typed;
-- the target directory is staged, the manifest is saved, and only then are files removed.
-
-Permanent engagement deletion is available from the engagement picker through
-`a`. It removes the complete live engagement directory, including scope,
-targets, evidence, notes, findings, and completed discovery jobs. TACMUX refuses
-while target, operations, or discovery work is active and requires
-`DELETE E-<stable-id>` exactly. It does not stop sessions, cancel jobs, create an
-archive automatically, or remove verified archives stored outside the live
-workspace. Choose **Create verified archive** from the same Actions menu first
-when a recovery copy is required.
-
-## NOCAP
-
-NOCAP remains optional and separate. With `[nocap] enabled = true`, target sessions receive the workspace/route environment and the target menu can read:
-
-```text
-cap timeline --format json
-```
-
-TACMUX does not write NOCAP state. Operator judgment remains the trust boundary.
-
-## Clipboard
-
-Pipe data to `tacmux clip` to use TACMUX's trusted clipboard path. It prefers a
-tmux buffer, then Wayland/X11 clipboard tools, and finally OSC 52 on a terminal;
-over SSH it writes OSC 52 to the controlling terminal when available. Explicit
-tmux copy-mode actions use the same path. Clipboard forwarding can expose
-sensitive material on the local workstation, so verify the destination first.
-
-## Logging boundary
-
-Automatic tmux hooks log TACMUX-owned sessions only. Explicit `prefix+T`
-(toggle), `prefix+S` (scrollback capture), and `prefix+H` (fallback log) remain
-available. Set `behavior.log_outside_tacmux = true` only when global tmux
-logging is intentional.
+Pane logs are centralized under `logs/YYYYMMDD/`. Prefix+`T` toggles current-pane logging and Prefix+`S` captures scrollback.

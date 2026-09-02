@@ -1,4 +1,4 @@
-"""Small, read-only TOML configuration surface for TACMUX."""
+"""Small read-only configuration surface for TACMUX v3."""
 
 from __future__ import annotations
 
@@ -19,34 +19,23 @@ def _expand(value: str, env: Mapping[str, str]) -> Path:
         return env.get(name, match.group(0))
 
     expanded = re.sub(
-        r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", replace, value
+        r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)",
+        replace,
+        value,
     )
     if re.search(r"\$\{?[A-Za-z_]", expanded):
-        raise ValidationError(
-            f"path contains an unresolved environment variable: {value}"
-        )
+        raise ValidationError(f"unresolved environment variable in path: {value}")
     if expanded == "~" or expanded.startswith("~/"):
         expanded = env.get("HOME", str(Path.home())) + expanded[1:]
     return Path(expanded).resolve(strict=False)
 
 
-def _config_home(env: Mapping[str, str]) -> Path:
-    return _expand(env.get("XDG_CONFIG_HOME", "~/.config"), env)
-
-
 @dataclass(slots=True, frozen=True)
 class Settings:
     workspace: Path
-    archive_dir: Path
-    log_dir: Path
     config_file: Path
-    state_file: Path
     auto_log: bool = True
-    startup: str = "resume_last"
-    include_mermaid: bool = True
-    nocap_enabled: bool = False
     session_prefix: str = "tacmux-"
-    log_outside_tacmux: bool = False
 
     @property
     def editor_argv(self) -> list[str]:
@@ -56,89 +45,39 @@ class Settings:
         except ValueError as exc:
             raise ValidationError(f"invalid editor command: {exc}") from exc
         if not argv:
-            raise ValidationError("VISUAL or EDITOR resolved to an empty command")
+            raise ValidationError("VISUAL or EDITOR is empty")
         return argv
-
-    @property
-    def pager_argv(self) -> list[str]:
-        value = os.environ.get("PAGER") or "less -SR"
-        try:
-            argv = shlex.split(value)
-        except ValueError as exc:
-            raise ValidationError(f"invalid pager command: {exc}") from exc
-        if not argv:
-            raise ValidationError("PAGER resolved to an empty command")
-        return argv
-
-
-def _read_toml(path: Path) -> dict:
-    if not path.is_file():
-        return {}
-    try:
-        with path.open("rb") as stream:
-            value = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ValidationError(f"cannot read config {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise ValidationError(f"config root must be a table: {path}")
-    return value
-
-
-def _boolean(table: dict, key: str, default: bool) -> bool:
-    value = table.get(key, default)
-    if not isinstance(value, bool):
-        raise ValidationError(f"{key} must be true or false")
-    return value
 
 
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     env = os.environ if environ is None else environ
-    default_config = _config_home(env) / "tacmux" / "config.toml"
-    config_file = _expand(env.get("TACMUX_CONFIG", str(default_config)), env)
-    data = _read_toml(config_file)
-
+    config_home = _expand(env.get("XDG_CONFIG_HOME", "~/.config"), env)
+    config_file = _expand(
+        env.get("TACMUX_CONFIG", str(config_home / "tacmux/config.toml")), env
+    )
+    data: dict = {}
+    if config_file.is_file():
+        try:
+            with config_file.open("rb") as stream:
+                data = tomllib.load(stream)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ValidationError(f"cannot read config {config_file}: {exc}") from exc
     paths = data.get("paths", {})
     behavior = data.get("behavior", {})
-    nocap = data.get("nocap", {})
-    if (
-        not isinstance(paths, dict)
-        or not isinstance(behavior, dict)
-        or not isinstance(nocap, dict)
-    ):
-        raise ValidationError(
-            "config sections paths, behavior, and nocap must be TOML tables"
-        )
-
-    def configured_path(environment_key: str, config_key: str, default: str) -> Path:
-        raw = env.get(environment_key, paths.get(config_key, default))
-        if not isinstance(raw, str):
-            raise ValidationError(f"paths.{config_key} must be a string")
-        return _expand(raw, env)
-
-    workspace = configured_path("TACMUX_WORKSPACE", "workspace", "~/workspace")
-    archive_dir = configured_path("TACMUX_ARCHIVE_DIR", "archive_dir", "~/archives")
-    log_dir = configured_path("TACMUX_LOG_DIR", "log_dir", "~/logs")
-    state_file = config_file.parent / "state.json"
-    startup = behavior.get("startup", "resume_last")
-    if not isinstance(startup, str) or startup not in {"resume_last", "picker"}:
-        raise ValidationError("behavior.startup must be 'resume_last' or 'picker'")
-
+    if not isinstance(paths, dict) or not isinstance(behavior, dict):
+        raise ValidationError("paths and behavior must be TOML tables")
+    workspace_value = env.get("TACMUX_WORKSPACE", paths.get("workspace", "~/workspace"))
+    if not isinstance(workspace_value, str):
+        raise ValidationError("paths.workspace must be a string")
+    auto_log = behavior.get("auto_log", True)
+    if not isinstance(auto_log, bool):
+        raise ValidationError("behavior.auto_log must be true or false")
     prefix = env.get("TACMUX_SESSION_PREFIX", behavior.get("session_prefix", "tacmux-"))
-    if not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", prefix):
-        raise ValidationError(
-            "session prefix must contain only letters, digits, underscore, dot, or hyphen"
-        )
-
+    if not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", prefix):
+        raise ValidationError("session_prefix contains unsupported characters")
     return Settings(
-        workspace=workspace,
-        archive_dir=archive_dir,
-        log_dir=log_dir,
+        workspace=_expand(workspace_value, env),
         config_file=config_file,
-        state_file=state_file,
-        auto_log=_boolean(behavior, "auto_log", True),
-        startup=startup,
-        include_mermaid=_boolean(behavior, "include_mermaid", True),
-        nocap_enabled=_boolean(nocap, "enabled", False),
+        auto_log=auto_log,
         session_prefix=prefix,
-        log_outside_tacmux=_boolean(behavior, "log_outside_tacmux", False),
     )
