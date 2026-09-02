@@ -4,11 +4,17 @@ emulate -L zsh
 setopt pipe_fail
 
 ROOT="${0:A:h:h}"
+if [[ ! -x "$ROOT/tests/bin/tmux" ]]; then
+    print -u2 -- "[FAIL] cannot resolve the repository tmux test shim"
+    exit 1
+fi
+
 export TEST_ROOT=$(mktemp -d /tmp/tacmux-v3-integration.XXXXXX) || exit 1
 export TACMUX_REAL_TMUX=$(command -v tmux)
 export TACMUX_TEST_SOCKET="$TEST_ROOT/tmux.sock"
+export TMUX_TMPDIR="$TEST_ROOT/tmux-runtime"
 export HOME="$TEST_ROOT/home"
-export PATH="$HOME/.local/bin:$ROOT/tests/bin:$PATH"
+export PATH="$ROOT/tests/bin:$HOME/.local/bin:$PATH"
 export PYTHONPATH="$ROOT/src"
 export TACMUX_CONFIG="$HOME/.config/tacmux/config.toml"
 export HISTFILE=/dev/null
@@ -18,6 +24,12 @@ cleanup() {
     [[ "$TEST_ROOT" == /tmp/tacmux-v3-integration.* ]] && rm -rf -- "$TEST_ROOT"
 }
 trap cleanup EXIT INT TERM
+
+rehash
+if [[ "$(command -v tmux)" != "$ROOT/tests/bin/tmux" ]]; then
+    print -u2 -- "[FAIL] tmux integration test is not using its isolated shim"
+    exit 1
+fi
 
 fail() { print -u2 -- "[FAIL] $*"; return 1; }
 wait_for() {
@@ -29,7 +41,8 @@ wait_for() {
     return 1
 }
 
-mkdir -p "$HOME/.local/bin" "$HOME/.config/tacmux"
+mkdir -p "$HOME/.local/bin" "$HOME/.config/tacmux" "$TMUX_TMPDIR"
+chmod 700 "$TMUX_TMPDIR"
 ln -s "$ROOT/bin/tacmux" "$HOME/.local/bin/tacmux"
 print -r -- "[paths]
 workspace = \"$TEST_ROOT/workspace\"
