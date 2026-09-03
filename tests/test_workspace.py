@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 
 import pytest
 
 from tacmux import sitrep
-from tacmux.errors import ConflictError, ValidationError
-from tacmux.workspace import TARGET_DIRECTORIES, parse_nmap_ports
+from tacmux.config import Settings
+from tacmux.errors import ConflictError, SafetyError, ValidationError
+from tacmux.workspace import (
+    CaptureRecord,
+    TARGET_DIRECTORIES,
+    Workspace,
+    parse_nmap_ports,
+)
 
 
 def test_create_engagement_and_target_tree(workspace, engagement):
@@ -55,9 +63,9 @@ def test_existing_engagement_repairs_missing_key_directory(workspace, engagement
     assert key_directory.stat().st_mode & 0o777 == 0o700
 
 
-def test_narrative_tasks_cleanup_and_credentials(workspace, engagement):
+def test_operations_tasks_cleanup_and_credentials(workspace, engagement):
     workspace.add_target(engagement, "WEB01", "192.0.2.10")
-    workspace.add_narrative(engagement, "WEB01", "success", "Obtained shell", "via web")
+    workspace.add_event(engagement, "WEB01", "success", "Obtained shell", "via web")
     task = workspace.add_task(engagement, "WEB01", "Enumerate SMB", "after pivot")
     workspace.complete_task(engagement, task)
     cleanup = workspace.add_cleanup(engagement, "WEB01", "Remove payload")
@@ -70,10 +78,11 @@ def test_narrative_tasks_cleanup_and_credentials(workspace, engagement):
     )
 
     text = workspace.read(engagement)
-    assert sitrep.read_global(text, "NARRATIVE")[0][3] == "Obtained shell"
-    assert sitrep.read_global(text, "TODO") == []
-    assert sitrep.read_global(text, "COMPLETED")[0][0] == task
-    assert sitrep.read_global(text, "CLEANUP")[0][3] == "complete"
+    assert sitrep.read_events(text)[0].summary == "Obtained shell"
+    tasks = sitrep.read_tasks(text, "TODO")
+    assert tasks[0].identifier == task
+    assert tasks[0].complete
+    assert sitrep.read_tasks(text, "CLEANUP")[0].complete
     credential_row = sitrep.read_global(text, "CREDENTIALS")[0]
     assert credential_row[5] == "WEB01 · SMB · user"
     assert credential_row[7]
@@ -92,6 +101,270 @@ def test_completed_task_ids_are_not_reused(workspace, engagement):
     workspace.complete_task(engagement, first)
     second = workspace.add_task(engagement, "ENGAGEMENT", "Second task")
     assert (first, second) == ("T001", "T002")
+
+
+def test_tasks_can_be_completed_manually_and_reopened(workspace, engagement):
+    identifier = workspace.add_task(engagement, "ENGAGEMENT", "Review evidence")
+    path = engagement / "SITREP.md"
+    path.write_text(
+        path.read_text().replace(
+            f"- [ ] {identifier}:", f"- [x] {identifier}:"
+        )
+    )
+    assert sitrep.read_tasks(workspace.read(engagement), "TODO")[0].complete
+    workspace.reopen_task(engagement, identifier)
+    task = sitrep.read_tasks(workspace.read(engagement), "TODO")[0]
+    assert not task.complete
+    assert task.completed_at == ""
+
+
+def test_external_sitrep_is_canonical_and_workspace_link_is_strict(tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    settings = Settings(
+        workspace=tmp_path / "workspace",
+        config_file=tmp_path / "config.toml",
+        sitrep_root=notes,
+    )
+    workspace = Workspace(settings)
+    engagement = workspace.create_engagement("ACME")
+    link = engagement / "SITREP.md"
+    physical = notes / "ACME/SITREP.md"
+    assert link.is_symlink()
+    assert link.resolve() == physical
+    workspace.add_event(engagement, "ENGAGEMENT", "info", "Started")
+    assert sitrep.read_events(physical.read_text())[0].summary == "Started"
+    assert physical.stat().st_mode & 0o777 == 0o600
+
+    image = tmp_path / "CleanShot proof @2x.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+    workspace.add_event(
+        engagement,
+        "ENGAGEMENT",
+        "success",
+        "Captured proof",
+        images=[image],
+    )
+    assert (notes / "ACME/images/CleanShot proof @2x.png").is_file()
+    assert "(<images/CleanShot proof @2x.png>)" in physical.read_text()
+
+    link.unlink()
+    outside = tmp_path / "outside.md"
+    outside.write_text(physical.read_text())
+    os.symlink(outside, link)
+    assert not workspace.is_engagement(engagement)
+
+
+def test_external_sitrep_collision_preserves_existing_notes(tmp_path):
+    notes = tmp_path / "notes"
+    existing = notes / "ACME"
+    existing.mkdir(parents=True)
+    sentinel = existing / "keep.md"
+    sentinel.write_text("operator notes\n")
+    workspace = Workspace(
+        Settings(
+            workspace=tmp_path / "workspace",
+            config_file=tmp_path / "config.toml",
+            sitrep_root=notes,
+        )
+    )
+    with pytest.raises(ConflictError, match="already exist"):
+        workspace.create_engagement("ACME")
+    assert sentinel.read_text() == "operator notes\n"
+    assert not (tmp_path / "workspace/ACME").exists()
+
+
+def test_external_sitrep_requires_a_real_configured_root(tmp_path):
+    notes = tmp_path / "missing-notes"
+    workspace = Workspace(
+        Settings(
+            workspace=tmp_path / "workspace",
+            config_file=tmp_path / "config.toml",
+            sitrep_root=notes,
+        )
+    )
+    with pytest.raises(SafetyError, match="configured SITREP root"):
+        workspace.create_engagement("ACME")
+    assert not (tmp_path / "workspace/ACME").exists()
+
+
+def test_mutation_refuses_intervening_editor_change(
+    workspace, engagement, monkeypatch
+):
+    original = sitrep.append_event
+
+    def concurrent_edit(text, event):
+        (engagement / "SITREP.md").write_text(text + "\nexternal edit\n")
+        return original(text, event)
+
+    monkeypatch.setattr(sitrep, "append_event", concurrent_edit)
+    with pytest.raises(ConflictError, match="another editor"):
+        workspace.add_event(engagement, "ENGAGEMENT", "info", "Started")
+    assert workspace.read(engagement).endswith("external edit\n")
+
+
+def test_image_copy_is_removed_when_event_commit_conflicts(
+    workspace, engagement, tmp_path, monkeypatch
+):
+    image = tmp_path / "proof.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+    original = sitrep.append_event
+
+    def concurrent_edit(text, event):
+        (engagement / "SITREP.md").write_text(text + "\nexternal edit\n")
+        return original(text, event)
+
+    monkeypatch.setattr(sitrep, "append_event", concurrent_edit)
+    with pytest.raises(ConflictError, match="another editor"):
+        workspace.add_event(
+            engagement,
+            "ENGAGEMENT",
+            "success",
+            "Captured proof",
+            images=[image],
+        )
+    assert not (engagement / "images/proof.png").exists()
+
+
+def test_capture_inspection_and_image_attachment(
+    workspace, engagement, tmp_path, monkeypatch
+):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    evidence = engagement / "captures/WEB01/recon"
+    evidence.mkdir(parents=True)
+    (evidence / "scan.txt").write_text("result\n")
+    payload = {
+        "schema_version": 1,
+        "capture": {
+            "id": "11111111-2222-3333-4444-555555555555",
+            "status": "completed",
+            "effective_tool": "nmap",
+            "path": "WEB01/recon/scan.txt",
+            "command": "nmap -sV 192.0.2.10",
+        },
+    }
+    monkeypatch.setattr(
+        "tacmux.workspace.shutil.which", lambda name: f"/usr/bin/{name}"
+    )
+    monkeypatch.setattr(
+        "tacmux.workspace.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, json.dumps(payload), ""
+        ),
+    )
+    capture = workspace.inspect_capture(engagement, "WEB01")
+    image = tmp_path / "proof.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+    identifier = workspace.add_event(
+        engagement,
+        "WEB01",
+        "success",
+        "Service identified",
+        capture=capture,
+        images=[image],
+    )
+    event = sitrep.read_events(workspace.read(engagement))[0]
+    assert event.identifier == identifier
+    assert event.capture_id == payload["capture"]["id"]
+    assert "![Service identified](<images/proof.png>)" in event.body
+    assert "nmap -sV 192.0.2.10" in event.body
+    assert (engagement / "images/proof.png").read_bytes() == image.read_bytes()
+
+    with pytest.raises(ConflictError, match="already attached"):
+        workspace.add_event(
+            engagement, "WEB01", "success", "Duplicate", capture=capture
+        )
+
+
+def test_image_links_use_literal_angle_bracket_paths_for_obsidian(
+    workspace, engagement, tmp_path
+):
+    image = tmp_path / "CleanShot 2026-09-02 at 23.55.07@2x.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+
+    workspace.add_event(
+        engagement,
+        "ENGAGEMENT",
+        "success",
+        "Captured proof",
+        images=[image],
+    )
+
+    event = sitrep.read_events(workspace.read(engagement))[0]
+    assert (
+        "(<images/CleanShot 2026-09-02 at 23.55.07@2x.png>)" in event.body
+    )
+    assert "%20" not in event.body
+    assert "%40" not in event.body
+
+
+def test_capture_inspection_rejects_another_route(
+    workspace, engagement, monkeypatch
+):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    evidence = engagement / "captures/OTHER/recon"
+    evidence.mkdir(parents=True)
+    (evidence / "scan.txt").write_text("result\n")
+    payload = {
+        "capture": {
+            "id": "capture-1",
+            "status": "completed",
+            "effective_tool": "nmap",
+            "path": "OTHER/recon/scan.txt",
+            "command": "nmap -sV 192.0.2.20",
+        }
+    }
+    monkeypatch.setattr("tacmux.workspace.shutil.which", lambda _name: "/usr/bin/cap")
+    monkeypatch.setattr(
+        "tacmux.workspace.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, json.dumps(payload), ""
+        ),
+    )
+
+    with pytest.raises(ValidationError, match="another route"):
+        workspace.inspect_capture(engagement, "WEB01")
+
+
+def test_image_attachment_rejects_links_and_bad_signatures(
+    workspace, engagement, tmp_path
+):
+    image = tmp_path / "proof.png"
+    image.write_text("not an image")
+    with pytest.raises(ValidationError, match="does not match"):
+        workspace.add_event(
+            engagement, "ENGAGEMENT", "info", "Bad image", images=[image]
+        )
+
+    real = tmp_path / "real.png"
+    real.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+    linked = tmp_path / "linked.png"
+    os.symlink(real, linked)
+    with pytest.raises(ValidationError, match="missing or unsafe"):
+        workspace.add_event(
+            engagement, "ENGAGEMENT", "info", "Linked image", images=[linked]
+        )
+
+    unsafe_name = tmp_path / "proof#fragment.png"
+    unsafe_name.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+    with pytest.raises(ValidationError, match="image filename"):
+        workspace.add_event(
+            engagement, "ENGAGEMENT", "info", "Unsafe name", images=[unsafe_name]
+        )
+
+
+def test_capture_without_image_has_placeholder(workspace, engagement):
+    capture = CaptureRecord("capture-1", "completed", "nmap", "ops/scan.txt", "nmap")
+    identifier = workspace.add_event(
+        engagement, "ENGAGEMENT", "success", "Discovery complete", capture=capture
+    )
+    event = next(
+        value
+        for value in sitrep.read_events(workspace.read(engagement))
+        if value.identifier == identifier
+    )
+    assert "**Image:** _Not attached._" in event.body
+    assert "Evidence supporting: Discovery complete" in event.body
 
 
 def test_hash_uses_first_colon_and_generated_files(workspace, engagement):
@@ -187,8 +460,8 @@ def test_confirmation_delimiters_are_reserved(workspace, engagement):
 
 def test_target_delete_refuses_history_then_removes_mistake(workspace, engagement):
     workspace.add_target(engagement, "KEEP", "192.0.2.10")
-    workspace.add_narrative(engagement, "KEEP", "info", "Observed service")
-    with pytest.raises(ConflictError, match="narrative"):
+    workspace.add_event(engagement, "KEEP", "info", "Observed service")
+    with pytest.raises(ConflictError, match="operations log"):
         workspace.delete_target(engagement, "KEEP")
 
     workspace.add_target(engagement, "MISTAKE", "192.0.2.11")
@@ -269,5 +542,21 @@ def test_sync_restores_absent_empty_global_and_port_tables(workspace, engagement
 
     assert workspace.repair_scaffolding(engagement, {}) == []
     repaired = workspace.read(engagement)
-    assert sitrep.read_global(repaired, "TODO") == []
+    assert sitrep.read_tasks(repaired, "TODO") == []
     assert sitrep.read_target(repaired, "WEB01", "PORTS") == []
+
+
+def test_sync_repairs_scaffolding_and_reports_reference_problems(
+    workspace, engagement
+):
+    text = workspace.read(engagement)
+    text = sitrep.write_tasks(
+        text,
+        "TODO",
+        [sitrep.Task("T001", "MISSING", "Review missing host")],
+    )
+    (engagement / "SITREP.md").write_text(text)
+
+    assert workspace.repair_scaffolding(engagement, {}) == [
+        "todo references missing target: MISSING"
+    ]

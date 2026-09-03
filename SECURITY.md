@@ -16,16 +16,18 @@ Foreground Nmap discovery accepts only a literal IP or CIDR and constructs a fix
 
 TACMUX can store raw passwords and hashes in `SITREP.md`, generated credential files, and operator-supplied SSH keys under `credentials/keys/`. `tacmux creds` intentionally prints password and hash values. Generated `targets.txt`, pane logs, and NOCAP captures can also contain sensitive client information.
 
-New engagement directories are `0700` and new TACMUX files are `0600` where supported. Shared folders, FAT filesystems, network mounts, removable media, and cloud-sync directories may ignore or broaden those permissions. Use an approved encrypted evidence location and protect backups separately.
+New engagement directories are `0700` and new TACMUX files are `0600` where supported. An optional `paths.sitrep_root` stores the physical SITREP in an external Markdown notes directory and leaves a strictly validated link in the workspace. Shared folders, FAT filesystems, network mounts, removable media, and cloud-sync directories may ignore or broaden those permissions. Use an approved encrypted evidence location and protect backups separately.
 
 Interactive credential entry avoids terminal echo, but direct credentials remain in shell history and pane logs. Pause logging or use the prompt when required by the engagement's evidence policy.
+
+Capture-assisted Operations Log entries include NOCAP's recorded command. If that command contains inline credentials, the same material will enter SITREP and any configured external notes location. Prefer environment-safe or prompted authentication where the underlying tool supports it.
 
 ## Filesystem and Markdown trust
 
 - Engagement and target names are single path components.
-- TACMUX refuses linked engagement control files, target directories, input files, and log destinations.
+- TACMUX refuses linked engagement control files, target directories, input files, and log destinations. The sole exception is an engagement's SITREP link when it resolves to the exact configured notes-root destination.
 - Writes use an engagement lock, owner-only temporary file, `fsync`, and atomic replacement.
-- Managed Markdown tables have exact columns and paired markers. Malformed tables fail closed instead of being rewritten.
+- Managed Markdown tables, checklists, and Operations Log events have paired markers. Malformed structures fail closed instead of being rewritten.
 - `$VISUAL` or `$EDITOR` runs as the current user and is trusted configuration.
 - Data manually placed inside a managed table is parsed as operator input, never executed.
 
@@ -37,10 +39,10 @@ Inside tmux, pane options identify the engagement and target. Stale inherited en
 
 Automatic logging is limited to TACMUX-owned sessions. Prefix+`T`, Prefix+`S`, credential display, clipboard forwarding, NOCAP, and external tools are explicit operator actions.
 
-NOCAP owns its capture metadata and command execution boundary. TACMUX exports an engagement root plus a contained route prefix; it does not parse or rewrite NOCAP records.
+NOCAP owns its capture metadata and command execution boundary. TACMUX exports an engagement root plus a contained route prefix. `tm done -c` and `tm log -c` read the latest retained record through `cap inspect --json`; they never execute or rewrite it and refuse a capture from another target route.
 
 ## Destructive operations
 
-Target deletion is only for mistaken targets. TACMUX requires a stopped session, exact typed confirmation, containment below `targets/`, and no structured history, port records, tasks, cleanup, confirmed credential references, or NOCAP captures. It stages the target directory before updating SITREP and reports any staged data that could not be removed.
+Target deletion is only for mistaken targets. TACMUX requires a stopped session, exact typed confirmation, containment below `targets/`, and no Operations Log events, port records, tasks, cleanup, confirmed credential references, or NOCAP captures. It stages the target directory before updating SITREP and reports any staged data that could not be removed.
 
 Uninstall removes only a marked TACMUX installation and matching command link. Configuration and engagement directories are preserved. Paired TACMUX markers are validated before editing `~/.tmux.conf` or `~/.zshrc`; linked shell configuration files are left untouched.

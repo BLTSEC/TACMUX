@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tacmux import sitrep
 from tacmux.cli import main
+from tacmux.workspace import CaptureRecord
 
 
 def _configure(monkeypatch, settings):
@@ -42,8 +43,34 @@ def test_cli_operational_flow(monkeypatch, settings, workspace, engagement, caps
     assert "Shell drops" in output
     assert "Obtained shell" in output
     text = workspace.read(engagement)
-    assert len(sitrep.read_global(text, "NARRATIVE")) == 2
-    assert sitrep.read_global(text, "TODO")[0][1] == "WEB01"
+    assert len(sitrep.read_events(text)) == 2
+    assert sitrep.read_tasks(text, "TODO")[0].target == "WEB01"
+
+
+def test_cli_capture_image_and_reopen_workflow(
+    monkeypatch, settings, workspace, engagement, tmp_path, capsys
+):
+    _configure(monkeypatch, settings)
+    monkeypatch.chdir(engagement)
+    capture = CaptureRecord(
+        "capture-1", "completed", "nmap", "ops/recon/scan.txt", "nmap -sV"
+    )
+    monkeypatch.setattr(
+        "tacmux.workspace.Workspace.inspect_capture", lambda *_args: capture
+    )
+    image = tmp_path / "proof.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+    assert main(["done", "-c", "-i", str(image), "Service", "validated"]) == 0
+    event = sitrep.read_events(workspace.read(engagement))[0]
+    assert event.capture_id == "capture-1"
+    assert "images/proof.png" in event.body
+
+    assert main(["todo", "add", "Draft", "finding"]) == 0
+    identifier = sitrep.read_tasks(workspace.read(engagement), "TODO")[0].identifier
+    assert main(["todo", "done", identifier]) == 0
+    assert main(["todo", "reopen", identifier]) == 0
+    assert not sitrep.read_tasks(workspace.read(engagement), "TODO")[0].complete
+    assert "Logged E001" in capsys.readouterr().out
 
 
 def test_cli_target_export_all_multi_select_and_none(
@@ -194,6 +221,6 @@ def test_completion_values_are_contextual_and_never_print_secrets(
     assert main(["_complete", "cleanup"]) == 0
     assert capsys.readouterr().out.splitlines() == [cleanup]
     assert main(["_complete", "sitrep"]) == 0
-    assert {"narrative", "cleanup", "WEB01"} <= set(
+    assert {"log", "cleanup", "WEB01"} <= set(
         capsys.readouterr().out.splitlines()
     )

@@ -53,7 +53,8 @@ tm log "Nginx and SSH identified"
 tm todo add "Enumerate the web application"
 tm creds add
 nmap -sV "$TARGET" | tm ports add
-tm done "Obtained a shell as svc_web"
+cap -n initial-shell id
+tm done -c -i proof.png "Obtained a shell as svc_web"
 tm cleanup add "Remove uploaded payload"
 tm status
 ```
@@ -69,15 +70,15 @@ tacmux target add|update|export|rename|delete
 tacmux stop [TARGET]           stop a target or ops session
 tacmux status [TARGET]         concise operational status
 tacmux sitrep [SECTION]        edit SITREP at an optional heading
-tacmux sitrep sync             validate and repair scaffolding
-tacmux log [OUTCOME] TEXT      record an event
-tacmux done TEXT               record a successful completed step
-tacmux history [TARGET]        show narrative history
+tacmux sitrep sync             upgrade, validate, and repair scaffolding
+tacmux log [OUTCOME] [-c] [-i IMAGE] TEXT
+tacmux done [-c] [-i IMAGE] TEXT
+tacmux history [TARGET]        show Operations Log history
 tacmux creds [view|add|confirm] credentials and confirmed access
 tacmux ports [TARGET]          normalized port inventory
 tacmux ports add [TARGET]      ingest Nmap normal output
-tacmux todo [add|done]         planned and completed work
-tacmux cleanup [add|done]      end-of-engagement obligations
+tacmux todo [add|done|reopen]  planned and completed work
+tacmux cleanup [add|done|reopen]
 tacmux discover               reviewed host identification
 ```
 
@@ -88,7 +89,7 @@ Missing values open short prompts or an `fzf` picker. Inline commands infer the 
 ```text
 ~/workspace/ACME/
 ├── .tacmux/
-├── SITREP.md
+├── SITREP.md                 # file or validated external-notes link
 ├── targets.txt               # generated endpoint list when requested
 ├── credentials/
 │   ├── keys/
@@ -110,18 +111,32 @@ Missing values open short prompts or an `fzf` picker. Inline commands infer the 
         └── working/
 ```
 
-`SITREP.md` contains Narrative, Targets, Credentials with confirmed access, TODO, Completed, and Cleanup. TACMUX manages only the Markdown tables between its markers. Prose outside those markers remains operator-owned.
+`SITREP.md` keeps current state first—Targets, Credentials, TODO, and Cleanup—then a chronological Operations Log. TODO and Cleanup use native Markdown checkboxes, so an item checked in Obsidian or `$EDITOR` is immediately understood by TACMUX. Log entry prose remains operator-editable between its markers.
 
-Narrative replaces separate note and activity systems:
+The Operations Log replaces separate note, activity, and attack-path systems:
 
 ```bash
 tm log "SMB signing is disabled"                    # info
 tm log failed "Recovered password was rejected"
 tm log partial "Relay reached LDAP but no write"
 tm done "Obtained shell as svc_web"                 # success
-tm log                                                # interactive
-tm log edit                                           # jump to Narrative
+tm done -c "Established the approved internal pivot" # attach latest NOCAP capture
+tm done -c -i proof.png "Obtained domain access"      # capture plus screenshot
+tm log                                                 # interactive
+tm log edit                                            # jump to Operations Log
 ```
+
+Capture-assisted entries include evidence and command details, an editable screenshot caption, Draft findings, and Notes. When `-i` is omitted, the entry explicitly says that no screenshot is attached instead of implying that evidence exists.
+
+To keep the canonical SITREP in any external Markdown notes directory, set one optional path:
+
+```toml
+[paths]
+workspace = "~/workspace"
+sitrep_root = "~/notes/engagements"
+```
+
+New engagements then store the physical note at `<sitrep_root>/<engagement>/SITREP.md` and expose it through the usual workspace path. There is no Obsidian API or synchronization process; TACMUX, Obsidian, and `$EDITOR` operate on the same file. Because the SITREP can contain raw secrets, use only an approved protected notes location.
 
 See the [operator guide](docs/USAGE.md), [keybindings](docs/KEYBINDINGS.md), and [security policy](SECURITY.md).
 

@@ -20,8 +20,8 @@ _tacmux() {
     'status:show engagement or target status'
     'sitrep:edit or repair the situation report'
     'log:record an operational event'
-    'done:record a successful narrative step'
-    'history:show narrative history'
+    'done:record a successful Operations Log step'
+    'history:show Operations Log history'
     'creds:view, add, or confirm working credentials'
     'ports:view or import target ports'
     'todo:view, add, or complete planned work'
@@ -79,7 +79,16 @@ _tacmux() {
       ;;
     log)
       if (( CURRENT == 3 )); then
-        _values 'outcome or action' info success partial failed edit
+        _values 'outcome, option, or action' info success partial failed edit -c --capture -i --image
+      elif [[ "${words[CURRENT-1]}" == -i || "${words[CURRENT-1]}" == --image ]]; then
+        _files
+      fi
+      ;;
+    done)
+      if [[ "${words[CURRENT-1]}" == -i || "${words[CURRENT-1]}" == --image ]]; then
+        _files
+      else
+        _values 'evidence option' -c --capture -i --image
       fi
       ;;
     creds)
@@ -108,9 +117,11 @@ _tacmux() {
       ;;
     todo|cleanup)
       if (( CURRENT == 3 )); then
-        _values "$command action" add done
+        _values "$command action" add done reopen
       elif (( CURRENT == 4 )) && [[ "${words[3]}" == done ]]; then
         _tacmux_dynamic "$command"
+      elif (( CURRENT == 4 )) && [[ "${words[3]}" == reopen ]]; then
+        _tacmux_dynamic "${command}_done"
       fi
       ;;
     discover)

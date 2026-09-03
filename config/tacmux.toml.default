@@ -2,6 +2,8 @@
 
 [paths]
 workspace = "~/workspace"
+# Optional: keep each canonical SITREP under this notes directory.
+# sitrep_root = "~/notes/engagements"
 
 [behavior]
 auto_log = true

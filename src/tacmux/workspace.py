@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import fcntl
 import ipaddress
+import json
 import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tempfile
 from typing import Callable, Iterator, Sequence
 
 from .config import Settings
-from .errors import ConflictError, SafetyError, ValidationError
+from .errors import ConflictError, ExternalToolError, SafetyError, ValidationError
 from . import sitrep
 
 
@@ -22,6 +25,17 @@ TARGET_DIRECTORIES = ("scans", "payloads", "loot", "screenshots", "working")
 OUTCOMES = ("info", "success", "partial", "failed")
 TARGET_STATUSES = ("new", "active", "blocked", "complete")
 ACCESS_LEVELS = ("none", "authenticated", "user", "admin", "system", "domain")
+IMAGE_LIMIT = 25 * 1024 * 1024
+IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+
+
+@dataclass(slots=True, frozen=True)
+class CaptureRecord:
+    identifier: str
+    status: str
+    tool: str
+    path: str
+    command: str
 
 
 def utc_now() -> str:
@@ -107,6 +121,44 @@ class Workspace:
     def initialize(self) -> None:
         _private_directory(self.settings.workspace)
 
+    def _configured_sitrep(self, root: Path) -> Path:
+        if self.settings.sitrep_root is None:
+            raise SafetyError("external SITREP requires paths.sitrep_root")
+        notes_root = self.settings.sitrep_root
+        if not notes_root.is_dir() or notes_root.is_symlink():
+            raise SafetyError(
+                f"configured SITREP root is missing or linked: {notes_root}"
+            )
+        expected = notes_root / root.name / "SITREP.md"
+        try:
+            expected.resolve(strict=False).relative_to(notes_root.resolve(strict=True))
+        except (OSError, ValueError) as exc:
+            raise SafetyError(
+                f"external SITREP escapes configured root: {expected}"
+            ) from exc
+        return expected
+
+    def _resolve_sitrep(self, root: Path, *, require_exists: bool = True) -> Path:
+        link = root / "SITREP.md"
+        if link.is_symlink():
+            expected = self._configured_sitrep(root)
+            try:
+                actual = link.resolve(strict=require_exists)
+            except OSError as exc:
+                raise SafetyError(f"cannot resolve linked SITREP: {link}") from exc
+            if actual != expected.resolve(strict=require_exists):
+                raise SafetyError(
+                    f"linked SITREP has an unexpected destination: {link}"
+                )
+            if expected.is_symlink():
+                raise SafetyError(f"refusing linked external SITREP: {expected}")
+            path = expected
+        else:
+            path = self._contained(root, "SITREP.md")
+        if require_exists and (not path.is_file() or path.is_symlink()):
+            raise ValidationError(f"SITREP is missing or unsafe: {path}")
+        return path
+
     def _contained(self, root: Path, *parts: str) -> Path:
         base = root.resolve(strict=True)
         candidate = root.joinpath(*parts)
@@ -122,12 +174,18 @@ class Workspace:
         return candidate
 
     def is_engagement(self, root: Path) -> bool:
-        return (
+        if not (
             root.is_dir()
             and not root.is_symlink()
             and (root / ".tacmux/version").is_file()
             and (root / "SITREP.md").is_file()
-        )
+        ):
+            return False
+        try:
+            self._resolve_sitrep(root)
+        except (SafetyError, ValidationError, OSError):
+            return False
+        return True
 
     def engagements(self) -> list[Path]:
         self.initialize()
@@ -151,6 +209,8 @@ class Workspace:
                 f"directory exists but is not a TACMUX engagement: {root}"
             )
         root.mkdir(mode=0o700)
+        external_directory: Path | None = None
+        external_created = False
         try:
             for relative in (
                 ".tacmux",
@@ -164,10 +224,25 @@ class Workspace:
             ):
                 _private_directory(root / relative)
             _atomic_write(root / ".tacmux/version", "3\n")
-            _atomic_write(root / "SITREP.md", sitrep.initial_document(name))
-            self._sync_credentials(root, sitrep.initial_document(name))
+            document = sitrep.initial_document(name)
+            if self.settings.sitrep_root is None:
+                _atomic_write(root / "SITREP.md", document)
+            else:
+                destination = self._configured_sitrep(root)
+                external_directory = destination.parent
+                if external_directory.exists():
+                    raise ConflictError(
+                        f"external engagement notes already exist: {external_directory}"
+                    )
+                external_directory.mkdir(mode=0o700)
+                external_created = True
+                _atomic_write(destination, document)
+                os.symlink(destination, root / "SITREP.md")
+            self._sync_credentials(root, document)
         except BaseException:
             shutil.rmtree(root, ignore_errors=True)
+            if external_directory is not None and external_created:
+                shutil.rmtree(external_directory, ignore_errors=True)
             raise
         return root
 
@@ -197,12 +272,10 @@ class Workspace:
 
     def sitrep_path(self, root: Path) -> Path:
         self.require_engagement(root)
-        return self._contained(root, "SITREP.md")
+        return self._resolve_sitrep(root)
 
     def read(self, root: Path) -> str:
         path = self.sitrep_path(root)
-        if path.is_symlink():
-            raise SafetyError(f"refusing linked SITREP: {path}")
         try:
             return path.read_text(encoding="utf-8")
         except OSError as exc:
@@ -224,16 +297,34 @@ class Workspace:
         with self.locked(root):
             previous = self.read(root)
             updated = operation(previous)
-            if not updated.endswith("\n"):
-                updated += "\n"
-            problems = self.validate(root, updated)
-            if problems:
-                raise ValidationError("; ".join(problems))
-            if updated != previous:
-                _atomic_write(self.sitrep_path(root), updated)
-            os.chmod(self.sitrep_path(root), 0o600)
-            self._sync_credentials(root, updated)
-            return updated
+            return self._commit(root, previous, updated)
+
+    def _commit(
+        self,
+        root: Path,
+        previous: str,
+        updated: str,
+        *,
+        allow_reference_problems: bool = False,
+    ) -> str:
+        if not updated.endswith("\n"):
+            updated += "\n"
+        updated = sitrep.normalize_document(updated)
+        problems = self.validate(root, updated)
+        if problems and not allow_reference_problems:
+            raise ValidationError("; ".join(problems))
+        path = self.sitrep_path(root)
+        try:
+            current = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValidationError(f"cannot re-read {path}: {exc}") from exc
+        if current != previous:
+            raise ConflictError("SITREP changed in another editor; retry the command")
+        if updated != previous:
+            _atomic_write(path, updated)
+        os.chmod(path, 0o600)
+        self._sync_credentials(root, updated)
+        return updated
 
     def _target_path(self, root: Path, target: str) -> Path:
         target = validate_target_name(target)
@@ -266,10 +357,7 @@ class Workspace:
                     _private_directory(path / directory)
                 previous = self.read(root)
                 updated = sitrep.add_target(previous, name, endpoint)
-                problems = self.validate(root, updated)
-                if problems:
-                    raise ValidationError("; ".join(problems))
-                _atomic_write(self.sitrep_path(root), updated)
+                self._commit(root, previous, updated)
             except BaseException:
                 shutil.rmtree(path, ignore_errors=True)
                 raise
@@ -279,7 +367,9 @@ class Workspace:
         target = self.canonical_target(root, target)
         return sitrep.details_map(self.read(root), target)
 
-    def write_target_list(self, root: Path, selected: Sequence[str]) -> tuple[Path, int]:
+    def write_target_list(
+        self, root: Path, selected: Sequence[str]
+    ) -> tuple[Path, int]:
         with self.locked(root):
             available = {name.casefold(): name for name in self.targets(root)}
             targets: list[str] = []
@@ -347,14 +437,12 @@ class Workspace:
                     if old_capture.exists():
                         if new_capture.exists():
                             raise ConflictError(
-                                f"capture route already exists for renamed target: {new_capture}"
+                                "capture route already exists for renamed target: "
+                                f"{new_capture}"
                             )
                         old_capture.rename(new_capture)
                         capture_renamed = True
-                problems = self.validate(root, updated)
-                if problems:
-                    raise ValidationError("; ".join(problems))
-                _atomic_write(self.sitrep_path(root), updated)
+                self._commit(root, text, updated)
             except BaseException:
                 if capture_renamed and old_capture and new_capture:
                     new_capture.rename(old_capture)
@@ -366,19 +454,12 @@ class Workspace:
         target = self.canonical_target(root, target)
         text = self.read(root)
         references: list[str] = []
-        for table_name, label in (
-            ("NARRATIVE", "narrative rows"),
-            ("TODO", "TODO items"),
-            ("COMPLETED", "completed items"),
-            ("CLEANUP", "cleanup items"),
-        ):
-            headers = sitrep.GLOBAL_TABLES[table_name]
-            target_index = headers.index("Target")
-            if any(
-                row[target_index] == target
-                for row in sitrep.read_global(text, table_name)
-            ):
-                references.append(label)
+        if any(event.target == target for event in sitrep.read_events(text)):
+            references.append("operations log events")
+        if any(task.target == target for task in sitrep.read_tasks(text, "TODO")):
+            references.append("TODO items")
+        if any(task.target == target for task in sitrep.read_tasks(text, "CLEANUP")):
+            references.append("cleanup items")
         if any(
             confirmation_target == target
             for row in sitrep.read_global(text, "CREDENTIALS")
@@ -410,11 +491,9 @@ class Workspace:
             staged = deleting / f"{target}-{os.getpid()}"
             path.rename(staged)
             try:
-                updated = sitrep.remove_target(self.read(root), target)
-                problems = self.validate(root, updated)
-                if problems:
-                    raise ValidationError("; ".join(problems))
-                _atomic_write(self.sitrep_path(root), updated)
+                previous = self.read(root)
+                updated = sitrep.remove_target(previous, target)
+                self._commit(root, previous, updated)
             except BaseException:
                 staged.rename(path)
                 raise
@@ -425,27 +504,228 @@ class Workspace:
                     f"target was removed but staged data remains at {staged}: {exc}"
                 ) from exc
 
-    def add_narrative(
+    def add_event(
         self,
         root: Path,
         target: str,
         outcome: str,
         summary: str,
         notes: str = "",
-    ) -> None:
+        *,
+        capture: CaptureRecord | None = None,
+        images: Sequence[Path] = (),
+    ) -> str:
         if target != "ENGAGEMENT":
             target = self.canonical_target(root, target)
         if outcome not in OUTCOMES:
             raise ValidationError("outcome must be info, success, partial, or failed")
         summary = validate_value(summary, "summary")
         notes = validate_value(notes, "notes", required=False)
+        image_sources = [self._validate_image(path) for path in images]
+        created_images: list[Path] = []
+        identifier = ""
+        with self.locked(root):
+            previous = self.read(root)
+            events = sitrep.read_events(previous)
+            if capture and any(
+                event.capture_id == capture.identifier for event in events
+            ):
+                raise ConflictError(
+                    f"capture is already attached: {capture.identifier}"
+                )
+            identifier = sitrep.next_event_id(events)
+            try:
+                image_links = [
+                    self._copy_event_image(root, source, created_images)
+                    for source in image_sources
+                ]
+                body = self._event_body(summary, notes, capture, image_links)
+                event = sitrep.Event(
+                    identifier,
+                    utc_now(),
+                    target,
+                    outcome,
+                    summary,
+                    capture.identifier if capture else "",
+                    body,
+                )
+                self._commit(root, previous, sitrep.append_event(previous, event))
+            except BaseException:
+                for path in created_images:
+                    path.unlink(missing_ok=True)
+                raise
+        return identifier
 
-        def operation(text: str) -> str:
-            rows = sitrep.read_global(text, "NARRATIVE")
-            rows.append([utc_now(), target, outcome, summary, notes])
-            return sitrep.write_global(text, "NARRATIVE", rows)
+    @staticmethod
+    def _validate_image(path: Path) -> Path:
+        source = path.expanduser()
+        if source.is_symlink() or not source.is_file():
+            raise ValidationError(f"image is missing or unsafe: {source}")
+        if re.search(r'[\x00-\x1f\x7f\\<>#?%]', source.name):
+            raise ValidationError(
+                "image filename cannot contain control characters, \\, <, >, #, ?, or %"
+            )
+        size = source.stat().st_size
+        if not 0 < size <= IMAGE_LIMIT:
+            raise ValidationError(
+                f"image must be between 1 byte and {IMAGE_LIMIT} bytes"
+            )
+        if source.suffix.casefold() not in IMAGE_SUFFIXES:
+            raise ValidationError(f"unsupported image type: {source.suffix or '-'}")
+        try:
+            with source.open("rb") as stream:
+                header = stream.read(12)
+        except OSError as exc:
+            raise ValidationError(f"cannot read image {source}: {exc}") from exc
+        valid = (
+            header.startswith(b"\x89PNG\r\n\x1a\n")
+            or header.startswith(b"\xff\xd8\xff")
+            or header.startswith((b"GIF87a", b"GIF89a"))
+            or (header.startswith(b"RIFF") and header[8:12] == b"WEBP")
+        )
+        if not valid:
+            raise ValidationError(
+                f"file does not match a supported image format: {source}"
+            )
+        return source
 
-        self.mutate(root, operation)
+    def _copy_event_image(
+        self, root: Path, source: Path, created: list[Path]
+    ) -> str:
+        directory = self.sitrep_path(root).parent / "images"
+        _private_directory(directory)
+        destination = directory / source.name
+        counter = 2
+        while destination.exists() or destination.is_symlink():
+            destination = directory / f"{source.stem}-{counter}{source.suffix.lower()}"
+            counter += 1
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.", dir=directory
+        )
+        temporary = Path(temporary_name)
+        try:
+            os.close(descriptor)
+            shutil.copyfile(source, temporary)
+            os.chmod(temporary, 0o600)
+            with temporary.open("rb") as stream:
+                os.fsync(stream.fileno())
+            os.replace(temporary, destination)
+            directory_descriptor = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+            created.append(destination)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        return f"images/{destination.name}"
+
+    @staticmethod
+    def _fenced_command(command: str) -> str:
+        longest = max((len(run) for run in re.findall(r"`+", command)), default=0)
+        fence = "`" * max(3, longest + 1)
+        return f"{fence}bash\n{command}\n{fence}"
+
+    def _event_body(
+        self,
+        summary: str,
+        notes: str,
+        capture: CaptureRecord | None,
+        images: Sequence[str],
+    ) -> str:
+        sections: list[str] = []
+        if capture:
+            sections.append(
+                "#### Evidence\n\n"
+                f"- **Status:** {capture.status}\n"
+                f"- **Tool:** {capture.tool}\n"
+                f"- **Path:** captures/{capture.path}\n\n"
+                "#### Command\n\n"
+                f"{self._fenced_command(capture.command)}"
+            )
+        if capture or images:
+            if images:
+                alt = summary.replace("\\", "\\\\").replace("]", "\\]")
+                rendered = "\n\n".join(
+                    f"![{alt}](<{path}>)\n\n**Caption:** {summary}"
+                    for path in images
+                )
+            else:
+                rendered = (
+                    "**Image:** _Not attached._\n\n"
+                    f"**Caption:** _Evidence supporting: {summary}._"
+                )
+            sections.append(f"#### Screenshots\n\n{rendered}")
+            sections.append("#### Draft findings\n\n_None recorded._")
+        if notes or capture or images:
+            sections.append(
+                "#### Notes\n\n"
+                + (notes if notes else "_Add supporting context here._")
+            )
+        return "\n\n".join(sections)
+
+    def inspect_capture(self, root: Path, target: str) -> CaptureRecord:
+        binary = shutil.which("cap")
+        if binary is None:
+            raise ExternalToolError("cap is required for --capture")
+        route = "ops"
+        if target != "ENGAGEMENT":
+            target = self.canonical_target(root, target)
+            route = self.target_details(root, target)["Capture Route"][0]
+        environment = os.environ | {
+            "NOCAP_WORKSPACE": str(root),
+            "TACMUX_TARGET": "captures",
+            "NOCAP_ROUTE_PREFIX": route,
+        }
+        try:
+            result = subprocess.run(
+                [binary, "inspect", "--json"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+                env=environment,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ExternalToolError(
+                f"cannot inspect latest NOCAP capture: {exc}"
+            ) from exc
+        if result.returncode:
+            raise ExternalToolError(
+                (result.stderr or "NOCAP has no retained capture").strip()
+            )
+        try:
+            value = json.loads(result.stdout)["capture"]
+            record = CaptureRecord(
+                validate_value(value["id"], "capture ID"),
+                validate_value(value["status"], "capture status"),
+                validate_value(value.get("effective_tool", "unknown"), "capture tool"),
+                validate_value(value["path"], "capture path"),
+                validate_value(
+                    value.get("command", ""),
+                    "capture command",
+                    required=False,
+                ),
+            )
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ExternalToolError("cap inspect returned invalid JSON") from exc
+        if record.status in {"deleted", "deleting", "running"}:
+            raise ValidationError(
+                f"capture is not retained and finished: {record.status}"
+            )
+        relative = Path(record.path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise SafetyError(f"capture path is unsafe: {record.path}")
+        evidence = self._contained(root, "captures", *relative.parts)
+        if evidence.is_symlink() or not evidence.is_file():
+            raise ValidationError(f"capture evidence is missing: {record.path}")
+        expected = route.rstrip("/") + "/"
+        if not record.path.startswith(expected):
+            raise ValidationError(
+                f"latest capture belongs to another route: {record.path}"
+            )
+        return record
 
     def add_credential(
         self,
@@ -549,29 +829,22 @@ class Workspace:
         created: list[str] = []
 
         def operation(text: str) -> str:
-            rows = sitrep.read_global(text, "TODO")
-            completed = sitrep.read_global(text, "COMPLETED")
-            identifier = sitrep.next_id([*rows, *completed], "T")
+            tasks = sitrep.read_tasks(text, "TODO")
+            identifier = sitrep.next_id(
+                [[value.identifier] for value in tasks], "T"
+            )
             created.append(identifier)
-            rows.append([identifier, target, task, utc_now(), notes])
-            return sitrep.write_global(text, "TODO", rows)
+            tasks.append(sitrep.Task(identifier, target, task, utc_now(), notes=notes))
+            return sitrep.write_tasks(text, "TODO", tasks)
 
         self.mutate(root, operation)
         return created[0]
 
     def complete_task(self, root: Path, identifier: str) -> None:
-        def operation(text: str) -> str:
-            todo = sitrep.read_global(text, "TODO")
-            row = next((value for value in todo if value[0] == identifier), None)
-            if row is None:
-                raise ValidationError(f"unknown TODO item: {identifier}")
-            todo.remove(row)
-            completed = sitrep.read_global(text, "COMPLETED")
-            completed.append([row[0], row[1], row[2], utc_now(), row[4]])
-            updated = sitrep.write_global(text, "TODO", todo)
-            return sitrep.write_global(updated, "COMPLETED", completed)
+        self._set_task_completion(root, "TODO", identifier, complete=True)
 
-        self.mutate(root, operation)
+    def reopen_task(self, root: Path, identifier: str) -> None:
+        self._set_task_completion(root, "TODO", identifier, complete=False)
 
     def add_cleanup(self, root: Path, target: str, item: str, notes: str = "") -> str:
         if target != "ENGAGEMENT":
@@ -580,24 +853,48 @@ class Workspace:
         created: list[str] = []
 
         def operation(text: str) -> str:
-            rows = sitrep.read_global(text, "CLEANUP")
-            identifier = sitrep.next_id(rows, "X")
+            tasks = sitrep.read_tasks(text, "CLEANUP")
+            identifier = sitrep.next_id(
+                [[value.identifier] for value in tasks], "X"
+            )
             created.append(identifier)
-            rows.append([identifier, target, item, "pending", utc_now(), "", notes])
-            return sitrep.write_global(text, "CLEANUP", rows)
+            tasks.append(sitrep.Task(identifier, target, item, utc_now(), notes=notes))
+            return sitrep.write_tasks(text, "CLEANUP", tasks)
 
         self.mutate(root, operation)
         return created[0]
 
     def complete_cleanup(self, root: Path, identifier: str) -> None:
+        self._set_task_completion(root, "CLEANUP", identifier, complete=True)
+
+    def reopen_cleanup(self, root: Path, identifier: str) -> None:
+        self._set_task_completion(root, "CLEANUP", identifier, complete=False)
+
+    def _set_task_completion(
+        self, root: Path, name: str, identifier: str, *, complete: bool
+    ) -> None:
         def operation(text: str) -> str:
-            rows = sitrep.read_global(text, "CLEANUP")
-            row = next((value for value in rows if value[0] == identifier), None)
-            if row is None:
-                raise ValidationError(f"unknown cleanup item: {identifier}")
-            row[3] = "complete"
-            row[5] = utc_now()
-            return sitrep.write_global(text, "CLEANUP", rows)
+            tasks = sitrep.read_tasks(text, name)
+            index = next(
+                (
+                    position
+                    for position, value in enumerate(tasks)
+                    if value.identifier == identifier
+                ),
+                None,
+            )
+            if index is None:
+                raise ValidationError(f"unknown {name.lower()} item: {identifier}")
+            task = tasks[index]
+            if task.complete == complete:
+                state = "completed" if complete else "open"
+                raise ConflictError(f"{identifier} is already {state}")
+            tasks[index] = replace(
+                task,
+                complete=complete,
+                completed_at=utc_now() if complete else "",
+            )
+            return sitrep.write_tasks(text, name, tasks)
 
         self.mutate(root, operation)
 
@@ -666,8 +963,9 @@ class Workspace:
     def validate(self, root: Path, text: str | None = None) -> list[str]:
         self.require_engagement(root)
         document = self.read(root) if text is None else text
-        for name in sitrep.GLOBAL_TABLES:
-            sitrep.read_global(document, name)
+        if sitrep.uses_legacy_format(document):
+            raise ValidationError("legacy SITREP format; run tacmux sitrep sync")
+        sitrep.read_global(document, "CREDENTIALS")
         sections = sitrep.target_sections(document)
         section_names = {section.name for section in sections}
         directory_names = set(self.targets(root))
@@ -682,7 +980,8 @@ class Workspace:
                 raise ValidationError(f"{target} Endpoint cannot be empty")
             if endpoint in endpoints:
                 raise ValidationError(
-                    f"targets {endpoints[endpoint]} and {target} share Endpoint {endpoint}"
+                    f"targets {endpoints[endpoint]} and {target} "
+                    f"share Endpoint {endpoint}"
                 )
             endpoints[endpoint] = target
             if details["Status"][0] not in TARGET_STATUSES:
@@ -694,7 +993,8 @@ class Workspace:
                 raise ValidationError(f"{target} uses the reserved capture route: ops")
             if route.casefold() in routes:
                 raise ValidationError(
-                    f"targets {routes[route.casefold()]} and {target} share Capture Route {route}"
+                    f"targets {routes[route.casefold()]} and {target} "
+                    f"share Capture Route {route}"
                 )
             routes[route.casefold()] = target
             for row in sitrep.read_target(document, target, "PORTS"):
@@ -750,53 +1050,43 @@ class Workspace:
                     f"credential {row[0]} confirmation timestamp is inconsistent"
                 )
         targets = directory_names | {"ENGAGEMENT"}
-        for table_name in (
-            "NARRATIVE",
-            "TODO",
-            "COMPLETED",
-            "CLEANUP",
-        ):
-            headers = sitrep.GLOBAL_TABLES[table_name]
-            target_index = headers.index("Target")
-            rows = sitrep.read_global(document, table_name)
-            ids = [row[0] for row in rows] if headers[0] == "ID" else []
-            if ids and len(ids) != len(set(ids)):
-                raise ValidationError(f"duplicate IDs in {table_name.lower()}")
-            expected_prefix = {
-                "TODO": "T",
-                "COMPLETED": "T",
-                "CLEANUP": "X",
-            }.get(table_name)
-            for row in rows:
-                if expected_prefix and not re.fullmatch(
-                    rf"{expected_prefix}\d{{3,}}", row[0]
-                ):
+        for name, prefix in (("TODO", "T"), ("CLEANUP", "X")):
+            tasks = sitrep.read_tasks(document, name)
+            identifiers = [task.identifier for task in tasks]
+            if len(identifiers) != len(set(identifiers)):
+                raise ValidationError(f"duplicate IDs in {name.lower()}")
+            for task in tasks:
+                if not re.fullmatch(rf"{prefix}\d{{3,}}", task.identifier):
                     raise ValidationError(
-                        f"invalid ID in {table_name.lower()}: {row[0]}"
+                        f"invalid ID in {name.lower()}: {task.identifier}"
                     )
-                if row[target_index] not in targets:
+                if task.target not in targets:
                     problems.append(
-                        f"{table_name.lower()} references missing target: {row[target_index]}"
+                        f"{name.lower()} references missing target: {task.target}"
                     )
-        task_ids = [
-            row[0]
-            for table_name in ("TODO", "COMPLETED")
-            for row in sitrep.read_global(document, table_name)
-        ]
-        if len(task_ids) != len(set(task_ids)):
-            raise ValidationError("duplicate task IDs across TODO and completed")
-        for row in sitrep.read_global(document, "NARRATIVE"):
-            if row[2] not in OUTCOMES:
-                raise ValidationError(f"invalid narrative outcome: {row[2]}")
-        for row in sitrep.read_global(document, "CLEANUP"):
-            if row[3] not in {"pending", "complete"}:
-                raise ValidationError(f"invalid cleanup status: {row[3]}")
+        events = sitrep.read_events(document)
+        event_ids = [event.identifier for event in events]
+        if len(event_ids) != len(set(event_ids)):
+            raise ValidationError("duplicate Operations Log event IDs")
+        captures = [event.capture_id for event in events if event.capture_id]
+        if len(captures) != len(set(captures)):
+            raise ValidationError("duplicate NOCAP capture IDs in Operations Log")
+        for event in events:
+            if event.target not in targets:
+                problems.append(
+                    f"operations log references missing target: {event.target}"
+                )
+            if event.outcome not in OUTCOMES:
+                raise ValidationError(
+                    f"invalid Operations Log outcome: {event.outcome}"
+                )
         return problems
 
     def repair_scaffolding(self, root: Path, endpoints: dict[str, str]) -> list[str]:
         """Add missing target sections. Existing malformed tables are never replaced."""
         with self.locked(root):
-            text = sitrep.ensure_empty_tables(self.read(root))
+            previous = self.read(root)
+            text = sitrep.ensure_scaffolding(previous)
             sections = {item.name for item in sitrep.target_sections(text)}
             for target in self.targets(root):
                 if target not in sections:
@@ -805,11 +1095,32 @@ class Workspace:
                     )
                     text = sitrep.add_target(text, target, endpoint)
             problems = self.validate(root, text)
-            if text != self.read(root):
-                _atomic_write(self.sitrep_path(root), text)
-            os.chmod(self.sitrep_path(root), 0o600)
-            self._sync_credentials(root, text)
+            self._commit(
+                root,
+                previous,
+                text,
+                allow_reference_problems=True,
+            )
             return problems
+
+    def upgrade_sitrep(self, root: Path) -> Path | None:
+        with self.locked(root):
+            previous = self.read(root)
+            if not sitrep.uses_legacy_format(previous):
+                return None
+            backup_directory = self._contained(root, ".tacmux", "backups")
+            _private_directory(backup_directory)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup = backup_directory / f"SITREP-before-operations-log-{stamp}.md"
+            counter = 2
+            while backup.exists():
+                backup = backup_directory / (
+                    f"SITREP-before-operations-log-{stamp}-{counter}.md"
+                )
+                counter += 1
+            _atomic_write(backup, previous)
+            self._commit(root, previous, sitrep.upgrade_legacy(previous))
+            return backup
 
 
 NMAP_PORT = re.compile(

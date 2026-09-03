@@ -4,6 +4,12 @@
 
 ### Added
 
+- Optional external Markdown storage for the canonical SITREP, with a validated
+  workspace link and no editor-specific dependency or synchronization service.
+- Capture- and screenshot-assisted Operations Log entries through `tm done` and
+  `tm log`, including evidence metadata, editable captions, and draft-finding
+  space.
+- Native Markdown TODO and Cleanup checklists with completion and reopen helpers.
 - Owner-only `credentials/keys/` storage for engagement SSH keys, including
   automatic repair for existing v3 engagement layouts.
 - Native Zsh completion for `tacmux` and the recommended `tm` alias, with
@@ -14,11 +20,20 @@
 
 ### Changed
 
+- Current state now leads into one chronological Operations Log; the former
+  Narrative and separate Completed tables no longer split the walkthrough.
 - Credentials now keep confirmed target, service, access, and timestamp on the
   credential row instead of maintaining a separate check ledger.
 - Auto-log hooks are session-local and are repaired whenever a TACMUX session
   is opened, covering new windows and splits without touching unrelated tmux
   sessions.
+
+### Fixed
+
+- Managed tables, checklists, and Operations Log events now have blank lines
+  inside their TACMUX markers so Obsidian recognizes the enclosed Markdown.
+- Screenshot links retain literal filenames inside angle brackets so Obsidian
+  resolves images whose names contain spaces or `@` characters.
 
 ## 3.0.0 — 2026-09-02
 

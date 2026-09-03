@@ -29,7 +29,7 @@ tacmux target rename EDGE01 WEB01
 tacmux target delete MISTAKE
 ```
 
-Deletion requires typing the exact target name. It refuses targets referenced by Narrative, ports, confirmed credentials, TODO, Completed, Cleanup, or NOCAP captures. Clear mistaken records explicitly; TACMUX never cascade-deletes operational history.
+Deletion requires typing the exact target name. It refuses targets referenced by the Operations Log, ports, confirmed credentials, TODO, Cleanup, or NOCAP captures. Clear mistaken records explicitly; TACMUX never cascade-deletes operational history.
 
 Generate an endpoint-only tool input file from the current target inventory:
 
@@ -49,20 +49,34 @@ Open the whole file or jump directly to a section or target:
 
 ```bash
 tacmux sitrep
-tacmux sitrep narrative
+tacmux sitrep context
+tacmux sitrep log
+tacmux sitrep notes              # alias for the Operations Log
 tacmux sitrep cleanup
 tacmux sitrep WEB01
 ```
 
 Neovim, Vim, and Vi open at the resolved heading line. Other editors open the file normally. When the editor closes, TACMUX validates the managed tables, refreshes credential derivative files, and restores the SITREP to owner-only permissions.
 
-Managed table schemas are intentionally exact. Every record ends in a free-form `Notes` field. Values added through helpers must be one line; use operator-owned prose outside managed markers for longer material.
+Targets and Credentials retain exact Markdown tables. TODO and Cleanup are native Markdown checklists, and each Operations Log event has stable boundary markers with operator-owned prose inside it. Values added through helpers must be one line; use the event's Notes area for longer material.
 
-`tacmux sitrep sync` restores absent empty managed tables, adds a section for a manually created target directory after requesting its endpoint, regenerates credential derivative files, and reports bad IDs or references. It refuses malformed or partial markers and never rewrites operator prose.
+`tacmux sitrep sync` offers a one-time, backed-up conversion from the original Narrative/TODO/Completed tables. It then restores absent empty managed structures, normalizes checklists with open work first, adds a section for a manually created target directory after requesting its endpoint, regenerates credential derivative files, and reports bad IDs or references. It refuses malformed or partial markers and never rewrites event prose.
 
-## Narrative and tasks
+### Optional external notes location
 
-Use Narrative for the chronological flow:
+TACMUX does not require Obsidian. To store each physical SITREP in Obsidian or another Markdown tree, configure its parent directory before creating an engagement:
+
+```toml
+[paths]
+workspace = "~/workspace"
+sitrep_root = "~/notes/engagements"
+```
+
+For `ACME`, TACMUX creates `<sitrep_root>/ACME/SITREP.md` and a validated `~/workspace/ACME/SITREP.md` link. Both editors operate on that one file; there is no synchronization daemon or second copy. Existing engagements are not moved automatically. The notes root must already exist, be writable, and not be a symlink. Do not use a cloud-synced location unless its handling of the raw credentials in SITREP is approved.
+
+## Operations Log and tasks
+
+Use the Operations Log for the chronological walkthrough:
 
 ```bash
 tm log "Identified IIS on the external host"
@@ -72,17 +86,31 @@ tm log success "Validated command execution as svc_web"
 tm done "Established the approved internal pivot"
 ```
 
-Inline logging uses the current target, or `ENGAGEMENT` from the operations session. `tm log` with no arguments prompts for an optional target override, outcome, summary, and Notes. `tm history` shows the newest engagement events first; pass a target to filter it.
+Inline logging uses the current target, or `ENGAGEMENT` from the operations session. `tm log` with no arguments prompts for an optional target override, outcome, summary, and Notes. `tm history` shows the newest engagement events first; pass a target to filter it. The Markdown reads oldest-to-newest as a walkthrough.
 
-TODO and Completed are work queues, not history:
+Attach the most recent NOCAP record and optional screenshots to the same event:
+
+```bash
+cap -n internal-hosts nxc smb 10.20.30.0/24
+tm done -c "Identified hosts through the internal pivot"
+tm done -c -i ~/proof/pivot.png "Established the internal pivot"
+tm log failed -c "The captured service-account hash did not crack"
+```
+
+`-c`/`--capture` calls `cap inspect --json`, requires a finished retained capture on the current target's route, and records its ID, tool, path, and command. `-i`/`--image` may be repeated; supported images are copied under the SITREP's sibling `images/` directory and embedded in the event. Capture-assisted entries without an image retain an explicit “Not attached” placeholder and editable caption. Draft-finding text and supporting Notes belong inside the event so the evidence and reasoning remain together.
+
+Images may be PNG, JPEG, GIF, or WebP and must not exceed 25 MiB. Spaces and `@` are preserved in filenames; TACMUX rejects filename characters that would be interpreted as Markdown or URL syntax.
+
+TODO is a persistent Markdown checklist, not a second history:
 
 ```bash
 tm todo add "Enumerate SMB shares"
 tm todo
 tm todo done                 # choose with fzf
+tm todo reopen               # restore a checked item
 ```
 
-Completing a TODO moves the same generated ID into Completed. A successful action worth remembering should also be captured with `tm done`; task completion alone does not invent a narrative claim.
+Completing a TODO changes `[ ]` to `[x]`, records its completion time, and keeps it below open work. Checking an item in Obsidian or `$EDITOR` has the same effect for TACMUX; a manual check may have no completion timestamp. A successful action worth remembering should also be logged with `tm done`; task completion alone does not invent an operational claim.
 
 Cleanup remains separate because it is a release gate:
 
@@ -90,6 +118,7 @@ Cleanup remains separate because it is a release gate:
 tm cleanup add "Remove /tmp/update.sh"
 tm cleanup
 tm cleanup done              # choose only after verification
+tm cleanup reopen
 ```
 
 ## Target status
@@ -105,7 +134,7 @@ tm target update WEB01 principal --clear
 
 The field keys are `endpoint`, `network`, `status`, `hostnames`, `role`, `os`, `access`, `principal`, `method`, and `route`. Endpoint and Capture Route updates require the target session to be stopped because they define new-session and capture behavior. Direct Access updates may deliberately raise or lower the recorded level; credential confirmation only raises it. Use `tm sitrep TARGET` for Notes or unusual manual corrections.
 
-`tm status` inside a target shows Details, ports, confirmed credentials without secrets, tasks, cleanup, and recent Narrative. In the operations session it shows OS and access across the engagement. Pass a target name for its detailed view.
+`tm status` inside a target shows Details, ports, confirmed credentials without secrets, tasks, cleanup, and recent Operations Log events. In the operations session it shows OS and access across the engagement. Pass a target name for its detailed view.
 
 ## Credentials
 
@@ -129,8 +158,7 @@ tm creds add password
 ```
 
 Zsh completion is installed for both `tacmux` and the recommended `tm` alias.
-It completes commands, actions, engagements, targets, target fields, SITREP sections,
-credential IDs, task IDs, cleanup IDs, access values, and input files.
+It completes commands, actions, capture/image flags, engagements, targets, target fields, SITREP sections, credential IDs, open or completed task IDs, cleanup IDs, access values, and input files.
 It never emits credential values.
 
 `tm creds` and `tm creds view` display raw values. Once a credential is known to work, record its target, service, and access level on that credential's existing row:
@@ -140,7 +168,7 @@ tm creds confirm
 tm creds confirm C001 WEB01 user SSH "interactive shell"
 ```
 
-Confirmed Access uses `TARGET · SERVICE · ACCESS`; confirming the same target/service updates that entry, while another target or service is appended to the same credential. Only confirmed successes belong here. Put useful failures in Narrative. Confirmation can raise a target's Access, Principal, and Method/Path but never silently lower stronger access already recorded. Access means the capability actually demonstrated: authentication alone is `authenticated`, not code execution.
+Confirmed Access uses `TARGET · SERVICE · ACCESS`; confirming the same target/service updates that entry, while another target or service is appended to the same credential. Only confirmed successes belong here. Put useful failures in the Operations Log. Confirmation can raise a target's Access, Principal, and Method/Path but never silently lower stronger access already recorded. Access means the capability actually demonstrated: authentication alone is `authenticated`, not code execution.
 
 ## Ports
 
@@ -181,7 +209,7 @@ TACMUX_TARGET=captures
 NOCAP_ROUTE_PREFIX=<stable capture route>
 ```
 
-This keeps one NOCAP metadata root at `captures/.nocap` while routing files beneath `captures/<target>/`. Consequently `cap timeline` and `cap browse` can review the complete engagement. After a target has captures, renaming it retains the old Capture Route rather than rewriting evidence metadata.
+This keeps one NOCAP metadata root at `captures/.nocap` while routing files beneath `captures/<target>/`. Consequently `cap timeline` and `cap browse` can review the complete engagement. `tm done -c` reads but never modifies that metadata. After a target has captures, renaming it retains the old Capture Route rather than rewriting evidence metadata.
 
 This route-prefix behavior requires NOCAP 2.3 or newer. `tacmux health` rejects an installed older version while continuing to treat an absent NOCAP installation as optional.
 

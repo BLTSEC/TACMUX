@@ -19,6 +19,8 @@ def test_shell_scripts_parse_and_v3_has_no_full_tmux_preset():
     assert not (ROOT / "tmux/tacmux.conf").exists()
     assert "add update export rename delete" in completion
     assert "_tacmux_dynamic target --all --none" in completion
+    assert "add done reopen" in completion
+    assert "-c --capture -i --image" in completion
 
 
 def test_uninstaller_refuses_unmarked_install(tmp_path):

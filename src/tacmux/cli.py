@@ -17,7 +17,15 @@ from .context import Context, resolve
 from .discovery import create_reviewed_targets, review_candidates, run_host_discovery
 from .errors import TacmuxError, ValidationError
 from .hooks import LogController, clipboard_copy, status_segment
-from .interaction import ask, choose, choose_many, edit_text, format_table, open_editor
+from .interaction import (
+    ask,
+    choose,
+    choose_many,
+    confirm,
+    edit_text,
+    format_table,
+    open_editor,
+)
 from .tmux import TmuxService
 from .workspace import (
     ACCESS_LEVELS,
@@ -43,16 +51,15 @@ Usage:
   tacmux target delete [TARGET]
   tacmux status [TARGET]         Show target or engagement status
   tacmux sitrep [SECTION]        Edit SITREP, optionally at a heading
-  tacmux sitrep sync             Validate and repair missing target sections
-  tacmux log [OUTCOME] [TEXT...] Record info/success/partial/failed activity
-  tacmux log edit                Edit the Narrative table
-  tacmux done [TEXT...]          Record a successful completed step
-  tacmux history [TARGET]        Show narrative history
+  tacmux sitrep sync             Upgrade, validate, and repair SITREP
+  tacmux log [OUTCOME] [-c] [-i IMAGE] [TEXT...]
+  tacmux done [-c] [-i IMAGE] [TEXT...]
+  tacmux history [TARGET]        Show Operations Log history
   tacmux creds [view|add|confirm] View or confirm working credentials
   tacmux ports [TARGET]          View normalized target ports
   tacmux ports add [TARGET] [FILE]
-  tacmux todo [add|done]         View, add, or complete work
-  tacmux cleanup [add|done]      View, add, or complete cleanup
+  tacmux todo [add|done|reopen]  View or update planned work
+  tacmux cleanup [add|done|reopen]
   tacmux discover [nmap|hosts|netexec] [INPUT]
   tacmux health                  Check required and optional tools
   tacmux clip                    Copy stdin through a trusted clipboard path
@@ -81,12 +88,13 @@ def _completion_values(arguments: Sequence[str]) -> int:
                 values = targets
             elif kind == "sitrep":
                 values = [
-                    "narrative",
+                    "context",
                     "targets",
                     "credentials",
                     "todo",
-                    "completed",
                     "cleanup",
+                    "log",
+                    "notes",
                     *targets,
                 ]
             elif kind == "credential":
@@ -97,11 +105,12 @@ def _completion_values(arguments: Sequence[str]) -> int:
                     )
                 ]
             elif kind in {"todo", "cleanup"}:
-                table = kind.upper()
-                rows = sitrep.read_global(workspace.read(context.root), table)
-                values = [
-                    row[0] for row in rows if kind != "cleanup" or row[3] != "complete"
-                ]
+                tasks = sitrep.read_tasks(workspace.read(context.root), kind.upper())
+                values = [task.identifier for task in tasks if not task.complete]
+            elif kind in {"todo_done", "cleanup_done"}:
+                name = kind.removesuffix("_done").upper()
+                tasks = sitrep.read_tasks(workspace.read(context.root), name)
+                values = [task.identifier for task in tasks if task.complete]
             else:
                 values = []
     except (TacmuxError, OSError, ValueError):
@@ -237,7 +246,9 @@ def _export_targets(
         elif arguments in (["--none"], ["--clear"]):
             selected = []
         elif any(value.startswith("--") for value in arguments):
-            raise ValidationError("target export supports --all, --none, or target names")
+            raise ValidationError(
+                "target export supports --all, --none, or target names"
+            )
         else:
             selected = list(arguments)
     else:
@@ -255,16 +266,13 @@ def _export_targets(
         elif mode == "none":
             selected = []
         else:
-            selected = choose_many(
-                [
-                    (
-                        f"{target:24} {workspace.target_details(context.root, target)['Endpoint'][0]}",
-                        target,
-                    )
-                    for target in available
-                ],
-                "Targets> ",
-            )
+            choices = []
+            for target in available:
+                endpoint = workspace.target_details(context.root, target)[
+                    "Endpoint"
+                ][0]
+                choices.append((f"{target:24} {endpoint}", target))
+            selected = choose_many(choices, "Targets> ")
     path, count = workspace.write_target_list(context.root, selected)
     print(f"Wrote {count} target(s): {path}")
     return 0
@@ -419,24 +427,24 @@ def _print_status(
             confirmed_credentials,
         )
     )
-    for name, label in (
-        ("TODO", "TODO"),
-        ("COMPLETED", "Completed"),
-        ("CLEANUP", "Cleanup"),
-    ):
-        headers = sitrep.GLOBAL_TABLES[name]
-        index = headers.index("Target")
+    for name, label in (("TODO", "TODO"), ("CLEANUP", "Cleanup")):
         sections.append(
             (
                 label,
-                headers,
-                [row for row in sitrep.read_global(text, name) if row[index] == target],
+                sitrep.TASKS,
+                [
+                    task.row()
+                    for task in sitrep.read_tasks(text, name)
+                    if task.target == target
+                ],
             )
         )
-    narrative = [
-        row for row in sitrep.read_global(text, "NARRATIVE") if row[1] == target
+    events = [
+        event.row()
+        for event in sitrep.read_events(text)
+        if event.target == target
     ][-10:]
-    sections.append(("Recent Narrative", sitrep.NARRATIVE, narrative))
+    sections.append(("Recent Operations", sitrep.NARRATIVE, events))
     for label, headers, rows in sections:
         print(f"\n{label}")
         print(format_table(headers, rows) if rows else "-")
@@ -451,6 +459,15 @@ def _sitrep_command(
     context = resolve(settings, tmux)
     if arguments == ["sync"]:
         text = workspace.read(context.root)
+        if sitrep.uses_legacy_format(text):
+            if not confirm(
+                "Convert Narrative and task tables to the Operations Log/checklists?"
+            ):
+                raise ValidationError("SITREP upgrade cancelled")
+            backup = workspace.upgrade_sitrep(context.root)
+            if backup:
+                print(f"Upgraded SITREP; backup: {backup}")
+            text = workspace.read(context.root)
         documented = {section.name for section in sitrep.target_sections(text)}
         missing = [
             name for name in workspace.targets(context.root) if name not in documented
@@ -482,36 +499,71 @@ def _log_command(
 ) -> int:
     context = resolve(settings, tmux)
     if arguments == ["edit"] and not force_success:
-        return _sitrep_command(settings, workspace, tmux, ["narrative"])
-    interactive = not arguments
+        return _sitrep_command(settings, workspace, tmux, ["log"])
+    words = list(arguments)
+    capture_requested = False
+    images: list[Path] = []
+    position = 0
+    while position < len(words):
+        value = words[position]
+        if value in {"-c", "--capture"}:
+            capture_requested = True
+            words.pop(position)
+            continue
+        if value in {"-i", "--image"}:
+            if position + 1 >= len(words):
+                raise ValidationError(f"{value} requires an image path")
+            images.append(Path(words[position + 1]))
+            del words[position : position + 2]
+            continue
+        position += 1
+    interactive = not words
     target = _record_target(workspace, context, interactive=interactive)
     if force_success:
         outcome = "success"
-        summary = " ".join(arguments).strip() if arguments else ask("Completed step")
+        summary = " ".join(words).strip() if words else ask("Completed step")
     elif interactive:
         outcome = choose(
             [(value, value) for value in OUTCOMES], "Outcome> ", default="info"
         )
         summary = ask("Summary")
     else:
-        outcome = arguments[0] if arguments[0] in OUTCOMES else "info"
-        words = arguments[1:] if arguments[0] in OUTCOMES else arguments
-        summary = " ".join(words).strip()
+        outcome = words[0] if words[0] in OUTCOMES else "info"
+        summary_words = words[1:] if words[0] in OUTCOMES else words
+        summary = " ".join(summary_words).strip()
     if not summary:
         raise ValidationError("summary cannot be empty")
-    notes = ask("Notes", required=False) if interactive or not arguments else ""
-    workspace.add_narrative(context.root, target, outcome, summary, notes)
-    print(f"Logged {outcome}: {target} — {summary}")
+    notes = ask("Notes", required=False) if interactive else ""
+    capture = (
+        workspace.inspect_capture(context.root, target) if capture_requested else None
+    )
+    identifier = workspace.add_event(
+        context.root,
+        target,
+        outcome,
+        summary,
+        notes,
+        capture=capture,
+        images=images,
+    )
+    extras = []
+    if capture:
+        extras.append(f"capture {capture.identifier}")
+    if images:
+        extras.append(f"{len(images)} image(s)")
+    suffix = f" ({', '.join(extras)})" if extras else ""
+    print(f"Logged {identifier} {outcome}: {target} — {summary}{suffix}")
     return 0
 
 
 def _history(workspace: Workspace, context: Context, target: str = "") -> None:
     if target:
         target = workspace.canonical_target(context.root, target)
-    rows = list(reversed(sitrep.read_global(workspace.read(context.root), "NARRATIVE")))
+    events = sitrep.read_events(workspace.read(context.root))
+    rows = [event.row() for event in reversed(events)]
     if target:
         rows = [row for row in rows if row[1] == target]
-    print(format_table(sitrep.NARRATIVE, rows) if rows else "No narrative entries.")
+    print(format_table(sitrep.NARRATIVE, rows) if rows else "No operations logged.")
 
 
 def _credential_command(
@@ -633,11 +685,12 @@ def _task_command(
     cleanup: bool,
 ) -> int:
     table_name = "CLEANUP" if cleanup else "TODO"
-    rows = sitrep.read_global(workspace.read(context.root), table_name)
+    tasks = sitrep.read_tasks(workspace.read(context.root), table_name)
     if not arguments:
-        headers = sitrep.CLEANUP if cleanup else sitrep.TODO
         print(
-            format_table(headers, rows) if rows else f"No {table_name.lower()} items."
+            format_table(sitrep.TASKS, [task.row() for task in tasks])
+            if tasks
+            else f"No {table_name.lower()} items."
         )
         return 0
     action, *rest = arguments
@@ -657,23 +710,35 @@ def _task_command(
         )
         print(f"Added {identifier}")
         return 0
-    if action == "done":
-        active = [row for row in rows if not cleanup or row[3] != "complete"]
+    if action in {"done", "reopen"}:
+        reopening = action == "reopen"
+        candidates = [task for task in tasks if task.complete == reopening]
         identifier = (
             rest[0]
             if rest
             else choose(
-                [(f"{row[0]}  {row[1]}  {row[2]}", row[0]) for row in active],
-                "Complete> ",
+                [
+                    (
+                        f"{task.identifier}  {task.target}  {task.item}",
+                        task.identifier,
+                    )
+                    for task in candidates
+                ],
+                "Reopen> " if reopening else "Complete> ",
             )
         )
         if cleanup:
-            workspace.complete_cleanup(context.root, identifier)
+            operation = (
+                workspace.reopen_cleanup
+                if reopening
+                else workspace.complete_cleanup
+            )
         else:
-            workspace.complete_task(context.root, identifier)
-        print(f"Completed {identifier}")
+            operation = workspace.reopen_task if reopening else workspace.complete_task
+        operation(context.root, identifier)
+        print(f"{'Reopened' if reopening else 'Completed'} {identifier}")
         return 0
-    raise ValidationError(f"{table_name.lower()} supports add or done")
+    raise ValidationError(f"{table_name.lower()} supports add, done, or reopen")
 
 
 def _discover_command(
@@ -751,6 +816,17 @@ def _health(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
             "workspace",
             settings.workspace.is_dir() and os.access(settings.workspace, os.W_OK),
             str(settings.workspace),
+            True,
+        ),
+        (
+            "SITREP root",
+            settings.sitrep_root is None
+            or (
+                settings.sitrep_root.is_dir()
+                and not settings.sitrep_root.is_symlink()
+                and os.access(settings.sitrep_root, os.W_OK)
+            ),
+            str(settings.sitrep_root) if settings.sitrep_root else "engagement-local",
             True,
         ),
         (
@@ -841,6 +917,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             name = rest[0] if rest else ask("Engagement name")
             root = workspace.create_engagement(name)
             print(root)
+            if settings.sitrep_root and (root / "SITREP.md").is_symlink():
+                print(f"SITREP: {workspace.sitrep_path(root)}")
+                print(
+                    "Warning: this external notes location receives raw credentials "
+                    "stored in SITREP."
+                )
             print("Run tacmux switch to enter the operations session.")
             return 0
         if command == "health":

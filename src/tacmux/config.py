@@ -34,6 +34,7 @@ def _expand(value: str, env: Mapping[str, str]) -> Path:
 class Settings:
     workspace: Path
     config_file: Path
+    sitrep_root: Path | None = None
     auto_log: bool = True
     session_prefix: str = "tacmux-"
 
@@ -69,6 +70,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     workspace_value = env.get("TACMUX_WORKSPACE", paths.get("workspace", "~/workspace"))
     if not isinstance(workspace_value, str):
         raise ValidationError("paths.workspace must be a string")
+    sitrep_value = env.get("TACMUX_SITREP_ROOT", paths.get("sitrep_root", ""))
+    if not isinstance(sitrep_value, str):
+        raise ValidationError("paths.sitrep_root must be a string")
     auto_log = behavior.get("auto_log", True)
     if not isinstance(auto_log, bool):
         raise ValidationError("behavior.auto_log must be true or false")
@@ -78,6 +82,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     return Settings(
         workspace=_expand(workspace_value, env),
         config_file=config_file,
+        sitrep_root=_expand(sitrep_value, env) if sitrep_value.strip() else None,
         auto_log=auto_log,
         session_prefix=prefix,
     )
