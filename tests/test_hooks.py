@@ -28,9 +28,7 @@ def test_status_segment_uses_engagement_name_for_operations_session(
 ):
     class FakeTmux:
         def run(self, args, **kwargs):
-            return subprocess.CompletedProcess(
-                args, 0, f"\t{engagement}\t1\n", ""
-            )
+            return subprocess.CompletedProcess(args, 0, f"\t{engagement}\t1\n", "")
 
     monkeypatch.setenv("TMUX", "1")
     assert f"[{engagement.name} LOG]" in status_segment(settings, FakeTmux())

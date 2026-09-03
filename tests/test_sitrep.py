@@ -137,9 +137,7 @@ def test_rename_updates_structured_references_but_not_prose():
     assert event.target == "APP01"
     assert event.summary == "WEB01 appears in prose"
     assert sitrep.read_tasks(updated, "TODO")[0].target == "APP01"
-    assert sitrep.read_global(updated, "CREDENTIALS")[0][5] == (
-        "APP01 · SSH · user"
-    )
+    assert sitrep.read_global(updated, "CREDENTIALS")[0][5] == ("APP01 · SSH · user")
 
 
 def test_confirmed_access_round_trip_and_malformed_value():

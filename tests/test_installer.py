@@ -118,7 +118,17 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
     home.mkdir()
     shell_config = home / ".zshrc"
     shell_config.write_text("# operator shell\n")
+    unsafe_completion = tmp_path / "unsafe-completions"
+    unsafe_completion.mkdir()
+    unsafe_completion.chmod(0o777)
+    default_fpath = subprocess.run(
+        ["zsh", "-dfc", 'print -r -- "${(j.:.)fpath}"'],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     env = os.environ | {
+        "FPATH": f"{unsafe_completion}:{default_fpath}",
         "HOME": str(home),
         "UV_OFFLINE": "1",
         "XDG_CACHE_HOME": str(tmp_path / "cache"),
@@ -139,6 +149,7 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
     completion = home / ".local/share/tacmux/completions/_tacmux"
     assert completion.is_file()
     assert "#compdef tacmux tm" in completion.read_text()
+    assert "compinit -i" in shell_config.read_text()
     assert shell_config.read_text().count("# >>> TACMUX >>>") == 1
     completion_check = subprocess.run(
         [

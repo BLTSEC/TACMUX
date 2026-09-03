@@ -268,9 +268,7 @@ def _export_targets(
         else:
             choices = []
             for target in available:
-                endpoint = workspace.target_details(context.root, target)[
-                    "Endpoint"
-                ][0]
+                endpoint = workspace.target_details(context.root, target)["Endpoint"][0]
                 choices.append((f"{target:24} {endpoint}", target))
             selected = choose_many(choices, "Targets> ")
     path, count = workspace.write_target_list(context.root, selected)
@@ -440,9 +438,7 @@ def _print_status(
             )
         )
     events = [
-        event.row()
-        for event in sitrep.read_events(text)
-        if event.target == target
+        event.row() for event in sitrep.read_events(text) if event.target == target
     ][-10:]
     sections.append(("Recent Operations", sitrep.NARRATIVE, events))
     for label, headers, rows in sections:
@@ -729,9 +725,7 @@ def _task_command(
         )
         if cleanup:
             operation = (
-                workspace.reopen_cleanup
-                if reopening
-                else workspace.complete_cleanup
+                workspace.reopen_cleanup if reopening else workspace.complete_cleanup
             )
         else:
             operation = workspace.reopen_task if reopening else workspace.complete_task

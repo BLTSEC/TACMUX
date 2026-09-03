@@ -47,7 +47,7 @@ scan() {
 }
 
 scan 'no personal absolute home paths' '(/Users|/home)/[A-Za-z0-9._-]+'
-scan 'no non-platform email addresses' '(?!(?:[A-Z0-9._%+-]+@users\.noreply\.github\.com\b|noreply@github\.com\b))[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}'
+scan 'no non-platform email addresses' '(?!(?:[A-Z0-9._%+-]+@users\.noreply\.github\.com\b|noreply@github\.com\b|[A-Z0-9._%+-]+@[0-9]+x\.(?:png|jpe?g|gif|webp)\b))[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}'
 scan 'no common token or private-key signatures' '(-----BEGIN [A-Z ]*PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})'
 
 if command -v exiftool >/dev/null 2>&1; then

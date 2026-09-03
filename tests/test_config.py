@@ -5,12 +5,8 @@ from tacmux.config import load_settings
 
 def test_optional_sitrep_root_expands_from_config(tmp_path):
     config = tmp_path / "config.toml"
-    config.write_text(
-        '[paths]\nworkspace = "~/work"\nsitrep_root = "~/notes"\n'
-    )
-    settings = load_settings(
-        {"HOME": str(tmp_path), "TACMUX_CONFIG": str(config)}
-    )
+    config.write_text('[paths]\nworkspace = "~/work"\nsitrep_root = "~/notes"\n')
+    settings = load_settings({"HOME": str(tmp_path), "TACMUX_CONFIG": str(config)})
     assert settings.workspace == tmp_path / "work"
     assert settings.sitrep_root == tmp_path / "notes"
 

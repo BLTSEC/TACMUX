@@ -561,7 +561,7 @@ class Workspace:
         source = path.expanduser()
         if source.is_symlink() or not source.is_file():
             raise ValidationError(f"image is missing or unsafe: {source}")
-        if re.search(r'[\x00-\x1f\x7f\\<>#?%]', source.name):
+        if re.search(r"[\x00-\x1f\x7f\\<>#?%]", source.name):
             raise ValidationError(
                 "image filename cannot contain control characters, \\, <, >, #, ?, or %"
             )
@@ -589,9 +589,7 @@ class Workspace:
             )
         return source
 
-    def _copy_event_image(
-        self, root: Path, source: Path, created: list[Path]
-    ) -> str:
+    def _copy_event_image(self, root: Path, source: Path, created: list[Path]) -> str:
         directory = self.sitrep_path(root).parent / "images"
         _private_directory(directory)
         destination = directory / source.name
@@ -648,8 +646,7 @@ class Workspace:
             if images:
                 alt = summary.replace("\\", "\\\\").replace("]", "\\]")
                 rendered = "\n\n".join(
-                    f"![{alt}](<{path}>)\n\n**Caption:** {summary}"
-                    for path in images
+                    f"![{alt}](<{path}>)\n\n**Caption:** {summary}" for path in images
                 )
             else:
                 rendered = (
@@ -830,9 +827,7 @@ class Workspace:
 
         def operation(text: str) -> str:
             tasks = sitrep.read_tasks(text, "TODO")
-            identifier = sitrep.next_id(
-                [[value.identifier] for value in tasks], "T"
-            )
+            identifier = sitrep.next_id([[value.identifier] for value in tasks], "T")
             created.append(identifier)
             tasks.append(sitrep.Task(identifier, target, task, utc_now(), notes=notes))
             return sitrep.write_tasks(text, "TODO", tasks)
@@ -854,9 +849,7 @@ class Workspace:
 
         def operation(text: str) -> str:
             tasks = sitrep.read_tasks(text, "CLEANUP")
-            identifier = sitrep.next_id(
-                [[value.identifier] for value in tasks], "X"
-            )
+            identifier = sitrep.next_id([[value.identifier] for value in tasks], "X")
             created.append(identifier)
             tasks.append(sitrep.Task(identifier, target, item, utc_now(), notes=notes))
             return sitrep.write_tasks(text, "CLEANUP", tasks)

@@ -34,6 +34,8 @@
   inside their TACMUX markers so Obsidian recognizes the enclosed Markdown.
 - Screenshot links retain literal filenames inside angle brackets so Obsidian
   resolves images whose names contain spaces or `@` characters.
+- Zsh completion initialization ignores insecure third-party completion paths
+  instead of prompting or aborting during non-interactive shell startup.
 
 ## 3.0.0 — 2026-09-02
 

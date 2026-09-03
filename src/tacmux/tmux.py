@@ -165,9 +165,7 @@ class TmuxService:
 
     def autolog_hooks_ready(self, name: str) -> bool:
         for hook in self.AUTOLOG_HOOKS:
-            result = self.run(
-                ["show-hooks", "-t", f"={name}:", hook], check=False
-            )
+            result = self.run(["show-hooks", "-t", f"={name}:", hook], check=False)
             if (
                 result.returncode
                 or "[90]" not in result.stdout

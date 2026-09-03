@@ -36,9 +36,7 @@ def test_target_list_is_endpoint_only_private_and_replaceable(workspace, engagem
     workspace.add_target(engagement, "WEB01", "192.0.2.10")
     workspace.add_target(engagement, "DB01", "192.0.2.20")
 
-    path, count = workspace.write_target_list(
-        engagement, ["DB01", "WEB01", "DB01"]
-    )
+    path, count = workspace.write_target_list(engagement, ["DB01", "WEB01", "DB01"])
     assert count == 2
     assert path == engagement / "targets.txt"
     assert path.read_text() == "192.0.2.20\n192.0.2.10\n"
@@ -107,9 +105,7 @@ def test_tasks_can_be_completed_manually_and_reopened(workspace, engagement):
     identifier = workspace.add_task(engagement, "ENGAGEMENT", "Review evidence")
     path = engagement / "SITREP.md"
     path.write_text(
-        path.read_text().replace(
-            f"- [ ] {identifier}:", f"- [x] {identifier}:"
-        )
+        path.read_text().replace(f"- [ ] {identifier}:", f"- [x] {identifier}:")
     )
     assert sitrep.read_tasks(workspace.read(engagement), "TODO")[0].complete
     workspace.reopen_task(engagement, identifier)
@@ -188,9 +184,7 @@ def test_external_sitrep_requires_a_real_configured_root(tmp_path):
     assert not (tmp_path / "workspace/ACME").exists()
 
 
-def test_mutation_refuses_intervening_editor_change(
-    workspace, engagement, monkeypatch
-):
+def test_mutation_refuses_intervening_editor_change(workspace, engagement, monkeypatch):
     original = sitrep.append_event
 
     def concurrent_edit(text, event):
@@ -291,16 +285,12 @@ def test_image_links_use_literal_angle_bracket_paths_for_obsidian(
     )
 
     event = sitrep.read_events(workspace.read(engagement))[0]
-    assert (
-        "(<images/CleanShot 2026-09-02 at 23.55.07@2x.png>)" in event.body
-    )
+    assert "(<images/CleanShot 2026-09-02 at 23.55.07@2x.png>)" in event.body
     assert "%20" not in event.body
     assert "%40" not in event.body
 
 
-def test_capture_inspection_rejects_another_route(
-    workspace, engagement, monkeypatch
-):
+def test_capture_inspection_rejects_another_route(workspace, engagement, monkeypatch):
     workspace.add_target(engagement, "WEB01", "192.0.2.10")
     evidence = engagement / "captures/OTHER/recon"
     evidence.mkdir(parents=True)
@@ -379,9 +369,7 @@ def test_identity_mutation_validates_manual_edits_and_syncs_credentials(
 ):
     text = workspace.read(engagement)
     rows = sitrep.read_global(text, "CREDENTIALS")
-    rows.append(
-        ["C001", "alice", "password", "secret", "manual", "", "now", "", ""]
-    )
+    rows.append(["C001", "alice", "password", "secret", "manual", "", "now", "", ""])
     (engagement / "SITREP.md").write_text(
         sitrep.write_global(text, "CREDENTIALS", rows)
     )
@@ -546,9 +534,7 @@ def test_sync_restores_absent_empty_global_and_port_tables(workspace, engagement
     assert sitrep.read_target(repaired, "WEB01", "PORTS") == []
 
 
-def test_sync_repairs_scaffolding_and_reports_reference_problems(
-    workspace, engagement
-):
+def test_sync_repairs_scaffolding_and_reports_reference_problems(workspace, engagement):
     text = workspace.read(engagement)
     text = sitrep.write_tasks(
         text,

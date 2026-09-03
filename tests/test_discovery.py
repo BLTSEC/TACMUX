@@ -14,7 +14,10 @@ from tacmux.workspace import parse_host_candidates
 
 
 def test_parse_grepable_nmap_and_pasted_hosts():
-    nmap = "Host: 192.0.2.10 (web.acme.test)\tStatus: Up\nHost: 192.0.2.11 ()\tStatus: Down\n"
+    nmap = (
+        "Host: 192.0.2.10 (web.acme.test)\tStatus: Up\n"
+        "Host: 192.0.2.11 ()\tStatus: Down\n"
+    )
     assert parse_host_candidates(nmap) == [("web.acme.test", "192.0.2.10")]
     pasted = "WEB01 192.0.2.10\n192.0.2.11\ninvalid\n"
     assert parse_host_candidates(pasted) == [

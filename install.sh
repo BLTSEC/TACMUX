@@ -159,7 +159,7 @@ if command -v zsh >/dev/null 2>&1; then
     else
         ZSH_COMPLETION_BLOCK='fpath=("$HOME/.local/share/tacmux/completions" $fpath)
 autoload -Uz compinit
-(( $+functions[compdef] )) || compinit
+(( $+functions[compdef] )) || compinit -i
 autoload -Uz _tacmux
 compdef _tacmux tacmux tm'
         install_block "$HOME/.zshrc" "$ZSH_COMPLETION_BLOCK"

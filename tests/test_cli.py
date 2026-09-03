@@ -221,6 +221,4 @@ def test_completion_values_are_contextual_and_never_print_secrets(
     assert main(["_complete", "cleanup"]) == 0
     assert capsys.readouterr().out.splitlines() == [cleanup]
     assert main(["_complete", "sitrep"]) == 0
-    assert {"log", "cleanup", "WEB01"} <= set(
-        capsys.readouterr().out.splitlines()
-    )
+    assert {"log", "cleanup", "WEB01"} <= set(capsys.readouterr().out.splitlines())

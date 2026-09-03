@@ -223,9 +223,7 @@ def _parse_table(block: str, name: str, headers: Sequence[str]) -> list[list[str
         raise ValidationError(f"SITREP has malformed {name.lower()} table")
     actual = _split_row(content[0])
     if actual != list(headers):
-        raise ValidationError(
-            f"{name.lower()} columns must be: " + " | ".join(headers)
-        )
+        raise ValidationError(f"{name.lower()} columns must be: " + " | ".join(headers))
     separators = _split_row(content[1])
     if len(separators) != len(headers) or any(
         not re.fullmatch(r":?-{3,}:?", value) for value in separators
@@ -389,11 +387,7 @@ def _event_block(event: Event) -> str:
 def operations_block(events: Iterable[Event]) -> str:
     rendered = "\n\n".join(_event_block(event) for event in events)
     spacing = f"\n\n{rendered}\n\n" if rendered else "\n\n"
-    return (
-        f"{_marker('OPERATIONS', 'START')}"
-        f"{spacing}"
-        f"{_marker('OPERATIONS', 'END')}"
-    )
+    return f"{_marker('OPERATIONS', 'START')}{spacing}{_marker('OPERATIONS', 'END')}"
 
 
 def read_events(text: str) -> list[Event]:
@@ -671,8 +665,7 @@ LEGACY_TABLES = {
 
 def uses_legacy_format(text: str) -> bool:
     return (
-        _marker("NARRATIVE", "START") in text
-        or _marker("COMPLETED", "START") in text
+        _marker("NARRATIVE", "START") in text or _marker("COMPLETED", "START") in text
     )
 
 
@@ -700,10 +693,7 @@ def upgrade_legacy(text: str) -> str:
         )
         for index, row in enumerate(narratives, start=1)
     ]
-    tasks = [
-        Task(row[0], row[1], row[2], row[3], notes=row[4])
-        for row in todo_rows
-    ]
+    tasks = [Task(row[0], row[1], row[2], row[3], notes=row[4]) for row in todo_rows]
     tasks.extend(
         Task(
             row[0],
@@ -743,10 +733,7 @@ def upgrade_legacy(text: str) -> str:
     updated = updated.replace("## Completed", "", 1)
     left, right = _bounds(updated, "CLEANUP")
     updated = updated[:left] + checklist_block("CLEANUP", cleanup) + updated[right:]
-    return (
-        updated.rstrip()
-        + f"\n\n## Operations Log\n\n{operations_block(events)}\n"
-    )
+    return updated.rstrip() + f"\n\n## Operations Log\n\n{operations_block(events)}\n"
 
 
 def ensure_scaffolding(text: str) -> str:
