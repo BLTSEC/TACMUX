@@ -196,6 +196,25 @@ def test_sync_prompts_for_missing_target_section(
     assert workspace.target_details(engagement, "MANUAL")["Endpoint"][0] == "192.0.2.30"
 
 
+def test_sync_refuses_manual_heading_rename_before_prompting(
+    monkeypatch, settings, workspace, engagement, capsys
+):
+    _configure(monkeypatch, settings)
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    path = engagement / "SITREP.md"
+    changed = path.read_text().replace("### WEB01\n", "### MAIL\n", 1)
+    path.write_text(changed)
+    monkeypatch.chdir(engagement)
+
+    def unexpected_prompt(_label):
+        raise AssertionError("sync prompted before checking target identity")
+
+    monkeypatch.setattr("tacmux.cli.ask", unexpected_prompt)
+    assert main(["sitrep", "sync"]) == 1
+    assert "tm target rename WEB01 MAIL" in capsys.readouterr().err
+    assert workspace.read(engagement) == changed
+
+
 def test_completion_values_are_contextual_and_never_print_secrets(
     monkeypatch, settings, workspace, engagement, capsys
 ):

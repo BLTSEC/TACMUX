@@ -29,6 +29,8 @@ tacmux target rename EDGE01 WEB01
 tacmux target delete MISTAKE
 ```
 
+Target headings in SITREP are inventory identities, not display-only labels. Rename them with `tacmux target rename`, including after a heading was changed manually in an editor. An unambiguous manual change can be completed by the normal rename command; ambiguous heading/directory mismatches are refused without modifying the document.
+
 Deletion requires typing the exact target name. It refuses targets referenced by the Operations Log, ports, confirmed credentials, TODO, Cleanup, or NOCAP captures. Clear mistaken records explicitly; TACMUX never cascade-deletes operational history.
 
 Generate an endpoint-only tool input file from the current target inventory:
@@ -60,7 +62,7 @@ Neovim, Vim, and Vi open at the resolved heading line. Other editors open the fi
 
 Targets and Credentials retain exact Markdown tables. TODO and Cleanup are native Markdown checklists, and each Operations Log event has stable boundary markers with operator-owned prose inside it. Values added through helpers must be one line; use the event's Notes area for longer material.
 
-`tacmux sitrep sync` offers a one-time, backed-up conversion from the original Narrative/TODO/Completed tables. It then restores absent empty managed structures, normalizes checklists with open work first, adds a section for a manually created target directory after requesting its endpoint, regenerates credential derivative files, and reports bad IDs or references. It refuses malformed or partial markers and never rewrites event prose.
+`tacmux sitrep sync` offers a one-time, backed-up conversion from the original Narrative/TODO/Completed tables. It then restores absent empty managed structures, normalizes checklists with open work first, adds a section for a manually created target directory after requesting its endpoint, regenerates credential derivative files, and reports bad IDs or references. It refuses malformed or partial markers, target-heading mismatches, and ambiguous manual renames without changing the document; it never rewrites event prose.
 
 ### Optional external notes location
 

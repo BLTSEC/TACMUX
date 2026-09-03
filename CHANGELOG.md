@@ -36,6 +36,8 @@
   resolves images whose names contain spaces or `@` characters.
 - Zsh completion initialization ignores insecure third-party completion paths
   instead of prompting or aborting during non-interactive shell startup.
+- Manual target-heading changes are detected before SITREP repair; an
+  unambiguous change can be completed through the normal target rename command.
 
 ## 3.0.0 — 2026-09-02
 

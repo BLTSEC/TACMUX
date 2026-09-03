@@ -455,6 +455,7 @@ def _sitrep_command(
     context = resolve(settings, tmux)
     if arguments == ["sync"]:
         text = workspace.read(context.root)
+        missing = workspace.syncable_missing_targets(context.root, text)
         if sitrep.uses_legacy_format(text):
             if not confirm(
                 "Convert Narrative and task tables to the Operations Log/checklists?"
@@ -464,10 +465,7 @@ def _sitrep_command(
             if backup:
                 print(f"Upgraded SITREP; backup: {backup}")
             text = workspace.read(context.root)
-        documented = {section.name for section in sitrep.target_sections(text)}
-        missing = [
-            name for name in workspace.targets(context.root) if name not in documented
-        ]
+            missing = workspace.syncable_missing_targets(context.root, text)
         endpoints = {name: ask(f"Endpoint for {name}") for name in missing}
         problems = workspace.repair_scaffolding(context.root, endpoints)
         if problems:

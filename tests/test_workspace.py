@@ -435,6 +435,67 @@ def test_confirmed_credentials_follow_rename_and_block_delete(workspace, engagem
         workspace.delete_target(engagement, "APP01")
 
 
+def test_manual_heading_rename_can_be_completed_safely(workspace, engagement):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    credential = workspace.add_credential(engagement, "alice", "secret", "password")
+    workspace.confirm_credential(
+        engagement, credential, "WEB01", "user", "HTTPS", "validated"
+    )
+    workspace.add_event(
+        engagement, "WEB01", "success", "WEB01 appears in historical prose"
+    )
+    workspace.add_task(engagement, "WEB01", "Review service")
+    workspace.add_cleanup(engagement, "WEB01", "Remove test file")
+    capture = engagement / "captures/WEB01/recon/evidence.txt"
+    capture.parent.mkdir(parents=True)
+    capture.write_text("evidence\n")
+
+    path = engagement / "SITREP.md"
+    path.write_text(path.read_text().replace("### WEB01\n", "### MAIL\n", 1))
+    manually_renamed = workspace.read(engagement)
+    problem = (
+        "target identity mismatch: directory WEB01 has SITREP heading MAIL; "
+        "restore the heading or run: tm target rename WEB01 MAIL"
+    )
+    assert workspace.validate(engagement) == [problem]
+    with pytest.raises(ValidationError, match="tm target rename WEB01 MAIL"):
+        workspace.target_details(engagement, "WEB01")
+
+    with pytest.raises(ValidationError, match="tm target rename WEB01 MAIL"):
+        workspace.repair_scaffolding(engagement, {"WEB01": "192.0.2.10"})
+    assert workspace.read(engagement) == manually_renamed
+
+    workspace.rename_target(engagement, "WEB01", "MAIL")
+    updated = workspace.read(engagement)
+    assert workspace.targets(engagement) == ["MAIL"]
+    assert workspace.target_details(engagement, "MAIL")["Endpoint"][0] == "192.0.2.10"
+    assert workspace.target_details(engagement, "MAIL")["Capture Route"][0] == "WEB01"
+    assert capture.read_text() == "evidence\n"
+    assert sitrep.read_events(updated)[0].target == "MAIL"
+    assert sitrep.read_events(updated)[0].summary == "WEB01 appears in historical prose"
+    assert sitrep.read_tasks(updated, "TODO")[0].target == "MAIL"
+    assert sitrep.read_tasks(updated, "CLEANUP")[0].target == "MAIL"
+    credential_row = sitrep.read_global(updated, "CREDENTIALS")[0]
+    assert credential_row[5] == "MAIL · HTTPS · user"
+    assert credential_row[8] == "[MAIL / HTTPS] validated"
+
+
+def test_ambiguous_heading_drift_blocks_sync_and_rename(workspace, engagement):
+    workspace.add_target(engagement, "OLD1", "192.0.2.10")
+    workspace.add_target(engagement, "OLD2", "192.0.2.20")
+    path = engagement / "SITREP.md"
+    changed = path.read_text().replace("### OLD1\n", "### NEW1\n", 1)
+    changed = changed.replace("### OLD2\n", "### NEW2\n", 1)
+    path.write_text(changed)
+
+    with pytest.raises(ValidationError, match="directories missing SITREP headings"):
+        workspace.repair_scaffolding(engagement, {})
+    with pytest.raises(ValidationError, match="target identity mismatch"):
+        workspace.rename_target(engagement, "OLD1", "NEW1")
+    assert workspace.read(engagement) == changed
+    assert workspace.targets(engagement) == ["OLD1", "OLD2"]
+
+
 def test_confirmation_delimiters_are_reserved(workspace, engagement):
     with pytest.raises(ValidationError, match="cannot contain"):
         workspace.add_target(engagement, "WEB;01", "192.0.2.10")

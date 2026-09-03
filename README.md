@@ -113,6 +113,8 @@ Missing values open short prompts or an `fzf` picker. Inline commands infer the 
 
 `SITREP.md` keeps current state first—Targets, Credentials, TODO, and Cleanup—then a chronological Operations Log. TODO and Cleanup use native Markdown checkboxes, so an item checked in Obsidian or `$EDITOR` is immediately understood by TACMUX. Log entry prose remains operator-editable between its markers.
 
+Target headings are inventory identities rather than display-only labels. Use `tm target rename OLD NEW`; if a heading was changed manually first, the same command safely completes an unambiguous rename while `tm sitrep sync` refuses to create duplicate target sections.
+
 The Operations Log replaces separate note, activity, and attack-path systems:
 
 ```bash

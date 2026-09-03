@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -365,7 +366,42 @@ class Workspace:
 
     def target_details(self, root: Path, target: str) -> dict[str, tuple[str, str]]:
         target = self.canonical_target(root, target)
-        return sitrep.details_map(self.read(root), target)
+        text = self.read(root)
+        missing, orphaned = self._target_identity_drift(root, text)
+        if missing or orphaned:
+            raise ValidationError(self._target_identity_problem(missing, orphaned))
+        return sitrep.details_map(text, target)
+
+    def _target_identity_drift(
+        self, root: Path, text: str
+    ) -> tuple[list[str], list[str]]:
+        directories = set(self.targets(root))
+        headings = {section.name for section in sitrep.target_sections(text)}
+        missing = sorted(directories - headings, key=str.casefold)
+        orphaned = sorted(headings - directories, key=str.casefold)
+        return missing, orphaned
+
+    @staticmethod
+    def _target_identity_problem(missing: list[str], orphaned: list[str]) -> str:
+        if len(missing) == len(orphaned) == 1:
+            old, new = missing[0], orphaned[0]
+            command = f"tm target rename {shlex.quote(old)} {shlex.quote(new)}"
+            return (
+                f"target identity mismatch: directory {old} has SITREP heading "
+                f"{new}; restore the heading or run: {command}"
+            )
+        parts = []
+        if missing:
+            parts.append("directories missing SITREP headings: " + ", ".join(missing))
+        if orphaned:
+            parts.append("SITREP headings missing directories: " + ", ".join(orphaned))
+        return "target identity mismatch: " + "; ".join(parts)
+
+    def syncable_missing_targets(self, root: Path, text: str) -> list[str]:
+        missing, orphaned = self._target_identity_drift(root, text)
+        if orphaned:
+            raise ValidationError(self._target_identity_problem(missing, orphaned))
+        return missing
 
     def write_target_list(
         self, root: Path, selected: Sequence[str]
@@ -416,7 +452,12 @@ class Workspace:
             old_path = self._target_path(root, old)
             new_path = self._target_path(root, new)
             text = self.read(root)
-            details = sitrep.details_map(text, old)
+            missing, orphaned = self._target_identity_drift(root, text)
+            heading_already_changed = missing == [old] and orphaned == [new]
+            if (missing or orphaned) and not heading_already_changed:
+                raise ValidationError(self._target_identity_problem(missing, orphaned))
+            details_target = new if heading_already_changed else old
+            details = sitrep.details_map(text, details_target)
             route = details["Capture Route"][0]
             capture_path = self._contained(root, "captures", route) if route else None
             route_has_files = bool(
@@ -429,7 +470,12 @@ class Workspace:
             new_capture: Path | None = None
             old_path.rename(new_path)
             try:
-                updated = sitrep.rename_target(text, old, new)
+                updated = sitrep.rename_target(
+                    text,
+                    old,
+                    new,
+                    heading_already_changed=heading_already_changed,
+                )
                 if not route_has_files and route == old:
                     updated = sitrep.set_detail(updated, new, "Capture Route", new)
                     old_capture = self._contained(root, "captures", old)
@@ -963,6 +1009,9 @@ class Workspace:
         section_names = {section.name for section in sections}
         directory_names = set(self.targets(root))
         problems: list[str] = []
+        missing, orphaned = self._target_identity_drift(root, document)
+        if missing or orphaned:
+            problems.append(self._target_identity_problem(missing, orphaned))
         endpoints: dict[str, str] = {}
         routes: dict[str, str] = {}
         for target in sorted(section_names):
@@ -995,8 +1044,6 @@ class Workspace:
                     raise ValidationError(f"{target} has an invalid port: {row[0]}")
                 if row[1] not in {"tcp", "udp", "sctp"}:
                     raise ValidationError(f"{target} has an invalid protocol: {row[1]}")
-            if target not in directory_names:
-                problems.append(f"orphan SITREP target: {target}")
         capture_root = self._contained(root, "captures")
         for child in capture_root.iterdir():
             if child.is_symlink():
@@ -1008,8 +1055,6 @@ class Workspace:
                 and any(path.is_file() for path in child.rglob("*"))
             ):
                 problems.append(f"unassigned capture route with files: {child.name}")
-        for target in sorted(directory_names - section_names):
-            problems.append(f"target directory missing from SITREP: {target}")
         credential_rows = sitrep.read_global(document, "CREDENTIALS")
         credential_ids = [row[0] for row in credential_rows]
         if len(credential_ids) != len(set(credential_ids)):
@@ -1079,14 +1124,13 @@ class Workspace:
         """Add missing target sections. Existing malformed tables are never replaced."""
         with self.locked(root):
             previous = self.read(root)
+            missing = self.syncable_missing_targets(root, previous)
             text = sitrep.ensure_scaffolding(previous)
-            sections = {item.name for item in sitrep.target_sections(text)}
-            for target in self.targets(root):
-                if target not in sections:
-                    endpoint = validate_value(
-                        endpoints.get(target, ""), f"endpoint for {target}"
-                    )
-                    text = sitrep.add_target(text, target, endpoint)
+            for target in missing:
+                endpoint = validate_value(
+                    endpoints.get(target, ""), f"endpoint for {target}"
+                )
+                text = sitrep.add_target(text, target, endpoint)
             problems = self.validate(root, text)
             self._commit(
                 root,

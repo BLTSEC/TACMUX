@@ -54,6 +54,9 @@ DETAIL_FIELDS = (
     "Method/Path",
     "Capture Route",
 )
+TARGET_IDENTITY_NOTICE = (
+    "> Target headings are managed identities; rename them with `tm target rename`."
+)
 
 TARGET_HEADING = re.compile(r"(?m)^### (.+?)\s*$")
 CONFIRMATION_SEPARATOR = "; "
@@ -551,18 +554,27 @@ def remove_target(text: str, name: str) -> str:
     return updated
 
 
-def rename_target(text: str, old: str, new: str) -> str:
-    if any(
-        item.name.casefold() == new.casefold()
-        and item.name.casefold() != old.casefold()
-        for item in target_sections(text)
-    ):
-        raise ValidationError(f"target already exists in SITREP: {new}")
-    section = target_section(text, old)
-    heading_end = text.find("\n", section.start)
-    if heading_end < 0:
-        raise ValidationError(f"malformed target heading: {old}")
-    updated = text[: section.start] + f"### {new}" + text[heading_end:]
+def rename_target(
+    text: str, old: str, new: str, *, heading_already_changed: bool = False
+) -> str:
+    sections = target_sections(text)
+    if heading_already_changed:
+        if any(item.name == old for item in sections):
+            raise ValidationError(f"SITREP still contains target heading: {old}")
+        target_section(text, new)
+        updated = text
+    else:
+        if any(
+            item.name.casefold() == new.casefold()
+            and item.name.casefold() != old.casefold()
+            for item in sections
+        ):
+            raise ValidationError(f"target already exists in SITREP: {new}")
+        section = target_section(text, old)
+        heading_end = text.find("\n", section.start)
+        if heading_end < 0:
+            raise ValidationError(f"malformed target heading: {old}")
+        updated = text[: section.start] + f"### {new}" + text[heading_end:]
     events = [
         replace(event, target=new) if event.target == old else event
         for event in read_events(updated)
@@ -619,13 +631,16 @@ def initial_document(name: str) -> str:
     return f"""# {name} SITREP
 
 This is the engagement's current state and chronological operations log.
-TACMUX manages only content between its markers; prose remains operator-owned.
+TACMUX manages target headings and content between its markers; other prose
+remains operator-owned.
 
 ## Engagement Context
 
 _Add scope, rules of engagement, objectives, and reference links here._
 
 ## Targets
+
+{TARGET_IDENTITY_NOTICE}
 
 _No targets yet._
 
@@ -739,6 +754,16 @@ def upgrade_legacy(text: str) -> str:
 def ensure_scaffolding(text: str) -> str:
     if uses_legacy_format(text):
         raise ValidationError("legacy SITREP format; run tacmux sitrep sync")
+    targets_heading = text.find("## Targets")
+    credentials_heading = text.find("## Credentials", targets_heading + 1)
+    if targets_heading < 0 or credentials_heading < 0:
+        raise ValidationError("SITREP must contain Targets before Credentials")
+    target_area = text[targets_heading:credentials_heading]
+    if TARGET_IDENTITY_NOTICE not in target_area:
+        heading_end = text.find("\n", targets_heading, credentials_heading)
+        if heading_end < 0:
+            raise ValidationError("SITREP has a malformed Targets heading")
+        text = text[:heading_end] + f"\n\n{TARGET_IDENTITY_NOTICE}" + text[heading_end:]
     updated = _ensure_block_after_heading(
         text,
         name="CREDENTIALS",

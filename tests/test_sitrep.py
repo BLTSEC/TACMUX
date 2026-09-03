@@ -10,6 +10,7 @@ from tacmux import sitrep
 
 def test_initial_document_has_current_state_and_empty_operations():
     text = sitrep.initial_document("ACME")
+    assert text.count(sitrep.TARGET_IDENTITY_NOTICE) == 1
     assert sitrep.read_global(text, "CREDENTIALS") == []
     assert sitrep.read_tasks(text, "TODO") == []
     assert sitrep.read_tasks(text, "CLEANUP") == []
@@ -18,6 +19,11 @@ def test_initial_document_has_current_state_and_empty_operations():
     for name in ("CREDENTIALS", "TODO", "CLEANUP", "OPERATIONS"):
         assert f"<!-- TACMUX:{name}:START -->\n\n" in text
         assert f"\n\n<!-- TACMUX:{name}:END -->" in text
+
+    without_notice = text.replace(f"{sitrep.TARGET_IDENTITY_NOTICE}\n\n", "")
+    repaired = sitrep.ensure_scaffolding(without_notice)
+    assert repaired.count(sitrep.TARGET_IDENTITY_NOTICE) == 1
+    assert sitrep.ensure_scaffolding(repaired) == repaired
 
 
 def test_event_and_target_round_trip():
