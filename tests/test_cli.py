@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from tacmux import sitrep
 from tacmux.cli import main
 from tacmux.workspace import CaptureRecord
@@ -115,6 +117,108 @@ def test_cli_ports_pipe(monkeypatch, settings, workspace, engagement, capsys):
     assert (
         sitrep.read_target(workspace.read(engagement), "WEB01", "PORTS")[0][0] == "445"
     )
+
+
+@pytest.mark.parametrize(
+    "reports",
+    [
+        "Nmap scan report for 192.0.2.20\n445/tcp open microsoft-ds\n",
+        "Nmap scan report for 192.0.2.10\n22/tcp open ssh\nNmap scan report for 192.0.2.20\n445/tcp open microsoft-ds\n",
+    ],
+)
+def test_port_import_rejects_wrong_or_multiple_hosts(
+    monkeypatch, settings, workspace, engagement, tmp_path, reports
+):
+    _configure(monkeypatch, settings)
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    source = tmp_path / "scan.txt"
+    source.write_text(reports)
+    monkeypatch.chdir(engagement)
+    before = workspace.read(engagement)
+    assert main(["ports", "add", "WEB01", str(source)]) == 1
+    assert workspace.read(engagement) == before
+    assert not list((engagement / "targets/WEB01/scans").iterdir())
+
+
+def test_full_credential_and_event_editor(
+    monkeypatch, settings, workspace, engagement, capsys
+):
+    _configure(monkeypatch, settings)
+    monkeypatch.chdir(engagement)
+    secret = "a" * 32 + ":" + "b" * 32
+    credential = workspace.add_credential(engagement, r"ACME\alice", secret, "hash")
+    assert main(["creds", "view", credential]) == 0
+    assert secret in capsys.readouterr().out
+    event = workspace.add_event(engagement, "ENGAGEMENT", "info", "Evidence review")
+    opened = []
+    monkeypatch.setattr(
+        "tacmux.cli.open_editor",
+        lambda _settings, path, line: opened.append((path, line)),
+    )
+    assert main(["log", "edit", event]) == 0
+    path, line = opened[0]
+    assert "Evidence review" in path.read_text().splitlines()[line - 1]
+    assert main(["log", "edit", "E999"]) == 1
+    assert len(opened) == 1
+
+
+def test_explicit_capture_id_passed_to_inspector(
+    monkeypatch, settings, workspace, engagement
+):
+    _configure(monkeypatch, settings)
+    monkeypatch.chdir(engagement)
+    seen = []
+
+    def inspect(root, target, selector):
+        seen.append((root, target, selector))
+        return CaptureRecord(
+            selector, "completed", "printf", "ops/proof.txt", "printf proof"
+        )
+
+    monkeypatch.setattr(
+        workspace.__class__, "inspect_capture", lambda self, *args: inspect(*args)
+    )
+    assert main(["done", "--capture-id", "capture-older", "Recorded proof"]) == 0
+    assert seen == [(engagement, "ENGAGEMENT", "capture-older")]
+
+
+def test_switcher_keeps_healthy_engagement_accessible(
+    monkeypatch, settings, workspace, engagement, capsys
+):
+    from tacmux.cli import _switch
+    from tacmux.tmux import Session, TmuxService
+
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    note = engagement / "SITREP.md"
+    note.write_text(note.read_text().replace("### WEB01\n", "### MAIL\n"))
+    healthy = workspace.create_engagement("HEALTHY")
+    workspace.add_target(healthy, "GOOD", "192.0.2.20")
+    missing = workspace.create_engagement("MISSING")
+    (missing / "SITREP.md").unlink()
+    tmux = TmuxService(settings)
+    monkeypatch.setattr(tmux, "sessions", lambda: [])
+
+    def choose(choices, _prompt):
+        assert any("HEALTHY / GOOD" in display for display, _ in choices)
+        return next(value for display, value in choices if "HEALTHY / GOOD" in display)
+
+    monkeypatch.setattr("tacmux.cli.choose", choose)
+    monkeypatch.setattr(
+        tmux, "start", lambda root, target: Session("test", root, target)
+    )
+    monkeypatch.setattr(tmux, "attach", lambda session: 0)
+    assert _switch(settings, workspace, tmux) == 0
+    assert "MISSING unavailable" in capsys.readouterr().err
+    assert missing in workspace.engagement_candidates()
+
+
+def test_health_reports_marked_workspace_with_missing_note(
+    monkeypatch, settings, workspace, engagement, capsys
+):
+    _configure(monkeypatch, settings)
+    (engagement / "SITREP.md").unlink()
+    assert main(["health"]) == 1
+    assert "not a TACMUX v3 engagement" in capsys.readouterr().out
 
 
 def test_cli_credential_first_colon(monkeypatch, settings, workspace, engagement):

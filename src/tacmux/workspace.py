@@ -14,11 +14,18 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from typing import Callable, Iterator, Sequence
 
 from .config import Settings
-from .errors import ConflictError, ExternalToolError, SafetyError, ValidationError
+from .errors import (
+    ConflictError,
+    ExternalToolError,
+    SafetyError,
+    TacmuxError,
+    ValidationError,
+)
 from . import sitrep
 
 
@@ -189,12 +196,21 @@ class Workspace:
         return True
 
     def engagements(self) -> list[Path]:
-        self.initialize()
+        return [
+            root for root in self.engagement_candidates() if self.is_engagement(root)
+        ]
+
+    def engagement_candidates(self) -> list[Path]:
+        """Include marked workspaces whose note needs repair."""
+        if not self.settings.workspace.is_dir():
+            return []
         return sorted(
             (
                 child
                 for child in self.settings.workspace.iterdir()
-                if self.is_engagement(child)
+                if child.is_dir()
+                and not child.is_symlink()
+                and (child / ".tacmux/version").is_file()
             ),
             key=lambda path: path.name.casefold(),
         )
@@ -269,7 +285,6 @@ class Workspace:
     def require_engagement(self, root: Path) -> None:
         if not self.is_engagement(root):
             raise ValidationError(f"not a TACMUX v3 engagement: {root}")
-        _private_directory(self._contained(root, "credentials", "keys"))
 
     def sitrep_path(self, root: Path) -> Path:
         self.require_engagement(root)
@@ -289,6 +304,7 @@ class Workspace:
         descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
+            _private_directory(self._contained(root, "credentials", "keys"))
             yield
         finally:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -321,10 +337,27 @@ class Workspace:
             raise ValidationError(f"cannot re-read {path}: {exc}") from exc
         if current != previous:
             raise ConflictError("SITREP changed in another editor; retry the command")
-        if updated != previous:
-            _atomic_write(path, updated)
         os.chmod(path, 0o600)
-        self._sync_credentials(root, updated)
+        if updated != previous:
+            try:
+                _atomic_write(path, updated)
+            except OSError:
+                # replace() can succeed before the directory fsync fails. The
+                # saved note must retain its matching target tree and evidence.
+                if path.read_text(encoding="utf-8") != updated:
+                    raise
+                print(
+                    "tacmux: SITREP saved, but write durability could not be confirmed",
+                    file=sys.stderr,
+                )
+        try:
+            self._sync_credentials(root, updated)
+        except (OSError, TacmuxError) as exc:
+            print(
+                "tacmux: SITREP saved; credential files need repair. "
+                f"Run tm sitrep sync before using them: {exc}",
+                file=sys.stderr,
+            )
         return updated
 
     def _target_path(self, root: Path, target: str) -> Path:
@@ -708,7 +741,9 @@ class Workspace:
             )
         return "\n\n".join(sections)
 
-    def inspect_capture(self, root: Path, target: str) -> CaptureRecord:
+    def inspect_capture(
+        self, root: Path, target: str, selector: str = ""
+    ) -> CaptureRecord:
         binary = shutil.which("cap")
         if binary is None:
             raise ExternalToolError("cap is required for --capture")
@@ -723,7 +758,7 @@ class Workspace:
         }
         try:
             result = subprocess.run(
-                [binary, "inspect", "--json"],
+                [binary, "inspect", "--json", *(["--", selector] if selector else [])],
                 text=True,
                 capture_output=True,
                 check=False,
@@ -983,21 +1018,41 @@ class Workspace:
         _atomic_write(path, content if content.endswith("\n") else content + "\n")
         return path
 
-    def _sync_credentials(self, root: Path, text: str) -> None:
+    @staticmethod
+    def _credential_files(text: str) -> dict[str, str]:
         rows = sitrep.read_global(text, "CREDENTIALS")
-        directory = self._contained(root, "credentials")
-        _private_directory(directory)
         pairs = [f"{row[1]}:{row[3]}" for row in rows]
         users = list(dict.fromkeys(row[1] for row in rows))
         passwords = list(dict.fromkeys(row[3] for row in rows if row[2] == "password"))
         hashes = list(dict.fromkeys(row[3] for row in rows if row[2] == "hash"))
-        for name, values in (
-            ("creds.txt", pairs),
-            ("users.txt", users),
-            ("passwords.txt", passwords),
-            ("hashes.txt", hashes),
-        ):
-            _atomic_write(directory / name, "".join(f"{value}\n" for value in values))
+        return {
+            name: "".join(f"{value}\n" for value in values)
+            for name, values in (
+                ("creds.txt", pairs),
+                ("users.txt", users),
+                ("passwords.txt", passwords),
+                ("hashes.txt", hashes),
+            )
+        }
+
+    def _sync_credentials(self, root: Path, text: str) -> None:
+        directory = self._contained(root, "credentials")
+        _private_directory(directory)
+        for name, content in self._credential_files(text).items():
+            path = self._contained(root, "credentials", name)
+            if path.is_file() and path.read_text(encoding="utf-8") == content:
+                if path.stat().st_mode & 0o777 != 0o600:
+                    os.chmod(path, 0o600)
+                continue
+            _atomic_write(path, content)
+
+    def credential_sync_problems(self, root: Path, text: str) -> list[str]:
+        problems = []
+        for name, content in self._credential_files(text).items():
+            path = self._contained(root, "credentials", name)
+            if not path.is_file() or path.read_text(encoding="utf-8") != content:
+                problems.append(f"credentials/{name} is stale; run tm sitrep sync")
+        return problems
 
     def validate(self, root: Path, text: str | None = None) -> list[str]:
         self.require_engagement(root)
@@ -1138,6 +1193,7 @@ class Workspace:
                 text,
                 allow_reference_problems=True,
             )
+            problems.extend(self.credential_sync_problems(root, self.read(root)))
             return problems
 
     def upgrade_sitrep(self, root: Path) -> Path | None:
@@ -1166,7 +1222,26 @@ NMAP_PORT = re.compile(
 )
 
 
-def parse_nmap_ports(content: str) -> list[list[str]]:
+def parse_nmap_ports(
+    content: str, *, expected_endpoints: Sequence[str] = ()
+) -> list[list[str]]:
+    reports = re.findall(r"(?m)^Nmap scan report for (.+)$", content)
+    if len(reports) > 1:
+        raise ValidationError("port import requires a single-host Nmap report")
+    if reports and expected_endpoints:
+        report = reports[0].strip()
+        match = re.fullmatch(r"(.+?) \(([^()]+)\)", report)
+        observed = list(match.groups()) if match else [report]
+
+        def canonical(value: str) -> str:
+            try:
+                return str(ipaddress.ip_address(value))
+            except ValueError:
+                return value.casefold().rstrip(".")
+
+        allowed = {canonical(value) for value in expected_endpoints}
+        if not any(canonical(value) in allowed for value in observed):
+            raise ValidationError("Nmap report does not match the selected target")
     ports: dict[tuple[str, str], list[str]] = {}
     for line in content.splitlines():
         match = NMAP_PORT.match(line)

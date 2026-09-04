@@ -28,7 +28,7 @@ There is no dashboard to maintain. Target directories are inventory, `SITREP.md`
 ## Install
 
 ```bash
-git clone --branch v3.0.0 --depth 1 https://github.com/BLTSEC/TACMUX.git
+git clone --branch main --depth 1 https://github.com/BLTSEC/TACMUX.git
 cd TACMUX
 ./install.sh --workspace ~/workspace
 exec "$SHELL" -l
@@ -74,6 +74,7 @@ tacmux sitrep sync             upgrade, validate, and repair scaffolding
 tacmux log [OUTCOME] [-c] [-i IMAGE] TEXT
 tacmux done [-c] [-i IMAGE] TEXT
 tacmux history [TARGET]        show Operations Log history
+tacmux log edit [EVENT_ID]     jump to a recorded step for editing
 tacmux creds [view|add|confirm] credentials and confirmed access
 tacmux ports [TARGET]          normalized port inventory
 tacmux ports add [TARGET]      ingest Nmap normal output
@@ -129,6 +130,10 @@ tm log edit                                            # jump to Operations Log
 ```
 
 Capture-assisted entries include evidence and command details, an editable screenshot caption, Draft findings, and Notes. When `-i` is omitted, the entry explicitly says that no screenshot is attached instead of implying that evidence exists.
+
+Use `tm done --capture-id ID "Completed step"` to attach an earlier capture from
+the same target route, `tm log edit E001` to update that event, and
+`tm creds view C001` to display a full credential without table truncation.
 
 To keep the canonical SITREP in any external Markdown notes directory, set one optional path:
 

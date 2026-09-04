@@ -51,14 +51,95 @@ def test_target_list_is_endpoint_only_private_and_replaceable(workspace, engagem
     assert path.read_text() == ""
 
 
-def test_existing_engagement_repairs_missing_key_directory(workspace, engagement):
+def test_reads_do_not_repair_but_sync_repairs_key_directory(workspace, engagement):
     key_directory = engagement / "credentials/keys"
     key_directory.rmdir()
 
     workspace.require_engagement(engagement)
-
+    workspace.read(engagement)
+    assert not key_directory.exists()
+    workspace.repair_scaffolding(engagement, {})
     assert key_directory.is_dir()
     assert key_directory.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("action", ["add", "rename", "delete", "event"])
+def test_derivative_failure_keeps_committed_state(
+    workspace, engagement, monkeypatch, capsys, tmp_path, action
+):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    image = tmp_path / "proof.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nsynthetic")
+
+    def fail_sync(*args):
+        raise OSError("synthetic derivative failure")
+
+    monkeypatch.setattr(workspace, "_sync_credentials", fail_sync)
+    if action == "add":
+        workspace.add_target(engagement, "WEB02", "192.0.2.20")
+    elif action == "rename":
+        workspace.rename_target(engagement, "WEB01", "MAIL")
+    elif action == "delete":
+        workspace.delete_target(engagement, "WEB01")
+    else:
+        workspace.add_event(engagement, "WEB01", "success", "Proof", images=[image])
+        assert (engagement / "images/proof.png").is_file()
+        assert len(sitrep.read_events(workspace.read(engagement))) == 1
+    assert not workspace.validate(engagement)
+    assert "SITREP saved; credential files need repair" in capsys.readouterr().err
+
+
+def test_directory_fsync_failure_keeps_saved_target(
+    workspace, engagement, monkeypatch, capsys
+):
+    original = os.fsync
+
+    def fail_directory(fd):
+        import stat
+
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("synthetic directory fsync failure")
+        original(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_directory)
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    assert not workspace.validate(engagement)
+    assert "durability could not be confirmed" in capsys.readouterr().err
+
+
+def test_failed_sitrep_replace_rolls_back_target(workspace, engagement, monkeypatch):
+    before = workspace.read(engagement)
+
+    def fail_replace(*args):
+        raise OSError("synthetic replace failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace failure"):
+        workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    assert workspace.targets(engagement) == []
+    assert workspace.read(engagement) == before
+
+
+def test_unrelated_mutation_keeps_credential_file_inodes(workspace, engagement):
+    workspace.add_credential(engagement, "alice", "synthetic", "password")
+    paths = list((engagement / "credentials").glob("*.txt"))
+    before = {path: path.stat().st_ino for path in paths}
+    workspace.add_task(engagement, "ENGAGEMENT", "Review evidence")
+    assert before == {path: path.stat().st_ino for path in paths}
+
+
+def test_manual_domain_and_password_backslashes_survive(workspace, engagement):
+    workspace.add_credential(engagement, r"ACME\alice", r"p\word", "password")
+    note = engagement / "SITREP.md"
+    note.write_text(
+        note.read_text()
+        .replace(r"ACME\\alice", r"ACME\alice")
+        .replace(r"p\\word", r"p\word")
+    )
+    workspace.add_task(engagement, "ENGAGEMENT", "Review evidence")
+    row = sitrep.read_global(workspace.read(engagement), "CREDENTIALS")[0]
+    assert row[1:4] == [r"ACME\alice", "password", r"p\word"]
+    assert (engagement / "credentials/creds.txt").read_text() == "ACME\\alice:p\\word\n"
 
 
 def test_operations_tasks_cleanup_and_credentials(workspace, engagement):
@@ -538,6 +619,22 @@ def test_capture_route_cannot_silently_orphan_existing_files(workspace, engageme
     (capture / "evidence.txt").write_text("evidence")
     with pytest.raises(ValidationError, match="unassigned capture route"):
         workspace.set_target_detail(engagement, "WEB01", "Capture Route", "DIFFERENT")
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ("web.example.test (192.0.2.10)", "192.0.2.10"),
+        ("WEB.EXAMPLE.TEST (192.0.2.10)", "web.example.test."),
+        ("2001:db8::10", "2001:db8:0:0::10"),
+    ],
+)
+def test_nmap_report_matches_hostnames_and_normalized_ips(reported, expected):
+    rows = parse_nmap_ports(
+        f"Nmap scan report for {reported}\n22/tcp open ssh OpenSSH\n",
+        expected_endpoints=[expected],
+    )
+    assert rows == [["22", "tcp", "open", "ssh", "OpenSSH"]]
 
 
 def test_parse_and_merge_nmap_ports_preserves_notes(workspace, engagement):

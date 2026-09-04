@@ -27,6 +27,9 @@ Capture-assisted Operations Log entries include NOCAP's recorded command. If tha
 - Engagement and target names are single path components.
 - TACMUX refuses linked engagement control files, target directories, input files, and log destinations. The sole exception is an engagement's SITREP link when it resolves to the exact configured notes-root destination.
 - Writes use an engagement lock, owner-only temporary file, `fsync`, and atomic replacement.
+- Once SITREP has been saved, a credential-export failure reports a repair
+  warning without rolling back target directories or attached images. Run
+  `tm sitrep sync` before using stale derivative files; `tm health` reports them.
 - Managed Markdown tables, checklists, and Operations Log events have paired markers. Malformed structures fail closed instead of being rewritten.
 - `$VISUAL` or `$EDITOR` runs as the current user and is trusted configuration.
 - Data manually placed inside a managed table is parsed as operator input, never executed.

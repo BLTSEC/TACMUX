@@ -4,6 +4,8 @@
 
 ### Added
 
+- Full credential detail with `tm creds view ID`, direct event editing with
+  `tm log edit ID`, and earlier capture selection with `--capture-id ID`.
 - Optional external Markdown storage for the canonical SITREP, with a validated
   workspace link and no editor-specific dependency or synchronization service.
 - Capture- and screenshot-assisted Operations Log entries through `tm done` and
@@ -30,6 +32,15 @@
 
 ### Fixed
 
+- Credential-export failures no longer undo target or image changes after the
+  corresponding SITREP update has committed.
+- Manual table edits preserve literal domain and password backslashes.
+- Single-target port imports reject multi-host or mismatched Nmap reports.
+- Damaged notes are reported without blocking unrelated sessions, and health
+  includes marked engagements with missing or invalid SITREP links.
+- Unchanged credential files are no longer rewritten after unrelated actions.
+- The installation example uses the published main branch; release automation
+  preserves older tags and releases.
 - Managed tables, checklists, and Operations Log events now have blank lines
   inside their TACMUX markers so Obsidian recognizes the enclosed Markdown.
 - Screenshot links retain literal filenames inside angle brackets so Obsidian

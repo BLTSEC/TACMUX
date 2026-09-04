@@ -106,23 +106,3 @@ jobs:
             git push --delete origin "v$VERSION"
             exit 1
           fi
-
-      - name: Retire every older release and tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          while IFS= read -r old_release; do
-            [[ -n "$old_release" && "$old_release" != "v$VERSION" ]] || continue
-            gh release delete "$old_release" --cleanup-tag --yes
-          done < <(gh release list --limit 100 --json tagName --jq '.[].tagName')
-
-          while IFS= read -r old_tag; do
-            [[ -n "$old_tag" && "$old_tag" != "v$VERSION" ]] || continue
-            git push --delete origin "refs/tags/$old_tag"
-          done < <(git ls-remote --tags --refs origin | sed 's#.*refs/tags/##')
-
-          remaining_releases=$(gh release list --limit 100 --json tagName --jq '.[].tagName')
-          remaining_tags=$(git ls-remote --tags --refs origin | sed 's#.*refs/tags/##')
-          [[ "$remaining_releases" == "v$VERSION" ]]
-          [[ "$remaining_tags" == "v$VERSION" ]]

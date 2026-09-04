@@ -79,7 +79,9 @@ _tacmux() {
       ;;
     log)
       if (( CURRENT == 3 )); then
-        _values 'outcome, option, or action' info success partial failed edit -c --capture -i --image
+        _values 'outcome, option, or action' info success partial failed edit -c --capture --capture-id -i --image
+      elif [[ "${words[3]}" == edit && CURRENT == 4 ]]; then
+        _tacmux_dynamic event
       elif [[ "${words[CURRENT-1]}" == -i || "${words[CURRENT-1]}" == --image ]]; then
         _files
       fi
@@ -88,7 +90,7 @@ _tacmux() {
       if [[ "${words[CURRENT-1]}" == -i || "${words[CURRENT-1]}" == --image ]]; then
         _files
       else
-        _values 'evidence option' -c --capture -i --image
+        _values 'evidence option' -c --capture --capture-id -i --image
       fi
       ;;
     creds)
@@ -98,6 +100,7 @@ _tacmux() {
       fi
       action="${words[3]}"
       case "$action:$CURRENT" in
+        view:4) _tacmux_dynamic credential ;;
         add:4) _values 'credential type' password hash ;;
         confirm:4) _tacmux_dynamic credential ;;
         confirm:5) _tacmux_dynamic target ;;

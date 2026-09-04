@@ -157,6 +157,8 @@ def _split_row(line: str) -> list[str]:
     escaped = False
     for character in stripped[1:-1]:
         if escaped:
+            if character not in {"\\", "|"}:
+                current.append("\\")
             current.append(character)
             escaped = False
         elif character == "\\":
@@ -802,6 +804,11 @@ def ensure_scaffolding(text: str) -> str:
 
 
 def heading_line(text: str, section: str) -> int:
+    if re.fullmatch(r"E\d{3,}", section):
+        if not any(event.identifier == section for event in read_events(text)):
+            raise ValidationError(f"unknown Operations Log event: {section}")
+        marker = f"<!-- TACMUX:EVENT:START {section} -->"
+        return text[: text.index(marker)].count("\n") + 3
     aliases = {
         "context": "## Engagement Context",
         "targets": "## Targets",

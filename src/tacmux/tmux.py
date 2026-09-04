@@ -14,7 +14,7 @@ import sys
 from typing import Mapping, Sequence
 
 from .config import Settings
-from .errors import ConflictError, ExternalToolError, ValidationError
+from .errors import ConflictError, ExternalToolError
 from .workspace import Workspace
 
 
@@ -297,19 +297,6 @@ class TmuxService:
         )
         return result.returncode
 
-    def refresh_target_environment(self, root: Path, old: str, new: str) -> None:
-        """Rename is stopped-only; this guard catches callers that skipped policy."""
-        if self.target_running(root, old) or self.target_running(root, new):
-            raise ConflictError("stop the target session before renaming it")
-
     def require_stopped(self, root: Path, target: str) -> None:
         if self.target_running(root, target):
             raise ConflictError(f"stop {target} first with: tacmux stop {target}")
-
-    def validate_session_root(self, session: Session) -> None:
-        try:
-            session.root.resolve().relative_to(self.settings.workspace.resolve())
-        except ValueError as exc:
-            raise ValidationError(
-                f"tmux session points outside the workspace: {session.name}"
-            ) from exc

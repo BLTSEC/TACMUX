@@ -54,8 +54,10 @@ Usage:
   tacmux sitrep sync             Upgrade, validate, and repair SITREP
   tacmux log [OUTCOME] [-c] [-i IMAGE] [TEXT...]
   tacmux done [-c] [-i IMAGE] [TEXT...]
+  tacmux log edit [EVENT_ID]     Edit the log or jump to one event
+  tacmux done --capture-id ID [TEXT...]
   tacmux history [TARGET]        Show Operations Log history
-  tacmux creds [view|add|confirm] View or confirm working credentials
+  tacmux creds [view [ID]|add|confirm] View or confirm working credentials
   tacmux ports [TARGET]          View normalized target ports
   tacmux ports add [TARGET] [FILE]
   tacmux todo [add|done|reopen]  View or update planned work
@@ -104,6 +106,11 @@ def _completion_values(arguments: Sequence[str]) -> int:
                         workspace.read(context.root), "CREDENTIALS"
                     )
                 ]
+            elif kind == "event":
+                values = [
+                    event.identifier
+                    for event in sitrep.read_events(workspace.read(context.root))
+                ]
             elif kind in {"todo", "cleanup"}:
                 tasks = sitrep.read_tasks(workspace.read(context.root), kind.upper())
                 values = [task.identifier for task in tasks if not task.complete]
@@ -141,12 +148,25 @@ def _switch(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
     }
     choices: list[tuple[str, str]] = []
     separator = "\x1f"
-    for root in workspace.engagements():
+    for root in workspace.engagement_candidates():
+        if not workspace.is_engagement(root):
+            print(
+                f"tacmux: {root.name} unavailable; check its SITREP location",
+                file=sys.stderr,
+            )
+            continue
         ops_key = (str(root.resolve()), "")
         state = "LIVE" if ops_key in live else "STOP"
         choices.append((f"{state:4}  {root.name} / OPS", f"{root}{separator}"))
         for target in workspace.targets(root):
-            details = workspace.target_details(root, target)
+            try:
+                details = workspace.target_details(root, target)
+            except (TacmuxError, OSError, ValueError) as exc:
+                print(
+                    f"tacmux: {root.name} / {target} unavailable: {exc}",
+                    file=sys.stderr,
+                )
+                continue
             key = (str(root.resolve()), target)
             state = "LIVE" if key in live else "STOP"
             endpoint = details["Endpoint"][0]
@@ -492,14 +512,31 @@ def _log_command(
     force_success: bool = False,
 ) -> int:
     context = resolve(settings, tmux)
-    if arguments == ["edit"] and not force_success:
-        return _sitrep_command(settings, workspace, tmux, ["log"])
+    if arguments and arguments[0] == "edit" and not force_success:
+        if len(arguments) > 2 or (
+            len(arguments) == 2 and not re.fullmatch(r"E\d{3,}", arguments[1])
+        ):
+            raise ValidationError("log edit accepts an optional event ID such as E001")
+        return _sitrep_command(
+            settings, workspace, tmux, [arguments[1] if len(arguments) == 2 else "log"]
+        )
     words = list(arguments)
     capture_requested = False
+    capture_selector = ""
     images: list[Path] = []
     position = 0
     while position < len(words):
         value = words[position]
+        if value == "--":
+            del words[position]
+            break
+        if value == "--capture-id":
+            if position + 1 >= len(words) or not words[position + 1].strip():
+                raise ValidationError("--capture-id requires a NOCAP capture ID")
+            capture_requested = True
+            capture_selector = words[position + 1]
+            del words[position : position + 2]
+            continue
         if value in {"-c", "--capture"}:
             capture_requested = True
             words.pop(position)
@@ -529,7 +566,9 @@ def _log_command(
         raise ValidationError("summary cannot be empty")
     notes = ask("Notes", required=False) if interactive else ""
     capture = (
-        workspace.inspect_capture(context.root, target) if capture_requested else None
+        workspace.inspect_capture(context.root, target, capture_selector)
+        if capture_requested
+        else None
     )
     identifier = workspace.add_event(
         context.root,
@@ -564,9 +603,27 @@ def _credential_command(
     workspace: Workspace, context: Context, arguments: Sequence[str]
 ) -> int:
     text = workspace.read(context.root)
+    if arguments and arguments[0] == "view" and len(arguments) > 1:
+        if len(arguments) != 2:
+            raise ValidationError("creds view accepts one credential ID")
+        rows = sitrep.read_global(text, "CREDENTIALS")
+        row = next((row for row in rows if row[0] == arguments[1]), None)
+        if row is None:
+            raise ValidationError(f"unknown credential: {arguments[1]}")
+        print(
+            "\n".join(
+                f"{key}: {value}"
+                for key, value in zip(sitrep.CREDENTIALS, row, strict=True)
+            )
+        )
+        return 0
     if not arguments or arguments == ["view"]:
         rows = sitrep.read_global(text, "CREDENTIALS")
         print(format_table(sitrep.CREDENTIALS, rows) if rows else "No credentials.")
+        if any(len(value) > 48 for row in rows for value in row):
+            print(
+                "Long values are abbreviated; use tm creds view ID for the full record."
+            )
         return 0
     action, *rest = arguments
     if action == "add":
@@ -654,7 +711,12 @@ def _ports_command(
             target = workspace.canonical_target(context.root, rest.pop(0))
         target = target or context.target or _target_choice(workspace, context.root)
         content = _input_text(settings, rest[0] if rest else "")
-        ports = parse_nmap_ports(content)
+        details = workspace.target_details(context.root, target)
+        endpoints = [details["Endpoint"][0]]
+        endpoints.extend(re.split(r"[\s,]+", details["Hostnames"][0].strip()))
+        ports = parse_nmap_ports(
+            content, expected_endpoints=[value for value in endpoints if value]
+        )
         if not ports:
             raise ValidationError("input contained no Nmap port rows")
         raw = workspace.store_scan(context.root, target, content)
@@ -837,11 +899,14 @@ def _health(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
         ("log hooks", hooks_ok, hooks_detail, True),
     ]
     invalid: list[tuple[Path, str]] = []
-    for root in workspace.engagements():
+    for root in workspace.engagement_candidates():
         try:
             problems = workspace.validate(root)
+            problems.extend(
+                workspace.credential_sync_problems(root, workspace.read(root))
+            )
             invalid.extend((root, problem) for problem in problems)
-        except TacmuxError as exc:
+        except (TacmuxError, OSError, ValueError) as exc:
             invalid.append((root, str(exc)))
     print(f"TACMUX {__version__}\n")
     for label, ok, detail, _required in checks:

@@ -56,6 +56,7 @@ tacmux sitrep log
 tacmux sitrep notes              # alias for the Operations Log
 tacmux sitrep cleanup
 tacmux sitrep WEB01
+tm log edit E012                 # jump to one recorded operation
 ```
 
 Neovim, Vim, and Vi open at the resolved heading line. Other editors open the file normally. When the editor closes, TACMUX validates the managed tables, refreshes credential derivative files, and restores the SITREP to owner-only permissions.
@@ -100,6 +101,12 @@ tm log failed -c "The captured service-account hash did not crack"
 ```
 
 `-c`/`--capture` calls `cap inspect --json`, requires a finished retained capture on the current target's route, and records its ID, tool, path, and command. `-i`/`--image` may be repeated; supported images are copied under the SITREP's sibling `images/` directory and embedded in the event. Capture-assisted entries without an image retain an explicit “Not attached” placeholder and editable caption. Draft-finding text and supporting Notes belong inside the event so the evidence and reasoning remain together.
+
+After switching targets, NOCAP's latest capture may belong to another route.
+Use `cap timeline` to find the intended ID, then run
+`tm done --capture-id ID "Completed step"`. The same route and retained-evidence
+checks apply. Use `tm log edit E012` to jump directly to an event's captions,
+draft findings, or supporting prose.
 
 Images may be PNG, JPEG, GIF, or WebP and must not exceed 25 MiB. Spaces and `@` are preserved in filenames; TACMUX rejects filename characters that would be interpreted as Markdown or URL syntax.
 
@@ -150,8 +157,9 @@ tm creds add hash 'alice:aad3b435b51404ee:31d6cfe0d16ae931'
 Input splits on the first colon. SITREP is the source of truth. TACMUX generates deduplicated `creds.txt`, `users.txt`, `passwords.txt`, and `hashes.txt` under `credentials/`.
 
 Store SSH private keys centrally under `credentials/keys/`; TACMUX creates that
-owner-only directory for new engagements and repairs it when an existing v3
-engagement is next opened. Keep the corresponding passphrase in Credentials
+owner-only directory for new engagements and repairs it on the next mutation
+or `tm sitrep sync`. Read-only commands leave the directory tree untouched.
+Keep the corresponding passphrase in Credentials
 and set its Source to the relative key path. For example:
 
 ```bash
@@ -163,7 +171,11 @@ Zsh completion is installed for both `tacmux` and the recommended `tm` alias.
 It completes commands, actions, capture/image flags, engagements, targets, target fields, SITREP sections, credential IDs, open or completed task IDs, cleanup IDs, access values, and input files.
 It never emits credential values.
 
-`tm creds` and `tm creds view` display raw values. Once a credential is known to work, record its target, service, and access level on that credential's existing row:
+`tm creds` and `tm creds view` display raw values but abbreviate long fields.
+Use `tm creds view C001` for the
+complete principal, password or hash, confirmations, and notes without clipping.
+
+Once a credential works, record its target, service, and access on the same row:
 
 ```bash
 tm creds confirm
@@ -187,6 +199,10 @@ tm ports add WEB01 targets/WEB01/scans/manual-nmap.txt
 ```
 
 The raw input is copied into the target's `scans/` directory. TCP, UDP, and SCTP rows merge on `(port, protocol)`; new observations update state, service, and version while preserving Notes. Input containing no valid port rows makes no change.
+
+A full Nmap report must contain exactly one host matching the selected target's
+Endpoint or Hostnames. Multi-host and mismatched reports are refused before any
+files change. Pasted port rows without a report header apply to the selected target.
 
 ## Host identification
 
