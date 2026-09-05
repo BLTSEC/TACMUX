@@ -11,7 +11,7 @@
 
 TACMUX is a lean tmux-native workspace helper for authorized penetration tests and red-team operations. It keeps you in your shells while handling target sessions, pane logs, credentials, ports, tasks, cleanup, and a single editable situation report.
 
-There is no dashboard to maintain. Target directories are inventory, `SITREP.md` is operational state, `fzf` is the switcher, and `$EDITOR` is the correction interface.
+Target directories are inventory, `SITREP.md` holds the working notes and current state, `fzf` switches sessions, and `$EDITOR` handles longer edits.
 
 > Use TACMUX only with explicit authorization. You remain responsible for scope, rules of engagement, testing windows, evidence handling, and retention.
 
@@ -37,6 +37,8 @@ tacmux health
 
 The installer places TACMUX under `~/.local/share/tacmux`, links the command into `~/.local/bin`, enables Zsh completion, and adds only the TACMUX integration fragment to an existing `~/.tmux.conf`. General tmux preferences belong to the operator or system loadout. Start a new shell after installation so completion is active.
 
+On reinstall, omit `--workspace` to preserve the existing configuration. For the shorthand used below, add `alias tm='tacmux'` to your shell configuration and reload it.
+
 ## Start working
 
 ```bash
@@ -53,13 +55,13 @@ tm log "Nginx and SSH identified"
 tm todo add "Enumerate the web application"
 tm creds add
 nmap -sV "$TARGET" | tm ports add
-cap -n initial-shell id
-tm done -c -i proof.png "Obtained a shell as svc_web"
-tm cleanup add "Remove uploaded payload"
+tm log "Service enumeration complete; web testing still pending"
 tm status
 ```
 
-`tm` is a recommended shell alias for `tacmux`; TACMUX itself installs only the `tacmux` executable.
+Run scans only against authorized endpoints. `ports add` accepts a matching single-host Nmap report; host identification through `tm discover` is a separate, reviewed import. TACMUX installs the `tacmux` executable, not a separate `tm` command.
+
+After a real validation run captured with NOCAP, record the demonstrated result with `tm done -c "Completed step"`. A local `cap id` proves the identity of the local process, not access to the target.
 
 ## Core commands
 
@@ -134,6 +136,9 @@ Capture-assisted entries include evidence and command details, an editable scree
 Use `tm done --capture-id ID "Completed step"` to attach an earlier capture from
 the same target route, `tm log edit E001` to update that event, and
 `tm creds view C001` to display a full credential without table truncation.
+NOCAP's latest capture is engagement-wide in TACMUX sessions; check `cap timeline`
+after switching hosts and use the intended ID. Displaying credentials can put
+secrets into pane logs even when their original entry used a hidden prompt.
 
 To keep the canonical SITREP in any external Markdown notes directory, set one optional path:
 
@@ -149,9 +154,10 @@ See the [operator guide](docs/USAGE.md), [keybindings](docs/KEYBINDINGS.md), and
 
 ## Deliberate boundaries
 
-TACMUX does not manage formal scope, authorization windows, findings, attack paths, report generation, engagement archives, multi-user collaboration, exploitation, or AI. Use the client RoE, reporting platform, filesystem/tar, and purpose-built tools for those jobs.
+TACMUX does not enforce scope or authorization windows, maintain a formal findings or attack-path registry, generate reports, create engagement archives, exploit targets, or call AI. Draft findings and the demonstrated sequence belong in the Operations Log; use the client RoE and reporting platform for formal assessment management.
 
 TACMUX stores raw credential material when you ask it to. Treat the entire engagement directory as sensitive evidence. Shared folders and cloud-synced paths may not enforce Unix permissions.
+Back up the workspace and, when using `sitrep_root`, the physical note and its sibling `images/` directory. A backup containing only the workspace symlink is incomplete.
 
 ## Remove
 
