@@ -28,7 +28,7 @@ Target directories are inventory, `SITREP.md` holds the working notes and curren
 ## Install
 
 ```bash
-git clone --branch main --depth 1 https://github.com/BLTSEC/TACMUX.git
+git clone --branch v3.0.0 --depth 1 https://github.com/BLTSEC/TACMUX.git
 cd TACMUX
 ./install.sh --workspace ~/workspace
 exec "$SHELL" -l
