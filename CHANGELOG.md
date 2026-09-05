@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.0.0 — 2026-09-05
+
 ### Added
 
 - Full credential detail with `tm creds view ID`, direct event editing with
@@ -39,8 +41,7 @@
 - Damaged notes are reported without blocking unrelated sessions, and health
   includes marked engagements with missing or invalid SITREP links.
 - Unchanged credential files are no longer rewritten after unrelated actions.
-- The installation example uses the published main branch; release automation
-  preserves older tags and releases.
+- Release automation validates the complete main-branch tree before publishing.
 - Managed tables, checklists, and Operations Log events now have blank lines
   inside their TACMUX markers so Obsidian recognizes the enclosed Markdown.
 - Screenshot links retain literal filenames inside angle brackets so Obsidian
@@ -48,9 +49,8 @@
 - Zsh completion initialization ignores insecure third-party completion paths
   instead of prompting or aborting during non-interactive shell startup.
 - Manual target-heading changes are detected before SITREP repair; an
-  unambiguous change can be completed through the normal target rename command.
 
-## 3.0.0 — 2026-09-02
+unambiguous change can be completed through the normal target rename command.
 
 ### Changed
 
@@ -74,7 +74,12 @@
 
 - Scope, authorization windows, lifecycle state, findings, attack paths,
   archives, exports, detached discovery jobs, themes, and legacy imports.
+
 - TACMUX's complete tmux preset; v3 ships integration bindings only.
+
+### Added
+
+- Refreshed the banner with real TACMUX CLI commands and synthetic documentation-only targets.
 
 ## 2.5.1 — 2026-09-01
 
