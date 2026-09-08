@@ -1,7 +1,7 @@
 # TACMUX
 
 <p align="center">
-  <img src="assets/TACMUX.jpg" alt="TACMUX — tactical engagement workspaces for tmux" width="100%">
+  <img src="assets/TACMUX-v4-green.jpg" alt="TACMUX — military-green operator illustration with a distressed stencil title and a realistic tmux workspace" width="100%">
 </p>
 
 <p align="center">
