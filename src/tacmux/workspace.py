@@ -92,6 +92,69 @@ def validate_target_name(value: str) -> str:
     )
 
 
+def raise_access(
+    text: str, target: str, access: str, principal: str = "", method: str = ""
+) -> str:
+    """Raise a target's Access (never lower it); set Principal/Method with it."""
+    current = sitrep.details_map(text, target)["Access"][0] or "none"
+    if ACCESS_LEVELS.index(access) <= ACCESS_LEVELS.index(current):
+        return text
+    text = sitrep.set_detail(text, target, "Access", access)
+    if principal:
+        text = sitrep.set_detail(text, target, "Principal", principal)
+    if method:
+        text = sitrep.set_detail(text, target, "Method/Path", method)
+    return text
+
+
+def confirmation_text(
+    text: str,
+    credential: str,
+    target: str,
+    access: str,
+    service: str,
+    notes: str = "",
+) -> str:
+    """Record where a credential works and raise the target's Access with it."""
+    credentials = sitrep.read_global(text, "CREDENTIALS")
+    match = next((row for row in credentials if row[0] == credential), None)
+    if match is None:
+        raise ValidationError(f"unknown credential: {credential}")
+    entries = sitrep.parse_confirmed_access(match[5])
+    key = (target.casefold(), service.casefold())
+    replacement = (target, service, access)
+    for index, entry in enumerate(entries):
+        if (entry[0].casefold(), entry[1].casefold()) == key:
+            entries[index] = replacement
+            break
+    else:
+        entries.append(replacement)
+    match[5] = sitrep.render_confirmed_access(entries)
+    match[7] = utc_now()
+    if notes:
+        tagged = f"[{target} / {service}] {notes}"
+        match[8] = f"{match[8]}; {tagged}" if match[8] else tagged
+    updated = sitrep.write_global(text, "CREDENTIALS", credentials)
+    return raise_access(
+        updated, target, access, match[1], f"Credential {credential} via {service}"
+    )
+
+
+def _validated_confirmation(
+    access: str, service: str, notes: str
+) -> tuple[str, str, str]:
+    access = access.casefold()
+    if access not in ACCESS_LEVELS or access == "none":
+        raise ValidationError(
+            "confirmed access must be authenticated, user, admin, system, or domain"
+        )
+    return (
+        access,
+        validate_confirmation_component(service, "service"),
+        validate_value(notes, "notes", required=False),
+    )
+
+
 def _private_directory(path: Path) -> None:
     if path.exists() and path.is_symlink():
         raise SafetyError(f"refusing linked directory: {path}")
@@ -122,6 +185,32 @@ def _atomic_write(path: Path, text: str) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+PLACEHOLDER_IMAGE = re.compile(
+    r"\*\*Image:\*\* _Not attached\._\n\n\*\*Caption:\*\* _[^\n]*_"
+)
+
+
+def _add_screenshots(body: str, summary: str, links: Sequence[str]) -> str:
+    """Insert image links: replace the placeholder, extend Screenshots, or add it."""
+    if not links:
+        return body
+    alt = summary.replace("\\", "\\\\").replace("]", "\\]")
+    rendered = "\n\n".join(
+        f"![{alt}](<{link}>)\n\n**Caption:** {summary}" for link in links
+    )
+    if PLACEHOLDER_IMAGE.search(body):
+        return PLACEHOLDER_IMAGE.sub(lambda _m: rendered, body, count=1)
+    heading = "#### Screenshots\n\n"
+    if heading in body:
+        start = body.index(heading) + len(heading)
+        following = body.find("\n#### ", start)
+        if following < 0:
+            return f"{body.rstrip()}\n\n{rendered}"
+        return f"{body[:following].rstrip()}\n\n{rendered}\n{body[following:]}"
+    section = f"{heading}{rendered}"
+    return f"{body.rstrip()}\n\n{section}" if body.strip() else section
 
 
 class Workspace:
@@ -745,6 +834,104 @@ class Workspace:
                     f"target was removed but staged data remains at {staged}: {exc}"
                 ) from exc
 
+    def record_access(
+        self,
+        root: Path,
+        target: str,
+        access: str,
+        summary: str,
+        *,
+        principal: str = "",
+        method: str = "",
+        notes: str = "",
+        credential: str = "",
+        credential_access: str = "",
+        service: str = "",
+        capture: CaptureRecord | None = None,
+        images: Sequence[Path] = (),
+    ) -> str:
+        """One undoable change: success event + Access raise + credential use."""
+        target = self.canonical_target(root, target)
+        access = access.casefold()
+        if access not in ACCESS_LEVELS or access == "none":
+            raise ValidationError(
+                "access must be authenticated, user, admin, system, or domain"
+            )
+        principal = validate_value(principal, "principal", required=False)
+        method = validate_value(method, "method", required=False)
+        if credential:
+            confirmed, service, _ = _validated_confirmation(
+                credential_access or access, service or method or "access", ""
+            )
+
+        def extra(text: str) -> str:
+            text = raise_access(text, target, access, principal, method)
+            if credential:
+                text = confirmation_text(text, credential, target, confirmed, service)
+            return text
+
+        return self.add_event(
+            root,
+            target,
+            "success",
+            summary,
+            notes,
+            capture=capture,
+            images=images,
+            transform=extra,
+        )
+
+    def attach_to_event(
+        self,
+        root: Path,
+        identifier: str,
+        *,
+        capture: CaptureRecord | None = None,
+        images: Sequence[Path] = (),
+    ) -> None:
+        """Add a capture and/or screenshots to an existing Operations Log entry."""
+        image_sources = [self._validate_image(path) for path in images]
+        if capture is None and not image_sources:
+            raise ValidationError("nothing to attach")
+        created_images: list[Path] = []
+        with self.locked(root):
+            previous = self.read(root)
+            events = sitrep.read_events(previous)
+            index = next(
+                (i for i, event in enumerate(events) if event.identifier == identifier),
+                None,
+            )
+            if index is None:
+                raise ValidationError(f"unknown event: {identifier}")
+            event = events[index]
+            body = event.body
+            capture_id = event.capture_id
+            if capture:
+                if capture_id:
+                    raise ConflictError(
+                        f"{identifier} already has capture {capture_id}"
+                    )
+                if any(other.capture_id == capture.identifier for other in events):
+                    raise ConflictError(
+                        f"capture is already attached: {capture.identifier}"
+                    )
+                capture_id = capture.identifier
+                evidence = self._event_body(event.summary, "", capture, ())
+                evidence = evidence.split("\n\n#### Screenshots", 1)[0]
+                body = f"{evidence}\n\n{body}".strip() if body else evidence
+            try:
+                links = [
+                    self._copy_event_image(root, source, created_images)
+                    for source in image_sources
+                ]
+                body = _add_screenshots(body, event.summary, links)
+                events[index] = replace(event, capture_id=capture_id, body=body)
+                self._commit(root, previous, sitrep.write_events(previous, events))
+            except BaseException:
+                for path in created_images:
+                    path.unlink(missing_ok=True)
+                raise
+
     def add_event(
         self,
         root: Path,
@@ -755,6 +942,7 @@ class Workspace:
         *,
         capture: CaptureRecord | None = None,
         images: Sequence[Path] = (),
+        transform: Callable[[str], str] | None = None,
     ) -> str:
         if target != "ENGAGEMENT":
             target = self.canonical_target(root, target)
@@ -790,7 +978,10 @@ class Workspace:
                     capture.identifier if capture else "",
                     body,
                 )
-                self._commit(root, previous, sitrep.append_event(previous, event))
+                updated = sitrep.append_event(previous, event)
+                if transform is not None:
+                    updated = transform(updated)
+                self._commit(root, previous, updated)
             except BaseException:
                 for path in created_images:
                     path.unlink(missing_ok=True)
@@ -1020,47 +1211,13 @@ class Workspace:
     ) -> None:
         target = self.canonical_target(root, target)
         validate_confirmation_component(target, "target name")
-        access = access.casefold()
-        if access not in ACCESS_LEVELS or access == "none":
-            raise ValidationError(
-                "confirmed access must be authenticated, user, admin, system, or domain"
-            )
-        service = validate_confirmation_component(service, "service")
-        notes = validate_value(notes, "notes", required=False)
-
-        def operation(text: str) -> str:
-            credentials = sitrep.read_global(text, "CREDENTIALS")
-            match = next((row for row in credentials if row[0] == credential), None)
-            if match is None:
-                raise ValidationError(f"unknown credential: {credential}")
-            entries = sitrep.parse_confirmed_access(match[5])
-            key = (target.casefold(), service.casefold())
-            replacement = (target, service, access)
-            for index, entry in enumerate(entries):
-                if (entry[0].casefold(), entry[1].casefold()) == key:
-                    entries[index] = replacement
-                    break
-            else:
-                entries.append(replacement)
-            match[5] = sitrep.render_confirmed_access(entries)
-            match[7] = utc_now()
-            if notes:
-                tagged = f"[{target} / {service}] {notes}"
-                match[8] = f"{match[8]}; {tagged}" if match[8] else tagged
-            updated = sitrep.write_global(text, "CREDENTIALS", credentials)
-            current_access = sitrep.details_map(updated, target)["Access"][0]
-            if ACCESS_LEVELS.index(access) > ACCESS_LEVELS.index(current_access):
-                updated = sitrep.set_detail(updated, target, "Access", access)
-                updated = sitrep.set_detail(updated, target, "Principal", match[1])
-                updated = sitrep.set_detail(
-                    updated,
-                    target,
-                    "Method/Path",
-                    f"Credential {credential} via {service}",
-                )
-            return updated
-
-        self.mutate(root, operation)
+        access, service, notes = _validated_confirmation(access, service, notes)
+        self.mutate(
+            root,
+            lambda text: confirmation_text(
+                text, credential, target, access, service, notes
+            ),
+        )
 
     def add_task(self, root: Path, target: str, task: str, notes: str = "") -> str:
         if target != "ENGAGEMENT":
