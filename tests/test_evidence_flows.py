@@ -237,3 +237,126 @@ def test_stop_snapshots_before_killing(
     assert main(["stop"]) == 0
     assert order == [("capture", "%1"), ("capture", "%2"), ("stop", "WEB01")]
     assert "Snapshot  2 pane(s)" in capsys.readouterr().out
+
+
+# --- 2.5 evidence helpers ----------------------------------------------------
+
+
+def _fake_flameshot(tmp_path: Path, monkeypatch, payload: bytes) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    data = tmp_path / "shot.bin"
+    data.write_bytes(payload)
+    script = bin_dir / "flameshot"
+    script.write_text(f'#!/bin/sh\ncat "{data}"\n')
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{__import__('os').environ['PATH']}")
+    monkeypatch.delenv("TMUX", raising=False)
+
+
+def test_take_screenshot_saves_and_attaches(workspace, web01, tmp_path, monkeypatch):
+    from tacmux.evidence import take_screenshot
+
+    event = workspace.add_event(web01, "WEB01", "success", "root flag /root/proof.txt")
+    _fake_flameshot(tmp_path, monkeypatch, PNG)
+    path = take_screenshot(workspace, web01, "WEB01", event)
+    assert path is not None and path.parent == web01 / "targets/WEB01/screenshots"
+    assert path.read_bytes() == PNG and path.stat().st_mode & 0o777 == 0o600
+    body = sitrep.read_events(workspace.read(web01))[-1].body
+    assert f"](<images/{path.name}>)" in body
+
+
+def test_cancelled_screenshot_changes_nothing(
+    workspace, web01, tmp_path, monkeypatch, capsys
+):
+    from tacmux.evidence import take_screenshot
+
+    event = workspace.add_event(web01, "WEB01", "success", "proof")
+    before = workspace.read(web01)
+    _fake_flameshot(tmp_path, monkeypatch, b"")
+    assert take_screenshot(workspace, web01, "WEB01", event) is None
+    assert workspace.read(web01) == before
+    assert "Screenshot cancelled" in capsys.readouterr().out
+
+
+def test_screenshot_is_deferred_until_the_popup_closes(workspace, web01, monkeypatch):
+    from tacmux import evidence
+
+    calls = []
+    monkeypatch.setenv("TMUX", "/tmp/sock,1,0")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(evidence.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        evidence.subprocess, "run", lambda argv, **_kw: calls.append(argv)
+    )
+    assert evidence.schedule_screenshot(workspace, web01, "WEB01", "E001") is True
+    argv = calls[0]
+    assert argv[:3] == ["tmux", "run-shell", "-b"]
+    assert argv[3].startswith("sleep 0.4; env DISPLAY=:0 ")
+    assert argv[3].endswith(f"_internal shot {web01} WEB01 E001")
+
+
+def test_offer_capture_skips_attached_and_noninteractive(workspace, web01, monkeypatch):
+    from tacmux import evidence
+
+    record = _capture(web01)
+    monkeypatch.setattr(evidence.shutil, "which", lambda _name: "/usr/bin/cap")
+    monkeypatch.setattr(
+        "tacmux.workspace.Workspace.inspect_capture", lambda *_a, **_k: record
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    assert evidence.offer_capture(workspace, web01, "WEB01") == record  # default yes
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    assert evidence.offer_capture(workspace, web01, "WEB01") is None
+    monkeypatch.delenv("TACMUX_NONINTERACTIVE")
+    workspace.add_event(web01, "WEB01", "info", "has it", capture=record)
+    assert evidence.offer_capture(workspace, web01, "WEB01") is None
+
+
+def _cli(monkeypatch, settings, engagement):
+    monkeypatch.setenv("TACMUX_WORKSPACE", str(settings.workspace))
+    monkeypatch.setenv("TACMUX_CONFIG", str(settings.config_file))
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.chdir(engagement / "targets/WEB01")
+    from tacmux.cli import main
+
+    return main
+
+
+def test_done_screenshot_flag_schedules_for_the_new_entry(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    scheduled = []
+    monkeypatch.setattr(
+        "tacmux.evidence.schedule_screenshot",
+        lambda _ws, root, target, ident: scheduled.append((root, target, ident)),
+    )
+    assert main(["done", "-s", "root", "flag"]) == 0
+    assert scheduled == [(web01, "WEB01", "E001")]
+    assert sitrep.read_events(workspace.read(web01))[-1].summary == "root flag"
+
+
+def test_palette_attaches_latest_capture_to_a_chosen_entry(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    workspace.add_event(web01, "WEB01", "success", "linpeas run")
+    record = _capture(web01)
+    monkeypatch.setattr("tacmux.evidence.latest_unattached_capture", lambda *_a: record)
+    picks = iter(["attach_capture", "E001"])
+    monkeypatch.setattr("tacmux.cli.choose", lambda *_a, **_k: next(picks))
+    monkeypatch.setattr("tacmux.tmux.TmuxService.sessions", lambda self: [])
+    assert main(["menu"]) == 0
+    assert sitrep.read_events(workspace.read(web01))[-1].capture_id == "cap-1"
+
+
+def test_internal_shot_validates_context(
+    settings, workspace, web01, monkeypatch, tmp_path
+):
+    main = _cli(monkeypatch, settings, web01)
+    event = workspace.add_event(web01, "WEB01", "success", "proof")
+    _fake_flameshot(tmp_path, monkeypatch, PNG)
+    assert main(["_internal", "shot", str(web01), "web01", event]) == 0
+    assert "images/" in sitrep.read_events(workspace.read(web01))[-1].body
+    assert main(["_internal", "shot", str(tmp_path), "WEB01", event]) == 1

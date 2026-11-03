@@ -43,6 +43,20 @@ ACTIONS: tuple[Action, ...] = (
         ("log",),
     ),
     Action(
+        "attach_capture",
+        "📎 Attach latest capture to an entry",
+        "Attach the latest NOCAP capture on this target's route (from cap … or "
+        "cap grab) to an Operations Log entry.",
+        'tm done -c "…"   ·   tm done --capture-id ID "…"',
+    ),
+    Action(
+        "screenshot",
+        "📷 Screenshot → entry",
+        "Select a screen region with flameshot after this menu closes; the PNG "
+        "is saved under the target's screenshots/ and attached to the entry.",
+        'tm done -s "…"   ·   tm done -i proof.png "…"',
+    ),
+    Action(
         "cred_add",
         "🔑 Found credential",
         "Store a password or hash (hidden prompt), then optionally record "

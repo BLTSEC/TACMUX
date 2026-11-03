@@ -207,7 +207,9 @@ def _switch(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
     return _attach_selection(tmux, selected)
 
 
-SHELL_COMMANDS = frozenset({"zsh", "bash", "sh", "dash", "fish", "tmux", "-zsh", "-bash"})
+SHELL_COMMANDS = frozenset(
+    {"zsh", "bash", "sh", "dash", "fish", "tmux", "-zsh", "-bash"}
+)
 
 
 def _snapshot(
@@ -254,7 +256,10 @@ def _report_snapshot(root: Path, saved: Sequence[Path], copied: Sequence[Path]) 
 
 
 def _snap_command(
-    settings: Settings, workspace: Workspace, tmux: TmuxService, arguments: Sequence[str]
+    settings: Settings,
+    workspace: Workspace,
+    tmux: TmuxService,
+    arguments: Sequence[str],
 ) -> int:
     context = resolve(settings, tmux)
     target = arguments[0] if arguments else context.target
@@ -294,9 +299,7 @@ def _stop(workspace: Workspace, tmux: TmuxService, arguments: Sequence[str]) -> 
     if tmux.settings.snapshot_on_stop and tmux.has_session(
         tmux.session_name(context.root, target)
     ):
-        saved, copied = _snapshot(
-            tmux.settings, workspace, tmux, context.root, target
-        )
+        saved, copied = _snapshot(tmux.settings, workspace, tmux, context.root, target)
         _report_snapshot(context.root, saved, copied)
     tmux.stop(context.root, target)
     print(f"Stopped {target or 'OPS'}")
@@ -648,6 +651,7 @@ def _log_command(
         )
     words = list(arguments)
     capture_requested = False
+    screenshot = False
     capture_selector = ""
     images: list[Path] = []
     position = 0
@@ -665,6 +669,10 @@ def _log_command(
             continue
         if value in {"-c", "--capture"}:
             capture_requested = True
+            words.pop(position)
+            continue
+        if value in {"-s", "--screenshot"}:
+            screenshot = True
             words.pop(position)
             continue
         if value in {"-i", "--image"}:
@@ -701,6 +709,13 @@ def _log_command(
         if capture_requested
         else None
     )
+    if interactive and target != "ENGAGEMENT" and outcome == "success":
+        from .evidence import offer_capture
+
+        if capture is None:
+            capture = offer_capture(workspace, context.root, target)
+        if not screenshot and not images:
+            screenshot = confirm("Take a screenshot for this entry?", default=False)
     identifier = workspace.add_event(
         context.root,
         target,
@@ -717,6 +732,72 @@ def _log_command(
         extras.append(f"{len(images)} image(s)")
     suffix = f" ({', '.join(extras)})" if extras else ""
     print(f"Logged {identifier} {outcome}: {target} — {summary}{suffix}")
+    if screenshot:
+        if target == "ENGAGEMENT":
+            raise ValidationError("screenshots attach to target entries only")
+        from .evidence import schedule_screenshot
+
+        schedule_screenshot(workspace, context.root, target, identifier)
+    return 0
+
+
+def _choose_event(workspace: Workspace, context: Context, prompt: str) -> str:
+    """Pick an Operations Log entry, newest first; the current target's only."""
+    events = sitrep.read_events(workspace.read(context.root))
+    if context.target:
+        events = [event for event in events if event.target == context.target]
+    if not events:
+        raise ValidationError("no Operations Log entries to attach to")
+    return choose(
+        [
+            (
+                f"{event.identifier}  {event.timestamp}  {event.target:12} "
+                f"{event.outcome:8} {event.summary[:60]}",
+                event.identifier,
+            )
+            for event in reversed(events[-30:])
+        ],
+        prompt,
+    )
+
+
+def _event_target(workspace: Workspace, root: Path, identifier: str) -> str:
+    event = next(
+        (
+            e
+            for e in sitrep.read_events(workspace.read(root))
+            if e.identifier == identifier
+        ),
+        None,
+    )
+    if event is None:
+        raise ValidationError(f"unknown event: {identifier}")
+    if event.target == "ENGAGEMENT":
+        raise ValidationError("evidence attaches to target entries only")
+    return event.target
+
+
+def _attach_capture_action(workspace: Workspace, context: Context) -> int:
+    from .evidence import latest_unattached_capture
+
+    identifier = _choose_event(workspace, context, "Attach capture to> ")
+    target = _event_target(workspace, context.root, identifier)
+    capture = latest_unattached_capture(workspace, context.root, target)
+    if capture is None:
+        raise ValidationError(
+            f"no unattached NOCAP capture on {target}'s route (run cap … or cap grab first)"
+        )
+    workspace.attach_to_event(context.root, identifier, capture=capture)
+    print(f"Attached capture {capture.identifier} ({capture.tool}) to {identifier}")
+    return 0
+
+
+def _screenshot_action(workspace: Workspace, context: Context) -> int:
+    from .evidence import schedule_screenshot
+
+    identifier = _choose_event(workspace, context, "Screenshot for> ")
+    target = _event_target(workspace, context.root, identifier)
+    schedule_screenshot(workspace, context.root, target, identifier)
     return 0
 
 
@@ -1160,6 +1241,18 @@ def _internal(arguments: Sequence[str]) -> int:
     if command == "status-segment":
         print(status_segment(settings, tmux), end="")
         return 0
+    if command == "shot":
+        if len(rest) != 3:
+            raise ValidationError("shot requires engagement root, target, and event")
+        from .evidence import take_screenshot
+
+        root_value, target, identifier = rest
+        workspace = Workspace(settings)
+        root = Path(root_value)
+        workspace.require_engagement(root)
+        target = workspace.canonical_target(root, target)
+        take_screenshot(workspace, root, target, identifier)
+        return 0
     if command == "popup":
         if len(rest) != 3:
             raise ValidationError("popup requires pane, client, and directory")
@@ -1334,6 +1427,10 @@ def _palette(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int
             result = _add_hostname(workspace, tmux, context)
         elif action.key == "edit_entry":
             result = _edit_log_entry(settings, workspace, tmux, context)
+        elif action.key == "attach_capture":
+            result = _attach_capture_action(workspace, context)
+        elif action.key == "screenshot":
+            result = _screenshot_action(workspace, context)
         else:
             command, *rest = action.argv
             result = _dispatch(settings, workspace, tmux, command, rest)
@@ -1466,12 +1563,21 @@ def _dispatch(
     raise ValidationError(f"unknown command: {command}\n\n{USAGE}")
 
 
+EVIDENCE_OPTIONS = (
+    "-c",
+    "--capture",
+    "--capture-id",
+    "-i",
+    "--image",
+    "-s",
+    "--screenshot",
+)
 # Options each command accepts before the "--" sentinel. Everything else that
 # starts with "-" is refused so a mistyped flag is never recorded as data.
 COMMAND_OPTIONS: dict[str, frozenset[str]] = {
-    "log": frozenset({"-c", "--capture", "--capture-id", "-i", "--image"}),
-    "done": frozenset({"-c", "--capture", "--capture-id", "-i", "--image"}),
-    "fail": frozenset({"-c", "--capture", "--capture-id", "-i", "--image"}),
+    "log": frozenset(EVIDENCE_OPTIONS),
+    "done": frozenset(EVIDENCE_OPTIONS),
+    "fail": frozenset(EVIDENCE_OPTIONS),
     "target": frozenset({"--clear", "--all", "--none"}),
     "history": frozenset({"--outcome"}),
     "undo": frozenset({"--yes", "-y"}),
