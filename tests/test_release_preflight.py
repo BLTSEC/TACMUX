@@ -25,8 +25,11 @@ def test_current_release_tree_is_complete(tmp_path: Path) -> None:
     result = run_preflight("--version", __version__, "--notes-output", str(notes))
 
     assert result.returncode == 0, result.stderr
-    assert "### Changed" in notes.read_text()
-    assert "2.5.1" not in notes.read_text()
+    text = notes.read_text()
+    # Notes are this release's section only: subsections, no version headings.
+    assert text.startswith("### "), text[:80]
+    assert "\n## " not in text
+    assert "2.5.1" not in text
 
 
 def test_version_mismatch_is_rejected() -> None:
