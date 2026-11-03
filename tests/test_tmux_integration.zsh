@@ -168,12 +168,8 @@ for index, name in enumerate(names):
                 pass
             time.sleep(0.1)
         assert os.readlink(f"/proc/{pid}/cwd") == str(folder), name
-        # What tmux reports for the pane; some tmux releases render "$" inside
-        # quotes with a backslash. The binding must pass it through unchanged.
-        reported = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", pane, "#{pane_current_path}"],
-            text=True, capture_output=True, check=True,
-        ).stdout.rstrip("\n")
+        # Check the real cwd: some tmux releases print "$" inside quotes as "\\$"
+        # from display-message -p, while the binding's #{q:...} expansion is exact.
         arguments = test_root / "popup-args"
         arguments.unlink(missing_ok=True)
         subprocess.run(
@@ -183,9 +179,7 @@ for index, name in enumerate(names):
         )
         argv = arguments.read_bytes().split(b"\0")[:-1]
         assert argv[:3] == [b"_internal", b"popup", pane.encode()], argv
-        assert argv[-1].decode() == reported, (name, argv, reported)
-        if reported == str(folder):
-            assert argv[-1].decode() == str(folder), (name, argv)
+        assert argv[-1].decode() == str(folder), (name, argv)
         assert not marker.exists(), f"popup binding executed directory syntax: {name}"
     finally:
         subprocess.run(["tmux", "kill-window", "-t", pane], check=True)
