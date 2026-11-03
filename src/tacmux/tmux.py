@@ -14,7 +14,7 @@ import sys
 from typing import Mapping, Sequence
 
 from .config import Settings
-from .errors import ConflictError, ExternalToolError
+from .errors import ConflictError, ExternalToolError, TacmuxError
 from .workspace import Workspace
 
 
@@ -210,10 +210,17 @@ class TmuxService:
             endpoint = details["Endpoint"][0]
             route = details["Capture Route"][0] or target
             if details["Status"][0] == "new":
-                # Bookkeeping, not an operator action: keep it out of undo.
-                workspace.set_target_detail(
-                    root, target, "Status", "active", transparent=True
-                )
+                # Bookkeeping, not an operator action: keep it out of undo, and
+                # never let a busy or invalid SITREP stop the session opening.
+                try:
+                    workspace.set_target_detail(
+                        root, target, "Status", "active", transparent=True
+                    )
+                except TacmuxError as exc:
+                    print(
+                        f"tacmux: could not mark {target} active: {exc}",
+                        file=sys.stderr,
+                    )
         else:
             target_root = root
             endpoint = ""

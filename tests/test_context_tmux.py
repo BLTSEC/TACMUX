@@ -165,3 +165,45 @@ def test_start_refuses_unrelated_existing_session(
     monkeypatch.setattr(tmux, "session_context", lambda _name: (None, ""))
     with pytest.raises(ConflictError, match="unrelated tmux session"):
         tmux.start(engagement, "WEB01")
+
+
+def _fake_tmux(tmux, monkeypatch, calls):
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if args[0] == "has-session":
+            return subprocess.CompletedProcess(args, 1, "", "")
+        if args[0] == "new-session":
+            return subprocess.CompletedProcess(args, 0, "%1\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(tmux, "available", lambda: True)
+    monkeypatch.setattr(tmux, "run", fake_run)
+    monkeypatch.setattr(
+        "tacmux.hooks.LogController.start", lambda *args, **kwargs: None
+    )
+
+
+def test_start_marks_new_target_active(settings, workspace, engagement, monkeypatch):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    tmux = TmuxService(settings)
+    _fake_tmux(tmux, monkeypatch, [])
+    tmux.start(engagement, "WEB01")
+    assert workspace.target_details(engagement, "WEB01")["Status"][0] == "active"
+
+
+def test_start_survives_a_busy_or_invalid_sitrep(
+    settings, workspace, engagement, monkeypatch, capsys
+):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    tmux = TmuxService(settings)
+    calls = []
+    _fake_tmux(tmux, monkeypatch, calls)
+
+    def busy(*_args, **_kwargs):
+        raise ConflictError("SITREP changed in another editor; retry the command")
+
+    monkeypatch.setattr("tacmux.workspace.Workspace.set_target_detail", busy)
+    session = tmux.start(engagement, "WEB01")
+    assert session.target == "WEB01"
+    assert any(args[0] == "new-session" for args in calls)
+    assert "could not mark WEB01 active" in capsys.readouterr().err

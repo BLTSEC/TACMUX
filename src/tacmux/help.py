@@ -208,10 +208,11 @@ def known_help_topics() -> tuple[str, ...]:
 
 
 def wants_help(arguments: list[str] | tuple[str, ...]) -> bool:
-    """True when arguments after the command ask for help before any '--'."""
+    """True for `CMD -h|--help` (before any '--') or exactly `CMD help`."""
     for value in arguments:
         if value == "--":
             return False
         if value in HELP_FLAGS:
             return True
-    return bool(arguments) and arguments[0] == "help"
+    # A bare "help" asks for help; "help desk …" is ordinary log text.
+    return list(arguments) == ["help"]

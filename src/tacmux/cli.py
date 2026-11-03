@@ -768,6 +768,17 @@ def _service_from_token(token: str, services: Sequence[tuple[str, str]]) -> str:
     return matches[0] if len(matches) == 1 else value
 
 
+def _service_like(workspace: Workspace, root: Path, token: str) -> bool:
+    """True for a port, proto:port, "name :port", or a service seen in Ports."""
+    value = token.strip()
+    if re.fullmatch(r"(?:[a-z]+[:/])?\d{1,5}", value, re.IGNORECASE) or " :" in value:
+        return True
+    services = _port_services(workspace, root, workspace.targets(root))
+    return any(
+        label.casefold().startswith(value.casefold() + " :") for _d, label in services
+    )
+
+
 def _choose_service(workspace: Workspace, root: Path, targets: Sequence[str]) -> str:
     services = _port_services(workspace, root, targets)
     selected = choose([*services, ("Other…", "")], "Service> ")
@@ -795,6 +806,17 @@ def _confirm_credential(
     targets: list[str] = []
     while rest and workspace.target_exists(context.root, rest[0]):
         targets.append(workspace.canonical_target(context.root, rest.pop(0)))
+    confirmable = tuple(value for value in ACCESS_LEVELS if value != "none")
+    if (
+        not targets
+        and not context.target
+        and rest
+        and not is_word(rest[0], confirmable, ACCESS_ALIASES)
+        and not _service_like(workspace, context.root, rest[0])
+    ):
+        # A mistyped target must not silently become the service.
+        known = ", ".join(workspace.targets(context.root)) or "-"
+        raise ValidationError(f"unknown target: {rest[0]} (targets: {known})")
     if not targets:
         if context.target:
             targets = [context.target]
@@ -804,7 +826,6 @@ def _confirm_credential(
                 "Works on (Tab selects several)> ",
             )
             prompted = True
-    confirmable = tuple(value for value in ACCESS_LEVELS if value != "none")
     if rest and is_word(rest[0], confirmable, ACCESS_ALIASES):
         access = match_word(rest.pop(0), confirmable, ACCESS_ALIASES, "access")
     else:
@@ -1143,7 +1164,7 @@ def _import_nmap_file(
     folder = context.root / "targets" / target
     candidates = {
         path
-        for pattern in ("*.nmap", "scans/*.nmap", "scans/*.txt", "*.txt")
+        for pattern in ("*.nmap", "scans/*.nmap", "scans/*.txt")
         for path in folder.glob(pattern)
         if path.is_file() and not path.is_symlink()
     }

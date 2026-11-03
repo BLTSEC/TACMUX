@@ -421,3 +421,69 @@ def test_popup_binding_passes_invoking_pane_and_client(monkeypatch, settings):
     assert argv[argv.index("-c") + 1] == "/dev/pts/3"
     assert "TMUX_PANE=%7" in argv and "TACMUX_POPUP=1" in argv
     assert argv[-1] == "menu"
+
+
+def test_help_word_is_help_only_when_alone(web01, workspace, capsys):
+    before = workspace.read(web01)
+    assert main(["done", "help"]) == 0
+    assert "tm done" in capsys.readouterr().out
+    assert workspace.read(web01) == before
+    assert main(["done", "help", "desk", "password", "reused"]) == 0
+    assert sitrep.read_events(workspace.read(web01))[-1].summary == (
+        "help desk password reused"
+    )
+
+
+def test_ops_creds_confirm_rejects_a_mistyped_target(
+    web01, workspace, monkeypatch, capsys, tmp_path
+):
+    monkeypatch.chdir(web01)
+    report = tmp_path / "web.nmap"
+    report.write_text("445/tcp open microsoft-ds Samba\n")
+    assert main(["ports", "add", "WEB01", str(report)]) == 0
+    workspace.add_credential(web01, "alice", "Winter2024!", "password")
+    before = workspace.read(web01)
+
+    def no_picker(*_args, **_kwargs):
+        raise AssertionError("a typo must fail before any picker")
+
+    monkeypatch.setattr("tacmux.cli.choose", no_picker)
+    monkeypatch.setattr("tacmux.cli.choose_many", no_picker)
+    assert main(["creds", "confirm", "C001", "WEB1", "user", "SSH"]) == 1
+    assert "unknown target: WEB1" in capsys.readouterr().err
+    assert workspace.read(web01) == before
+
+    picked = _sequence(monkeypatch, "choose_many", [["WEB01"]])
+    _sequence(monkeypatch, "ask", [""])  # optional notes after a picker
+    assert main(["creds", "confirm", "C001", "auth", "445"]) == 0
+    assert len(picked) == 1
+    row = sitrep.read_global(workspace.read(web01), "CREDENTIALS")[0]
+    assert "WEB01 · microsoft-ds :445 · authenticated" in row[5]
+
+
+def test_palette_nmap_picker_ignores_loot_text_files(web01, workspace, monkeypatch):
+    folder = web01 / "targets/WEB01"
+    (folder / "hash.txt").write_text("pbkdf2_sha256$...\n")
+    (folder / "LEVRAM.nmap").write_text("22/tcp open ssh\n")
+    (folder / "scans/manual.txt").write_text("80/tcp open http\n")
+    offered = []
+
+    def fake_choose(choices, prompt, **_kwargs):
+        offered.extend(display for display, _value in choices)
+        return str(folder / "LEVRAM.nmap")
+
+    monkeypatch.setattr("tacmux.cli.choose", fake_choose)
+    from tacmux.cli import _import_nmap_file
+    from tacmux.config import load_settings
+    from tacmux.context import Context
+    from tacmux.tmux import TmuxService
+
+    settings = load_settings()
+    assert (
+        _import_nmap_file(
+            settings, workspace, TmuxService(settings), Context(web01, "WEB01")
+        )
+        == 0
+    )
+    assert "hash.txt" not in offered
+    assert set(offered) == {"LEVRAM.nmap", "scans/manual.txt"}
