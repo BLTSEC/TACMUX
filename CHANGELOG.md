@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 3.1.1 — 2026-11-03
+
+### Changed
+
+- README rewritten for 3.1: palette-first quick start, how input works
+  (omitted arguments, prefixes, `--help`, non-interactive mode, undo), grouped
+  commands, keys, and a safety note that `.tacmux/undo/` also holds secrets.
+- 3.1.0 release notes gained upgrade notes listing behavior that differs from
+  3.0.
+
+### Fixed
+
+- The tmux integration test for the Prefix+`M` popup binding is portable across
+  tmux releases: it checks the pane's real directory instead of
+  `display-message` output, which some releases print with escaped `$`.
+  No runtime code changed.
+
 ## 3.1.0 — 2026-11-03
 
 ### Upgrade notes

@@ -29,7 +29,7 @@ records what happened.
 ## Install
 
 ```bash
-git clone --branch v3.1.0 --depth 1 https://github.com/BLTSEC/TACMUX.git
+git clone --branch v3.1.1 --depth 1 https://github.com/BLTSEC/TACMUX.git
 cd TACMUX
 ./install.sh --workspace ~/workspace   # omit --workspace on reinstall
 exec "$SHELL" -l
