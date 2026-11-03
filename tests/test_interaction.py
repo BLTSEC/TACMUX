@@ -4,8 +4,25 @@ import subprocess
 
 import pytest
 
-from tacmux.errors import ValidationError
-from tacmux.interaction import choose_many, edit_text
+from tacmux.errors import NonInteractiveError, ValidationError
+from tacmux.interaction import choose_many, edit_text, open_editor
+
+
+@pytest.mark.parametrize("mode", ["forced", "no-terminal"])
+def test_editor_requires_interaction(settings, monkeypatch, tmp_path, mode):
+    if mode == "forced":
+        monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    else:
+        monkeypatch.setattr("tacmux.interaction.text_input_available", lambda: False)
+
+    def no_editor(*_args, **_kwargs):
+        raise AssertionError("editor must not launch noninteractively")
+
+    monkeypatch.setattr("tacmux.interaction.subprocess.run", no_editor)
+    with pytest.raises(NonInteractiveError):
+        open_editor(settings, tmp_path / "SITREP.md")
+    with pytest.raises(NonInteractiveError):
+        edit_text(settings, "pasted input\n")
 
 
 def test_edit_text_requires_an_explicit_save(settings, monkeypatch):

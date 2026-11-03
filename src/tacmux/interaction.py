@@ -225,6 +225,7 @@ def choose_many(choices: Sequence[tuple[str, str]], prompt: str) -> list[str]:
 
 
 def open_editor(settings: Settings, path: Path, line: int | None = None) -> None:
+    require_interactive("editor interaction")
     argv = list(settings.editor_argv)
     executable = Path(argv[0]).name
     if line and executable in {"vi", "vim", "nvim", "view", "nvim-qt"}:

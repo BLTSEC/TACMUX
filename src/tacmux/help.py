@@ -104,6 +104,9 @@ Example:  tm history --outcome failed
 
 Shows what will be reverted and asks first. Refuses when SITREP was edited
 outside TACMUX afterwards (Obsidian or $EDITOR), so manual work is never lost.
+Refuses if another TACMUX command changes undo history during confirmation.
+Target add/rename/delete start a new undo history; directory changes cannot
+be undone. Only subsequent SITREP-only changes are undoable.
 Images copied for an undone entry stay on disk; their paths are printed.
 Forms:    tm undo   ·   tm undo --yes   (scripts and agents; no prompt)
 Example:  tm done "root shell"   (logged on the wrong target)  →  tm undo

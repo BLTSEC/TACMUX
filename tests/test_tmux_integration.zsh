@@ -103,3 +103,69 @@ wait_for '[[ "$(tmux display-message -t "$session:1.1" -p "#{pane_pipe}")" == 1 
     fail "service-style split did not inherit logging" || exit 1
 
 print -- '[PASS] v3 central logging, context, and NOCAP environment'
+
+# Exercise the actual binding's shell formats, not just the Python popup argv.
+# The stub records arguments without opening a popup or touching user sessions.
+python3 - "$ROOT" <<'PY' || exit 1
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+root = Path(sys.argv[1])
+test_root = Path(os.environ["TEST_ROOT"])
+home = test_root / "popup home"
+launcher = home / ".local/bin/tacmux"
+launcher.parent.mkdir(parents=True)
+launcher.write_text(
+    '#!/bin/sh\nprintf \'%s\\0\' "$@" > "$TEST_ROOT/popup-args"\n'
+)
+launcher.chmod(0o700)
+marker = test_root / "popup-injected"
+subprocess.run(
+    ["tmux", "set-environment", "-g", "TACMUX_POPUP_MARKER", str(marker)],
+    check=True,
+)
+binding = next(
+    line for line in (root / "tmux/tacmux-integration.conf").read_text().splitlines()
+    if line.startswith("bind-key M ")
+)
+command = shlex.split(binding)[-1]
+names = (
+    "spaces in directory",
+    "single'quote",
+    'double"quote',
+    '$(touch "$TACMUX_POPUP_MARKER")',
+    '`touch "$TACMUX_POPUP_MARKER"`',
+    "semi; amp& pipe| redirect> dollar$HOME hash#",
+)
+for name in names:
+    folder = test_root / name
+    folder.mkdir()
+    pane = subprocess.run(
+        ["tmux", "new-window", "-d", "-P", "-F", "#{pane_id}",
+         "-t", "bootstrap:", "-c", str(folder).replace("#", "##"), "sleep 120"],
+        text=True, capture_output=True, check=True,
+    ).stdout.strip()
+    try:
+        actual_directory = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{pane_current_path}"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        assert actual_directory == str(folder), (name, actual_directory)
+        arguments = test_root / "popup-args"
+        arguments.unlink(missing_ok=True)
+        subprocess.run(
+            ["tmux", "run-shell", "-t", pane,
+             f"export HOME={shlex.quote(str(home))}; {command}"],
+            check=True,
+        )
+        argv = arguments.read_bytes().split(b"\0")[:-1]
+        assert argv[:3] == [b"_internal", b"popup", pane.encode()], argv
+        assert argv[-1].decode() == str(folder), (name, argv)
+        assert not marker.exists(), f"popup binding executed directory syntax: {name}"
+    finally:
+        subprocess.run(["tmux", "kill-window", "-t", pane], check=True)
+print("[PASS] popup binding preserves shell-sensitive paths without executing them")
+PY

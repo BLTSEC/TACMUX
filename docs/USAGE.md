@@ -45,11 +45,17 @@ Outside TACMUX sessions, bare `tm` still opens the switcher.
   accepted words, and examples. Help never writes to SITREP; unknown options
   are refused, and `--` logs text that begins with a dash.
 - With no terminal (pipes, scripts, agents) or `TACMUX_NONINTERACTIVE=1`,
-  TACMUX never prompts or opens fzf. It fails and names the missing argument.
+  TACMUX never prompts, opens fzf, or launches an editor. It fails and names
+  the missing argument. Target deletion always requires an interactive,
+  exact-name confirmation; piped input cannot authorize it.
 - `tm undo` reverts the most recent TACMUX change to SITREP (25 are kept under
   `.tacmux/undo/`). It refuses after SITREP was edited elsewhere, so manual
   Obsidian or `$EDITOR` work is never overwritten. `tm undo --yes` skips the
-  confirmation for scripts.
+  confirmation for scripts. A concurrent TACMUX change during confirmation
+  also refuses undo; run it again to preview the latest change. Target
+  add/rename/delete start a new undo history because document-only undo
+  cannot safely reverse directory changes. Subsequent SITREP-only changes
+  remain undoable; undo never deletes evidence or recreates deleted targets.
 
 ## Engagement and target workflow
 

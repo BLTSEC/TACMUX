@@ -110,6 +110,42 @@ def test_missing_terminal_is_detected_without_env(monkeypatch):
         ask("Summary")
 
 
+@pytest.mark.parametrize("mode", ["forced", "no-terminal"])
+def test_target_delete_requires_interactive_confirmation(
+    web01, workspace, monkeypatch, capsys, mode
+):
+    before = workspace.read(web01)
+    if mode == "forced":
+        monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    else:
+        monkeypatch.setattr("tacmux.interaction.text_input_available", lambda: False)
+    monkeypatch.setattr("tacmux.tmux.TmuxService.require_stopped", lambda *_: None)
+
+    def no_input(_prompt):
+        raise AssertionError("delete must not read a noninteractive confirmation")
+
+    monkeypatch.setattr("builtins.input", no_input)
+    assert main(["target", "delete", "WEB01"]) == 1
+    assert "missing" in capsys.readouterr().err
+    assert (web01 / "targets/WEB01").is_dir()
+    assert workspace.read(web01) == before
+
+
+def test_target_delete_still_requires_the_exact_name(
+    web01, workspace, monkeypatch, capsys
+):
+    monkeypatch.chdir(web01)
+    monkeypatch.setattr("tacmux.tmux.TmuxService.require_stopped", lambda *_: None)
+    before = workspace.read(web01)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
+    assert main(["target", "delete", "WEB01"]) == 1
+    assert "deletion cancelled" in capsys.readouterr().err
+    assert workspace.read(web01) == before
+    monkeypatch.setattr("builtins.input", lambda _prompt: "WEB01")
+    assert main(["target", "delete", "WEB01"]) == 0
+    assert workspace.targets(web01) == []
+
+
 def test_fail_shortcuts_and_history_filter(web01, workspace, capsys):
     assert main(["fail", "EDB", "50640", "broken"]) == 0
     assert main(["log", "f", "ferox", "only", "static"]) == 0
@@ -226,6 +262,68 @@ def test_undo_masks_credentials_and_prunes_journal(
         workspace.add_event(web01, "WEB01", "info", f"entry {index}")
     journal = list((web01 / ".tacmux/undo").glob("*.json"))
     assert len(journal) == UNDO_LIMIT
+
+
+@pytest.mark.parametrize("concurrent_change", ["append", "undo"])
+def test_undo_refuses_a_different_change_than_the_preview(
+    web01, workspace, monkeypatch, capsys, concurrent_change
+):
+    assert main(["done", "First step"]) == 0
+
+    def concurrent_write(_prompt):
+        if concurrent_change == "append":
+            workspace.add_event(web01, "WEB01", "info", "Concurrent step")
+        else:
+            workspace.undo_last_change(web01, expected=workspace.last_change(web01))
+        return "y"
+
+    monkeypatch.setattr("builtins.input", concurrent_write)
+    assert main(["undo"]) == 1
+    output = capsys.readouterr()
+    assert "undo history changed" in output.err
+    assert "Undid:" not in output.out
+    assert [event.summary for event in sitrep.read_events(workspace.read(web01))] == (
+        ["First step", "Concurrent step"] if concurrent_change == "append" else []
+    )
+
+
+@pytest.mark.parametrize("action", ["add", "rename", "delete"])
+def test_target_lifecycle_starts_a_safe_undo_history(
+    web01, workspace, monkeypatch, capsys, action
+):
+    monkeypatch.chdir(web01)
+    monkeypatch.setattr("tacmux.tmux.TmuxService.require_stopped", lambda *_: None)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "WEB01")
+    evidence = web01 / "targets/WEB01/working/evidence.txt"
+    evidence.write_text("keep this evidence\n")
+    assert main(["log", "Earlier engagement note"]) == 0
+    if action == "add":
+        assert main(["target", "add", "WEB02", "192.0.2.20"]) == 0
+    elif action == "rename":
+        assert main(["target", "rename", "WEB01", "WEB02"]) == 0
+        evidence = web01 / "targets/WEB02/working/evidence.txt"
+    else:
+        assert main(["target", "delete", "WEB01"]) == 0
+    baseline = workspace.read(web01)
+    targets = workspace.targets(web01)
+
+    assert main(["undo", "--yes"]) == 1
+    assert (
+        "undo history starts after target directory changes" in capsys.readouterr().err
+    )
+    assert workspace.read(web01) == baseline
+    assert workspace.targets(web01) == targets
+    assert workspace.validate(web01) == []
+    assert len(list((web01 / ".tacmux/undo").glob("*.json"))) == 1
+    if action != "delete":
+        assert evidence.read_text() == "keep this evidence\n"
+
+    assert main(["log", "Later engagement note"]) == 0
+    assert main(["undo", "--yes"]) == 0
+    assert workspace.read(web01) == baseline
+    assert workspace.validate(web01) == []
+    assert main(["undo", "--yes"]) == 1
+    assert workspace.read(web01) == baseline
 
 
 def test_palette_runs_actions_and_switches_sessions(web01, workspace, monkeypatch):

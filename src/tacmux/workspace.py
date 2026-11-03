@@ -313,11 +313,65 @@ class Workspace:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
 
-    def mutate(self, root: Path, operation: Callable[[str], str]) -> str:
+    def mutate(
+        self,
+        root: Path,
+        operation: Callable[[str], str],
+        *,
+        transparent: bool = False,
+    ) -> str:
+        """Apply operation to SITREP under the lock.
+
+        A transparent change (automatic bookkeeping such as marking a target
+        active when its session starts) is not an undo step of its own. It is
+        folded into the latest undo snapshot instead, so `tm undo` still
+        reverts the operator's last change and keeps the bookkeeping.
+        """
         with self.locked(root):
             previous = self.read(root)
             updated = operation(previous)
-            return self._commit(root, previous, updated)
+            if not transparent:
+                return self._commit(root, previous, updated)
+            fold = self._prepare_fold(root, previous, operation)
+            if fold is None:
+                return self._commit(root, previous, updated)
+            result = self._commit(root, previous, updated, journal=False)
+            if result != previous and fold:
+                path, entry = fold
+                entry["after_sha256"] = hashlib.sha256(result.encode()).hexdigest()
+                try:
+                    _atomic_write(path, json.dumps(entry))
+                except OSError:
+                    # Keep undo consistent: record the change as its own step.
+                    self._journal_change(root, previous, result)
+            return result
+
+    def _prepare_fold(
+        self, root: Path, previous: str, operation: Callable[[str], str]
+    ) -> tuple[Path, dict] | tuple[()] | None:
+        """Plan folding a transparent change into the latest undo snapshot.
+
+        Returns the entry to rewrite after the SITREP commit succeeds, an empty
+        tuple when there is no history to protect, or None when the change must
+        be journaled normally instead.
+        """
+        try:
+            change = self.last_change(root)
+        except TacmuxError:
+            return None
+        if change is None:
+            return ()
+        path, entry = change
+        previous_hash = hashlib.sha256(previous.encode()).hexdigest()
+        if entry.get("after_sha256") != previous_hash:
+            return None
+        if entry.get("barrier"):
+            return path, entry  # history still starts here; only advance the hash
+        try:
+            entry["before"] = sitrep.normalize_document(operation(entry["before"]))
+        except (TacmuxError, KeyError, ValueError):
+            return None
+        return path, entry
 
     def _commit(
         self,
@@ -327,6 +381,7 @@ class Workspace:
         *,
         allow_reference_problems: bool = False,
         journal: bool = True,
+        undo_barrier: bool = False,
     ) -> str:
         if not updated.endswith("\n"):
             updated += "\n"
@@ -343,8 +398,6 @@ class Workspace:
             raise ConflictError("SITREP changed in another editor; retry the command")
         os.chmod(path, 0o600)
         if updated != previous:
-            if journal:
-                self._journal_change(root, previous, updated)
             try:
                 _atomic_write(path, updated)
             except OSError:
@@ -356,6 +409,8 @@ class Workspace:
                     "tacmux: SITREP saved, but write durability could not be confirmed",
                     file=sys.stderr,
                 )
+        if journal and (updated != previous or undo_barrier):
+            self._journal_change(root, previous, updated, barrier=undo_barrier)
         try:
             self._sync_credentials(root, updated)
         except (OSError, TacmuxError) as exc:
@@ -369,26 +424,46 @@ class Workspace:
     # Undo journal ---------------------------------------------------------
     # Each committed change stores the previous SITREP and a hash of the new
     # one. Undo restores only while SITREP still matches that hash, so manual
-    # Obsidian or $EDITOR work is never overwritten.
+    # Obsidian or $EDITOR work is never overwritten. Target directory operations
+    # start a new history: a document-only undo cannot safely reverse them.
 
     def _undo_directory(self, root: Path) -> Path:
         directory = self._contained(root, ".tacmux", "undo")
         _private_directory(directory)
         return directory
 
-    def _journal_change(self, root: Path, previous: str, updated: str) -> None:
+    @staticmethod
+    def _target_identities(text: str) -> set[str]:
+        return {section.name for section in sitrep.target_sections(text)}
+
+    def _journal_change(
+        self, root: Path, previous: str, updated: str, *, barrier: bool = False
+    ) -> None:
         try:
             directory = self._undo_directory(root)
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            previous_targets = self._target_identities(previous)
+            updated_targets = self._target_identities(updated)
+            barrier = barrier or previous_targets != updated_targets
             entry = {
                 "time": utc_now(),
                 "label": self.change_label or "TACMUX change",
-                "before": previous,
                 "after_sha256": hashlib.sha256(updated.encode()).hexdigest(),
             }
+            if barrier:
+                entry["barrier"] = True
+            else:
+                entry["before"] = previous
             _atomic_write(directory / f"{stamp}.json", json.dumps(entry))
             entries = sorted(directory.glob("*.json"))
-            for stale in entries[:-UNDO_LIMIT]:
+            # Persist the boundary before pruning: even interrupted cleanup
+            # must not expose snapshots from the old target directory layout.
+            stale_entries = (
+                [path for path in entries if path.name != f"{stamp}.json"]
+                if barrier
+                else entries[:-UNDO_LIMIT]
+            )
+            for stale in stale_entries:
                 stale.unlink(missing_ok=True)
         except (OSError, TacmuxError) as exc:
             print(f"tacmux: undo journal not written: {exc}", file=sys.stderr)
@@ -404,13 +479,31 @@ class Workspace:
         except (OSError, json.JSONDecodeError) as exc:
             raise ValidationError(f"undo journal entry is unreadable: {path}") from exc
 
-    def undo_last_change(self, root: Path) -> dict:
+    def require_undoable(self, entry: dict, current: str) -> None:
+        # Recognize pre-boundary journal entries too, so upgrades fail clearly
+        # rather than trying to restore a document for a different target tree.
+        if entry.get("barrier") or self._target_identities(
+            entry["before"]
+        ) != self._target_identities(current):
+            raise ValidationError(
+                "undo history starts after target directory changes; "
+                "target add/rename/delete cannot be undone. "
+                "Only later SITREP-only changes can be undone"
+            )
+
+    def undo_last_change(self, root: Path, *, expected: tuple[Path, dict]) -> dict:
         with self.locked(root):
             change = self.last_change(root)
+            if change != expected:
+                raise ConflictError(
+                    "undo history changed while awaiting confirmation; "
+                    "run tm undo again to preview the latest change"
+                )
             if change is None:
                 raise ValidationError("nothing to undo")
             path, entry = change
             current = self.read(root)
+            self.require_undoable(entry, current)
             if hashlib.sha256(current.encode()).hexdigest() != entry["after_sha256"]:
                 raise ConflictError(
                     "SITREP changed after that TACMUX change (manual or other edit); "
@@ -451,7 +544,7 @@ class Workspace:
                     _private_directory(path / directory)
                 previous = self.read(root)
                 updated = sitrep.add_target(previous, name, endpoint)
-                self._commit(root, previous, updated)
+                self._commit(root, previous, updated, undo_barrier=True)
             except BaseException:
                 shutil.rmtree(path, ignore_errors=True)
                 raise
@@ -520,14 +613,23 @@ class Workspace:
             return path, len(endpoints)
 
     def set_target_detail(
-        self, root: Path, target: str, field: str, value: str, notes: str | None = None
+        self,
+        root: Path,
+        target: str,
+        field: str,
+        value: str,
+        notes: str | None = None,
+        *,
+        transparent: bool = False,
     ) -> None:
         target = self.canonical_target(root, target)
         value = validate_value(value, field, required=False)
         if field == "Status" and value not in TARGET_STATUSES:
             raise ValidationError("status must be new, active, blocked, or complete")
         self.mutate(
-            root, lambda text: sitrep.set_detail(text, target, field, value, notes)
+            root,
+            lambda text: sitrep.set_detail(text, target, field, value, notes),
+            transparent=transparent,
         )
 
     def rename_target(self, root: Path, old: str, new: str) -> str:
@@ -581,7 +683,7 @@ class Workspace:
                             )
                         old_capture.rename(new_capture)
                         capture_renamed = True
-                self._commit(root, text, updated)
+                self._commit(root, text, updated, undo_barrier=True)
             except BaseException:
                 if capture_renamed and old_capture and new_capture:
                     new_capture.rename(old_capture)
@@ -632,7 +734,7 @@ class Workspace:
             try:
                 previous = self.read(root)
                 updated = sitrep.remove_target(previous, target)
-                self._commit(root, previous, updated)
+                self._commit(root, previous, updated, undo_barrier=True)
             except BaseException:
                 staged.rename(path)
                 raise

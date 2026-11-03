@@ -210,8 +210,10 @@ class TmuxService:
             endpoint = details["Endpoint"][0]
             route = details["Capture Route"][0] or target
             if details["Status"][0] == "new":
-                workspace.change_label = f"session start {target} (status active)"
-                workspace.set_target_detail(root, target, "Status", "active")
+                # Bookkeeping, not an operator action: keep it out of undo.
+                workspace.set_target_detail(
+                    root, target, "Status", "active", transparent=True
+                )
         else:
             target_root = root
             endpoint = ""

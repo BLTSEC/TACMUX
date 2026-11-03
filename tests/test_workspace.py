@@ -120,6 +120,150 @@ def test_failed_sitrep_replace_rolls_back_target(workspace, engagement, monkeypa
     assert workspace.read(engagement) == before
 
 
+@pytest.mark.parametrize("action", ["add", "rename", "delete", "event"])
+def test_failed_commit_preserves_undo_history(
+    workspace, engagement, monkeypatch, action
+):
+    from tacmux import workspace as workspace_module
+
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    workspace.add_event(engagement, "ENGAGEMENT", "info", "Existing note")
+    before = workspace.read(engagement)
+    change = workspace.last_change(engagement)
+    original = workspace_module._atomic_write
+
+    def fail_sitrep(path, text):
+        if path.name == "SITREP.md":
+            raise OSError("synthetic SITREP failure")
+        original(path, text)
+
+    monkeypatch.setattr(workspace_module, "_atomic_write", fail_sitrep)
+    with pytest.raises(OSError, match="synthetic SITREP failure"):
+        if action == "add":
+            workspace.add_target(engagement, "WEB02", "192.0.2.20")
+        elif action == "rename":
+            workspace.rename_target(engagement, "WEB01", "WEB02")
+        elif action == "delete":
+            workspace.delete_target(engagement, "WEB01")
+        else:
+            workspace.add_event(engagement, "ENGAGEMENT", "info", "Failed note")
+    assert workspace.read(engagement) == before
+    assert workspace.targets(engagement) == ["WEB01"]
+    assert workspace.last_change(engagement) == change
+
+
+def test_undo_accepts_only_the_previewed_journal_entry(workspace, engagement):
+    workspace.add_event(engagement, "ENGAGEMENT", "info", "First note")
+    first = workspace.last_change(engagement)
+    workspace.add_event(engagement, "ENGAGEMENT", "info", "Second note")
+    current = workspace.read(engagement)
+    latest = workspace.last_change(engagement)
+    with pytest.raises(ConflictError, match="undo history changed"):
+        workspace.undo_last_change(engagement, expected=first)
+    assert workspace.read(engagement) == current
+    assert workspace.last_change(engagement) == latest
+    workspace.undo_last_change(engagement, expected=latest)
+    assert workspace.last_change(engagement) == first
+    workspace.undo_last_change(engagement, expected=first)
+    assert workspace.last_change(engagement) is None
+
+
+def test_undo_refuses_when_the_previewed_entry_is_gone(workspace, engagement):
+    workspace.add_event(engagement, "ENGAGEMENT", "info", "First note")
+    change = workspace.last_change(engagement)
+    workspace.undo_last_change(engagement, expected=change)
+    before = workspace.read(engagement)
+    with pytest.raises(ConflictError, match="undo history changed"):
+        workspace.undo_last_change(engagement, expected=change)
+    assert workspace.read(engagement) == before
+
+
+def test_legacy_lifecycle_snapshot_is_an_undo_boundary(workspace, engagement):
+    import hashlib
+
+    before = workspace.read(engagement)
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    current = workspace.read(engagement)
+    path, entry = workspace.last_change(engagement)
+    # Journals written before explicit boundaries stored only SITREP snapshots.
+    entry.pop("barrier", None)
+    entry["before"] = before
+    entry["after_sha256"] = hashlib.sha256(current.encode()).hexdigest()
+    path.write_text(json.dumps(entry))
+    with pytest.raises(
+        ValidationError, match="undo history starts after target directory changes"
+    ):
+        workspace.undo_last_change(
+            engagement, expected=workspace.last_change(engagement)
+        )
+    assert workspace.read(engagement) == current
+    assert workspace.validate(engagement) == []
+
+
+def test_directory_only_rename_still_starts_an_undo_history(workspace, engagement):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    text = sitrep.rename_target(workspace.read(engagement), "WEB01", "WEB02")
+    text = sitrep.set_detail(text, "WEB02", "Capture Route", "WEB02")
+    (engagement / "SITREP.md").write_text(text)
+    # The editor has already made every document change; rename only repairs
+    # the directory. It must still retire snapshots from the old target tree.
+    workspace.rename_target(engagement, "WEB01", "WEB02")
+    assert workspace.read(engagement) == text
+    assert workspace.targets(engagement) == ["WEB02"]
+    _, entry = workspace.last_change(engagement)
+    assert entry["barrier"] is True
+    assert "before" not in entry
+    assert len(list((engagement / ".tacmux/undo").glob("*.json"))) == 1
+    assert workspace.validate(engagement) == []
+
+
+def _status(workspace, engagement, target="WEB01"):
+    return workspace.target_details(engagement, target)["Status"][0]
+
+
+def test_transparent_change_folds_into_the_last_undo_step(workspace, engagement):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    workspace.add_event(engagement, "WEB01", "info", "Operator note")
+    change = workspace.last_change(engagement)
+    workspace.set_target_detail(
+        engagement, "WEB01", "Status", "active", transparent=True
+    )
+    journal = sorted((engagement / ".tacmux/undo").glob("*.json"))
+    assert len(journal) == 2  # barrier from add + the note; no bookkeeping step
+    assert workspace.last_change(engagement)[0] == change[0]
+    workspace.undo_last_change(engagement, expected=workspace.last_change(engagement))
+    assert sitrep.read_events(workspace.read(engagement)) == []
+    assert _status(workspace, engagement) == "active"
+    assert workspace.validate(engagement) == []
+
+
+def test_transparent_change_after_target_add_keeps_the_barrier(workspace, engagement):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    workspace.set_target_detail(
+        engagement, "WEB01", "Status", "active", transparent=True
+    )
+    path, entry = workspace.last_change(engagement)
+    assert entry["barrier"] is True
+    assert len(list((engagement / ".tacmux/undo").glob("*.json"))) == 1
+    with pytest.raises(ValidationError, match="undo history starts after"):
+        workspace.undo_last_change(engagement, expected=(path, entry))
+    assert _status(workspace, engagement) == "active"
+
+
+def test_transparent_change_after_manual_edit_is_journaled(workspace, engagement):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    workspace.add_event(engagement, "WEB01", "info", "Operator note")
+    sitrep_path = workspace.sitrep_path(engagement)
+    sitrep_path.write_text(sitrep_path.read_text() + "\nmanual prose\n")
+    workspace.set_target_detail(
+        engagement, "WEB01", "Status", "active", transparent=True
+    )
+    # The latest snapshot no longer matches, so the change is its own step.
+    workspace.undo_last_change(engagement, expected=workspace.last_change(engagement))
+    assert _status(workspace, engagement) == "new"
+    assert "manual prose" in workspace.read(engagement)
+
+
 def test_unrelated_mutation_keeps_credential_file_inodes(workspace, engagement):
     workspace.add_credential(engagement, "alice", "synthetic", "password")
     paths = list((engagement / "credentials").glob("*.txt"))

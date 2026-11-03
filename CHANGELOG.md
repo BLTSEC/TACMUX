@@ -10,16 +10,24 @@
   Prefix+`M` as a popup. One fuzzy list holds plain-English actions (failed,
   step worked, found credential, credential works, TODO, cleanup, Nmap import,
   hostname, field edits, log edits, undo, status) and every session, with a
-  preview showing the equivalent direct command.
+  preview showing the equivalent direct command. The popup binding passes the
+  invoking pane, client, and directory shell-quoted, so directory names are
+  never executed.
 - `tm undo` reverts the most recent TACMUX change to SITREP from a 25-entry
-  journal. It refuses when SITREP changed outside TACMUX afterwards and masks
-  credential rows in its preview; `--yes` serves scripts and agents.
+  journal. It refuses when SITREP changed outside TACMUX afterwards, masks
+  credential rows in its preview, and applies only the entry it previewed
+  (a concurrent change refuses instead). Target add/rename/delete start a new
+  undo history because directory changes cannot be undone; later SITREP-only
+  changes remain undoable. A failed commit leaves no journal entry. `--yes`
+  serves scripts and agents.
 - `tm fail TEXT` for dead ends and `tm history --outcome OUTCOME` filtering.
 - Per-command help: `tm COMMAND --help`, `tm COMMAND help`, and
   `tm help COMMAND` print forms, accepted words, and examples without touching
   SITREP.
 - Non-interactive mode: with no terminal, or `TACMUX_NONINTERACTIVE=1`,
-  TACMUX never prompts or opens fzf and names the missing argument instead.
+  TACMUX never prompts, opens fzf, or launches an editor and names the missing
+  argument instead. Target deletion always requires an interactive exact-name
+  confirmation; piped input cannot authorize it.
 - Credential confirmation across several targets at once, with the service
   chosen from the targets' Ports table (`445`, `tcp:8000`, or a picker), and an
   optional "Works somewhere now?" step after an interactive `creds add`.
@@ -38,7 +46,9 @@
   the operations session still asks, defaulting to the most recently used
   target.
 - Text prompts support line editing; editable values are prefilled in place.
-- Starting a session for a `new` target marks it `active`.
+- Starting a session for a `new` target marks it `active`. This bookkeeping is
+  folded into the latest undo step rather than becoming one, so `tm undo` still
+  reverts the operator's last change.
 - Usage text leads with the palette and groups commands by purpose.
 
 ### Fixed

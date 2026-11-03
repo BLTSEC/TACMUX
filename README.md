@@ -74,6 +74,9 @@ tm undo                          # revert the last TACMUX change
 tm status
 ```
 
+Undo applies to SITREP-only changes. Target add/rename/delete start a new
+undo history; directory changes are not undone.
+
 Any argument may be omitted and is asked for. `tm COMMAND --help` lists exact
 forms and accepted words. Scripts and agents set `TACMUX_NONINTERACTIVE=1` so a
 missing argument fails instead of prompting.

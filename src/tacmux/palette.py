@@ -119,7 +119,8 @@ ACTIONS: tuple[Action, ...] = (
         "undo",
         "↶  Undo last change",
         "Revert the most recent TACMUX change to SITREP. Refuses if SITREP was "
-        "edited elsewhere since.",
+        "edited elsewhere since. Target add/rename/delete start a new undo "
+        "history; directory changes cannot be undone.",
         "tm undo",
         ("undo",),
     ),

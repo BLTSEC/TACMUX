@@ -281,7 +281,9 @@ def _target_command(
         workspace.rename_target(context.root, old, new)
         print(f"Renamed {old} to {new}")
         return 0
-    confirmation = input(f"Type {old} to permanently delete its directory: ").strip()
+    confirmation = ask(
+        f"Type {old} to permanently delete its directory", required=False
+    )
     if confirmation != old:
         raise ValidationError("target deletion cancelled")
     workspace.delete_target(context.root, old)
@@ -1295,6 +1297,7 @@ def _undo(workspace: Workspace, context: Context, arguments: Sequence[str]) -> i
     _path, entry = change
     current = workspace.read(context.root)
     print(f"Last change: {entry.get('label', '-')}  ({entry.get('time', '-')})")
+    workspace.require_undoable(entry, current)
     preview = _undo_preview(entry["before"], current)
     for line in preview[:14]:
         print(f"  {line}")
@@ -1302,7 +1305,7 @@ def _undo(workspace: Workspace, context: Context, arguments: Sequence[str]) -> i
         print(f"  … {len(preview) - 14} more line(s)")
     if not ({"--yes", "-y"} & set(arguments)) and not confirm("Undo this change?"):
         raise ValidationError("undo cancelled")
-    workspace.undo_last_change(context.root)
+    workspace.undo_last_change(context.root, expected=change)
     print(f"Undid: {entry.get('label', '-')}")
     images = re.findall(r"\]\(<(images/[^>]+)>\)", current)
     restored = set(re.findall(r"\]\(<(images/[^>]+)>\)", entry["before"]))
