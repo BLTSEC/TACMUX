@@ -80,12 +80,17 @@ tm access                      # pickers: level, principal, via (Ports), credent
 `tm proof` (alias `tm flag`) records a flag or proof file. The path is
 suggested from the target OS and Principal. Reading a flag is not a shell, so
 proof never raises Access on its own: the interactive flow asks, and scripts
-get a hint. `--show` types `hostname; whoami; ip a; cat <path>` into the
-invoking pane first, so the screenshot carries the proof the way OSCP expects.
+get a hint. `--show` lets you pick the pane holding the target shell (penelope,
+`nc`, `ssh`, evil-winrm; never a plain local shell) and types
+`hostname; whoami; ip a; cat <path>` there first, or
+`cmd /c "hostname & whoami & ipconfig & type <path>"` on Windows, which works in
+both cmd and PowerShell. The screenshot then carries the proof the way OSCP
+expects. At a terminal the proof screenshot is offered by default; scripts and
+agents never get one.
 
 ```bash
 tm proof user 9a1d4ff1… /home/<user>/local.txt
-tm flag root 49d89584…         # path defaults to /root/proof.txt
+tm flag root 49d89584…         # path defaults to /root/proof.txt (HTB: /root/root.txt)
 ```
 
 Screenshots use flameshot. `tm done -s`, the proof flow, and the palette's
@@ -257,7 +262,7 @@ tm target update WEB01 role "mail server"
 tm target update WEB01 principal --clear
 ```
 
-The field keys are `endpoint`, `network`, `status`, `hostnames`, `role`, `os`, `access`, `principal`, `method`, and `route`. Endpoint and Capture Route updates require the target session to be stopped because they define new-session and capture behavior. Direct Access updates may deliberately raise or lower the recorded level; credential confirmation only raises it. Use `tm sitrep TARGET` for Notes or unusual manual corrections.
+The field keys are `endpoint`, `network`, `status`, `hostnames`, `role`, `os`, `access`, `principal`, `method`, and `route`. Endpoint and Capture Route updates require the target session to be stopped because they define new-session and capture behavior. After a box revert gives a new IP, run `tm target update TARGET endpoint IP` from OPS: TACMUX offers to snapshot the running session, restart it with the new `TARGET`, and copy the `/etc/hosts` line for its hostnames to the clipboard. Direct Access updates may deliberately raise or lower the recorded level; credential confirmation only raises it. Use `tm sitrep TARGET` for Notes or unusual manual corrections.
 
 `tm status` inside a target shows Details, ports, confirmed credentials without secrets, tasks, cleanup, and recent Operations Log events. In the operations session it shows OS and access across the engagement. Pass a target name for its detailed view.
 

@@ -2,9 +2,45 @@
 
 ## Unreleased
 
-## 3.2.3 — 2026-11-03
+## 3.3.0 — 2026-11-03
+
+### Upgrade notes
+
+- `tm init` and `tm target add` may now ask follow-up questions at a terminal
+  (first target, open the session). Scripts and agents are unaffected.
+- `tm proof` typed at a terminal now offers the screenshot (default yes); add
+  `--no-screenshot` to skip it.
+- `--show` no longer types into the pane you ran `tm` from; you pick the
+  target-shell pane.
+
+### Added
+
+- Starting a box: `tm init NAME` offers to add the first target and, inside
+  tmux, to open its session. `tm target add` offers to open the new session.
+- Box reverted with a new IP: `tm target update TARGET endpoint IP` from OPS
+  offers to snapshot and restart the running session, and copies the
+  `/etc/hosts` line for the target's hostnames (with a reminder to remove the
+  old one).
 
 ### Fixed
+
+- Screenshots taken from the palette popup no longer include the popup: it
+  closes as soon as a screenshot is scheduled instead of waiting for Enter.
+- `tm proof --show` (and the palette's "show proof") let you pick the pane that
+  holds the target shell, listing penelope, `nc`, `ssh`, and evil-winrm first
+  and never a plain local shell. Before, they typed into the invoking pane,
+  which was usually your own shell, so the proof showed the attacking machine.
+  The Windows line now uses `cmd /c "… & … "`, which runs in both cmd and
+  PowerShell.
+- `tm proof VALUE` typed at a terminal now offers the proof screenshot;
+  previously only the palette or `-s` took one.
+- Flag path suggestions are full paths for HTB-style flags
+  (`/home/<user>/user.txt`, `/root/root.txt`, and Windows Desktop paths).
+- Quoted text that starts with a dash (`tm fail "-sC scan timed out"`) is
+  recorded instead of being refused as an unknown option. A single bare word
+  such as `-sC` is still treated as an option.
+- Service names typed in another case (`HTTP`) now match the Ports table
+  (`http :8000`).
 
 - Steps that open `$EDITOR` without a terminal (scripts, pipes, agents) now say
   they need an interactive terminal, instead of "pass it as an argument".

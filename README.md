@@ -30,7 +30,7 @@ records what happened.
 ## Install
 
 ```bash
-git clone --branch v3.2.3 --depth 1 https://github.com/BLTSEC/TACMUX.git
+git clone --branch v3.3.0 --depth 1 https://github.com/BLTSEC/TACMUX.git
 cd TACMUX
 ./install.sh --workspace ~/workspace   # omit --workspace on reinstall
 exec "$SHELL" -l
@@ -46,11 +46,14 @@ to pick up the key bindings.
 ## Quick start
 
 ```bash
-tm init ACME                          # create the engagement
-cd ~/workspace/ACME
-tm target add WEB01 192.0.2.10        # target folder + SITREP section
-tm switch                             # pick a session (Prefix+E)
+tm init ACME          # creates the engagement, then offers to add the first
+                      # target and open its session: one command per box
+tm target add WEB01 192.0.2.10        # more targets; inside tmux it offers to open one
+tm switch                             # pick any session (Prefix+E)
 ```
+
+Box reverted with a new IP? `tm target update WEB01 endpoint 192.0.2.11` from
+OPS snapshots and restarts the session and copies the new `/etc/hosts` line.
 
 Inside a target session, press **Prefix+`M`** (or type `tm`) and pick what
 happened. Each entry previews the direct command it runs:
