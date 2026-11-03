@@ -126,9 +126,11 @@ Examples: tm proof user 9a1d4ff1… /home/<user>/local.txt
         "snap": """tm snap — save rendered pane text and shell-handler logs now
 
 Forms:    tm snap [TARGET]
-Saves:    logs/YYYYMMDD/scrollback_* for every pane (wrapped lines joined) and
-          copies matching penelope sessions into captures/<target>/shells/
-          ([integrations] shell_log_dirs). tm stop and tm close do this too.
+Saves:    logs/YYYYMMDD/scrollback_* for every logging pane (wrapped lines
+          joined) and copies matching penelope sessions into
+          captures/<target>/shells/ ([integrations] shell_log_dirs).
+          Panes with logging off (prefix+T) are skipped; prefix+S saves one
+          explicitly. tm stop and tm close do this too.
 """,
         "close": """tm close — guided close-out, then stop
 

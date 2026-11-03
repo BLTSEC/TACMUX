@@ -224,16 +224,30 @@ def _snapshot(
     *,
     shells: bool = True,
 ) -> tuple[list[Path], list[Path]]:
-    """Save rendered scrollback of every live pane, then copy shell-handler logs."""
+    """Save rendered scrollback of logging panes, then copy shell-handler logs.
+
+    A pane whose logging was turned off (prefix+T) is skipped: the operator
+    chose to keep that output off disk. prefix+S still captures it on request.
+    """
     name = tmux.session_name(root, target)
     saved: list[Path] = []
     if tmux.has_session(name):
         controller = LogController(settings, tmux)
+        logging = tmux.logging_panes(name)
+        skipped = 0
         for pane, _command in tmux.panes(name):
+            if pane not in logging:
+                skipped += 1
+                continue
             try:
                 saved.append(controller.capture(pane))
             except TacmuxError as exc:
                 print(f"tacmux: snapshot of {pane} failed: {exc}", file=sys.stderr)
+        if skipped:
+            print(
+                f"Skipped {skipped} pane(s) with logging off "
+                "(prefix+S saves one explicitly)"
+            )
     copied: list[Path] = []
     if shells and target and settings.shell_log_dirs:
         from .integrations import collect_shell_logs

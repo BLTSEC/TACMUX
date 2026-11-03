@@ -227,6 +227,9 @@ def test_stop_snapshots_before_killing(
         lambda self, name: [("%1", "zsh"), ("%2", "penelope")],
     )
     monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.logging_panes", lambda self, name: {"%1", "%2"}
+    )
+    monkeypatch.setattr(
         "tacmux.hooks.LogController.capture",
         lambda self, pane: order.append(("capture", pane)) or engagement / "logs/x.log",
     )
@@ -645,3 +648,43 @@ def test_rename_inside_its_own_session_says_where_to_stop_it(
     )
     assert main(["target", "rename", "WEB01", "WEB02"]) == 1
     assert "stop WEB01 first with: tacmux stop WEB01" in capsys.readouterr().err
+
+
+def test_snapshots_skip_panes_with_logging_turned_off(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    from tacmux.cli import _snapshot
+    from tacmux.tmux import TmuxService
+
+    captured = []
+    monkeypatch.setattr("tacmux.tmux.TmuxService.has_session", lambda self, name: True)
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.panes",
+        lambda self, name: [("%1", "zsh"), ("%2", "zsh"), ("%3", "penelope")],
+    )
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.logging_panes", lambda self, name: {"%1", "%3"}
+    )
+    monkeypatch.setattr(
+        "tacmux.hooks.LogController.capture",
+        lambda self, pane: captured.append(pane) or web01 / "logs/x.log",
+    )
+    saved, _ = _snapshot(settings, workspace, TmuxService(settings), web01, "WEB01")
+    assert captured == ["%1", "%3"] and len(saved) == 2
+    assert "Skipped 1 pane(s) with logging off" in capsys.readouterr().out
+
+
+def test_logging_panes_reads_pane_pipe(settings, monkeypatch):
+    import subprocess
+
+    from tacmux.tmux import TmuxService
+
+    tmux = TmuxService(settings)
+    monkeypatch.setattr(
+        tmux,
+        "run",
+        lambda args, **_k: subprocess.CompletedProcess(
+            args, 0, "%1\t1\n%2\t0\n%3\t1\n", ""
+        ),
+    )
+    assert tmux.logging_panes("s") == {"%1", "%3"}

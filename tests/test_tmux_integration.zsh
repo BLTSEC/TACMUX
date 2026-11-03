@@ -42,6 +42,8 @@ wait_for() {
 }
 
 mkdir -p "$HOME/.local/bin" "$HOME/.config/tacmux" "$TMUX_TMPDIR"
+# An existing (empty) .zshrc stops zsh's new-user menu from eating keystrokes.
+: > "$HOME/.zshrc"
 chmod 700 "$TMUX_TMPDIR"
 ln -s "$ROOT/bin/tacmux" "$HOME/.local/bin/tacmux"
 print -r -- "[paths]
@@ -114,12 +116,23 @@ rg -q '^(JOIN){60}$' "$PWD"/logs/*/scrollback_* || \
     fail "snapshot did not join the wrapped long line" || exit 1
 [[ -f "$PWD/captures/WEB01/shells/penelope/box~192.0.2.10-Linux-x86_64/a.log" ]] || \
     fail "penelope session log was not copied" || exit 1
+# A pane whose logging was turned off stays off disk in automatic snapshots.
+nolog=$(tmux display-message -t "$session:1.0" -p '#{pane_id}')
+tacmux _internal log toggle "$nolog" || exit 1
+wait_for '[[ "$(tmux display-message -t "$session:1.0" -p "#{pane_pipe}")" == 0 ]]' || \
+    fail "logging did not turn off" || exit 1
+tmux send-keys -t "$session:1.0" 'printf "NOLOG%s\n" SECRET' Enter
+wait_for 'tmux capture-pane -p -t "$session:1.0" | rg -q NOLOGSECRET' || \
+    fail "marker did not reach the no-log pane" || exit 1
+tacmux snap WEB01 | rg -q 'Skipped 1 pane' || fail "snap did not report the skipped pane" || exit 1
+rg -q NOLOGSECRET "$PWD/logs" && { fail "pane with logging off was written to disk"; exit 1; }
 before=$(ls "$PWD"/logs/*/scrollback_* | wc -l)
 tacmux stop WEB01 >/dev/null || fail "tm stop failed" || exit 1
+rg -q NOLOGSECRET "$PWD/logs" && { fail "tm stop wrote the no-log pane to disk"; exit 1; }
 tmux has-session -t "=$session:" 2>/dev/null && fail "session still running after stop" && exit 1
 after=$(ls "$PWD"/logs/*/scrollback_* | wc -l)
 (( after > before )) || fail "tm stop did not snapshot panes first" || exit 1
-print -- '[PASS] snapshots, shell-log copy, and snapshot on stop'
+print -- '[PASS] snapshots, shell-log copy, snapshot on stop, and no-log panes respected'
 
 # Exercise the actual binding's shell formats, not just the Python popup argv.
 # The stub records arguments without opening a popup or touching user sessions.

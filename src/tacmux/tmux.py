@@ -110,6 +110,21 @@ class TmuxService:
                 panes.append((pane, command))
         return panes
 
+    def logging_panes(self, name: str) -> set[str]:
+        """Pane IDs in a session whose output is currently piped to a log."""
+        result = self.run(
+            ["list-panes", "-s", "-t", f"={name}:", "-F", "#{pane_id}\t#{pane_pipe}"],
+            check=False,
+        )
+        if result.returncode:
+            return set()
+        logging = set()
+        for line in result.stdout.splitlines():
+            pane, _, piped = line.partition("\t")
+            if pane and piped.strip() == "1":
+                logging.add(pane)
+        return logging
+
     def has_session(self, name: str) -> bool:
         if not self.available():
             return False

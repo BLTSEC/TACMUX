@@ -157,8 +157,9 @@ ACTIONS: tuple[Action, ...] = (
     Action(
         "snap",
         "📸 Snapshot panes now",
-        "Save rendered scrollback of every pane and copy matching shell-handler "
-        "(penelope) logs into captures/<target>/shells/.",
+        "Save rendered scrollback of every logging pane (panes with logging "
+        "off are skipped) and copy matching shell-handler (penelope) logs into "
+        "captures/<target>/shells/.",
         "tm snap [TARGET]",
         ("snap",),
     ),
