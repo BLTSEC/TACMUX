@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 3.2.3 — 2026-11-03
+
+### Fixed
+
+- Steps that open `$EDITOR` without a terminal (scripts, pipes, agents) now say
+  they need an interactive terminal, instead of "pass it as an argument".
+- `tm discover` checks for a terminal before reading any piped input or
+  offering to scan. It says to paste the hosts into the editor or pass a FILE.
+  Piped discovery input never completed: even 3.0 cancelled at the final
+  confirmation. The usage guide and help no longer claim it works.
+- `tm undo` previews name screenshots (`screenshot → E010`), capture
+  attachments, hostname additions, and palette Nmap imports instead of the
+  generic "TACMUX change" or "tm menu".
+
 ## 3.2.2 — 2026-11-03
 
 ### Fixed
