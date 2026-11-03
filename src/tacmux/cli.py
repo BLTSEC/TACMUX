@@ -6,6 +6,7 @@ import getpass
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from .errors import TacmuxError, ValidationError
 from .help import USAGE, command_help, known_help_topics, wants_help
 from .hooks import LogController, clipboard_copy, status_segment
 from .interaction import (
+    forced_noninteractive,
     ask,
     choose,
     choose_many,
@@ -45,6 +47,7 @@ from .workspace import (
     Workspace,
     parse_host_candidates,
     parse_nmap_ports,
+    raise_access,
 )
 
 
@@ -1498,6 +1501,270 @@ def _undo(workspace: Workspace, context: Context, arguments: Sequence[str]) -> i
     return 0
 
 
+def _flow_target(workspace: Workspace, context: Context) -> str:
+    """The current target, or a picker defaulting to the most recent one."""
+    if context.target:
+        return context.target
+    return _target_choice(
+        workspace, context.root, _recent_target(workspace, context.root)
+    )
+
+
+def _take_option(words: list[str], names: set[str], *, value: bool = False):
+    """Remove an option (and its value) from words; return the value or a flag."""
+    for index, word in enumerate(words):
+        if word == "--":
+            return None if value else False
+        if word in names:
+            if not value:
+                words.pop(index)
+                return True
+            if index + 1 >= len(words):
+                raise ValidationError(f"{word} requires a value")
+            result = words[index + 1]
+            del words[index : index + 2]
+            return result
+    return None if value else False
+
+
+def _new_credential(workspace: Workspace, root: Path) -> str:
+    secret_type = choose(
+        [("Password", "password"), ("Hash", "hash")], "Credential type> "
+    )
+    principal = ask("Principal")
+    secret = getpass.getpass("Secret: ")
+    source = ask("Source", required=False)
+    identifier = workspace.add_credential(
+        root, principal, secret, secret_type, source, ""
+    )
+    print(f"Added {identifier} ({principal}, {secret_type})")
+    return identifier
+
+
+def _access_command(
+    settings: Settings,
+    workspace: Workspace,
+    tmux: TmuxService,
+    arguments: Sequence[str],
+) -> int:
+    """tm access [LEVEL] [PRINCIPAL] [HOW…] [--via SERVICE] [--cred CID] [-c] [-s]"""
+    from .evidence import offer_capture, schedule_screenshot
+
+    context = resolve(settings, tmux)
+    words = list(arguments)
+    via = _take_option(words, {"--via"}, value=True) or ""
+    credential = _take_option(words, {"--cred"}, value=True) or ""
+    capture_requested = _take_option(words, {"-c", "--capture"})
+    screenshot = _take_option(words, {"-s", "--screenshot"})
+    if "--" in words:
+        words.remove("--")
+    interactive = not words
+    target = _flow_target(workspace, context)
+    details = workspace.target_details(context.root, target)
+    granted = tuple(value for value in ACCESS_LEVELS if value != "none")
+    if words and is_word(words[0], granted, ACCESS_ALIASES):
+        level = match_word(words.pop(0), granted, ACCESS_ALIASES, "access")
+    else:
+        level = choose([(v, v) for v in granted], "Access gained> ", default="user")
+    if words:
+        principal = words.pop(0)
+    else:
+        principal = ask("As (principal)", default=details["Principal"][0], prefill=True)
+    how = " ".join(words).strip()
+    if not how and interactive:
+        how = ask("How (exploit, technique, path)", required=False)
+    if not via and interactive:
+        services = _port_services(workspace, context.root, [target])
+        via = choose(
+            [
+                *services,
+                ("local (on the target)", "local"),
+                ("Other…", "other"),
+                ("Skip", ""),
+            ],
+            "Via> ",
+        )
+        if via == "other":
+            via = ask("Via")
+    credential_access = ""
+    if credential:
+        if not re.fullmatch(r"C\d{3,}", credential):
+            raise ValidationError("--cred expects a credential ID such as C001")
+        credential_access = level
+    elif interactive:
+        rows = sitrep.read_global(workspace.read(context.root), "CREDENTIALS")
+        credential = choose(
+            [
+                ("None", ""),
+                *((f"{row[0]}  {row[1]}  {row[2]}", row[0]) for row in rows),
+                ("New credential…", "new"),
+            ],
+            "Credential used> ",
+        )
+        if credential == "new":
+            credential = _new_credential(workspace, context.root)
+        if credential:
+            credential_access = choose(
+                [(v, v) for v in granted],
+                f"{credential} itself gives> ",
+                default="authenticated",
+            )
+    route = f" via {via}" if via and via != "local" else ""
+    summary = f"Access: {level} as {principal}{route}" + (f" ({how})" if how else "")
+    method = " via ".join(part for part in (how, via if via != "local" else "") if part)
+    capture = (
+        workspace.inspect_capture(context.root, target)
+        if capture_requested
+        else (offer_capture(workspace, context.root, target) if interactive else None)
+    )
+    current = details["Access"][0] or "none"
+    identifier = workspace.record_access(
+        context.root,
+        target,
+        level,
+        summary,
+        principal=principal,
+        method=method or summary,
+        credential=credential,
+        credential_access=credential_access,
+        service=via if via and via != "local" else "",
+        capture=capture,
+    )
+    after = workspace.target_details(context.root, target)["Access"][0]
+    print(f"Logged {identifier} success: {target} — {summary}")
+    print(
+        f"Access {current} → {after}"
+        if after != current
+        else f"Access stays {after} (already at or above {level})"
+    )
+    if not screenshot and interactive:
+        screenshot = confirm("Take a screenshot for this entry?", default=False)
+    if screenshot:
+        schedule_screenshot(workspace, context.root, target, identifier)
+    return 0
+
+
+PROOF_KINDS = ("user", "root")
+PROOF_ALIASES = {
+    "local": "user",
+    "u": "user",
+    "proof": "root",
+    "r": "root",
+    "system": "root",
+}
+
+
+def _proof_paths(kind: str, details: Mapping[str, tuple[str, str]]) -> list[str]:
+    windows = details["OS"][0].casefold().startswith("win")
+    principal = details["Principal"][0]
+    if windows:
+        owner = principal.split("\\")[-1] if principal else "Administrator"
+        local = f"C:\\Users\\{owner}\\Desktop\\local.txt"
+        proof = "C:\\Users\\Administrator\\Desktop\\proof.txt"
+        extra = ["user.txt", "root.txt"]
+    else:
+        home = (
+            f"/home/{principal}"
+            if principal and principal != "root"
+            else "/home/<user>"
+        )
+        local, proof, extra = (
+            f"{home}/local.txt",
+            "/root/proof.txt",
+            ["user.txt", "root.txt"],
+        )
+    first = [local, proof] if kind == "user" else [proof, local]
+    return [*first, *extra]
+
+
+def _proof_command(
+    settings: Settings,
+    workspace: Workspace,
+    tmux: TmuxService,
+    arguments: Sequence[str],
+) -> int:
+    """tm proof [user|root] [VALUE] [PATH] [--show] [-s|--no-screenshot]"""
+    from .evidence import offer_capture, schedule_screenshot
+
+    context = resolve(settings, tmux)
+    words = list(arguments)
+    show = _take_option(words, {"--show"})
+    screenshot = _take_option(words, {"-s", "--screenshot"})
+    no_screenshot = _take_option(words, {"--no-screenshot"})
+    if "--" in words:
+        words.remove("--")
+    interactive = not words
+    target = _flow_target(workspace, context)
+    details = workspace.target_details(context.root, target)
+    if words and is_word(words[0], PROOF_KINDS, PROOF_ALIASES):
+        kind = match_word(words.pop(0), PROOF_KINDS, PROOF_ALIASES, "proof kind")
+    else:
+        kind = choose(
+            [
+                ("user (local.txt / user.txt)", "user"),
+                ("root (proof.txt / root.txt)", "root"),
+            ],
+            "Proof> ",
+        )
+    value = words.pop(0) if words else ask("Flag value")
+    suggestions = _proof_paths(kind, details)
+    if words:
+        path = " ".join(words)
+    elif interactive and not forced_noninteractive():
+        path = choose([*((p, p) for p in suggestions), ("Other…", "")], "Path> ")
+        path = path or ask("Path")
+    else:
+        path = suggestions[0]
+    summary = f"{kind} flag {path} {value}"
+    capture = offer_capture(workspace, context.root, target) if interactive else None
+    identifier = workspace.add_event(
+        context.root, target, "success", summary, capture=capture
+    )
+    print(f"Logged {identifier} success: {target} — {summary}")
+    windows = details["OS"][0].casefold().startswith("win")
+    implied = "user" if kind == "user" else ("system" if windows else "admin")
+    current = details["Access"][0] or "none"
+    if ACCESS_LEVELS.index(current) < ACCESS_LEVELS.index(implied):
+        if interactive and confirm(
+            f"Access is {current}. Also record a {implied} shell (only if you have one)?",
+            default=True,
+        ):
+            owner = (
+                details["Principal"][0]
+                if kind == "user"
+                else ("SYSTEM" if windows else "root")
+            )
+            workspace.mutate(
+                context.root,
+                lambda text: raise_access(text, target, implied, owner, summary),
+            )
+            print(f"Access {current} → {implied}")
+        elif not interactive:
+            print(
+                f"hint: Access is {current}; record a shell with tm access {implied} …"
+            )
+    pane = os.environ.get("TMUX_PANE", "")
+    if pane and not show and interactive:
+        show = confirm(
+            f"Show proof in pane {pane} (sends hostname/whoami/ip/cat)?", default=False
+        )
+    delay = "0.4"
+    if show and pane:
+        line = (
+            f"hostname & whoami & ipconfig & type {path}"
+            if windows
+            else f"hostname; whoami; ip a; cat {shlex.quote(path)}"
+        )
+        tmux.run(["send-keys", "-t", pane, "-l", line], check=False)
+        tmux.run(["send-keys", "-t", pane, "Enter"], check=False)
+        delay = "1.5"
+    if not screenshot and not no_screenshot and interactive:
+        screenshot = confirm("Take the proof screenshot now?", default=True)
+    if screenshot and not no_screenshot:
+        schedule_screenshot(workspace, context.root, target, identifier, delay=delay)
+    return 0
+
+
 def _dispatch(
     settings: Settings,
     workspace: Workspace,
@@ -1512,6 +1779,10 @@ def _dispatch(
         return _undo(workspace, resolve(settings, tmux), rest)
     if command == "snap":
         return _snap_command(settings, workspace, tmux, rest)
+    if command == "access":
+        return _access_command(settings, workspace, tmux, rest)
+    if command in {"proof", "flag"}:
+        return _proof_command(settings, workspace, tmux, rest)
     if command == "switch":
         return _switch(settings, workspace, tmux)
     if command == "init":
@@ -1581,6 +1852,9 @@ COMMAND_OPTIONS: dict[str, frozenset[str]] = {
     "target": frozenset({"--clear", "--all", "--none"}),
     "history": frozenset({"--outcome"}),
     "undo": frozenset({"--yes", "-y"}),
+    "access": frozenset({"--via", "--cred", "-c", "--capture", "-s", "--screenshot"}),
+    "proof": frozenset({"--show", "-s", "--screenshot", "--no-screenshot"}),
+    "flag": frozenset({"--show", "-s", "--screenshot", "--no-screenshot"}),
 }
 SENTINEL_AWARE = frozenset({"log", "done", "fail"})
 

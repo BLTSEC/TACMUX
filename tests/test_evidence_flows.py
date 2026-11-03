@@ -360,3 +360,132 @@ def test_internal_shot_validates_context(
     assert main(["_internal", "shot", str(web01), "web01", event]) == 0
     assert "images/" in sitrep.read_events(workspace.read(web01))[-1].body
     assert main(["_internal", "shot", str(tmp_path), "WEB01", event]) == 1
+
+
+# --- 2.2 tm access / 2.3 tm proof -------------------------------------------
+
+
+def test_access_direct_form_records_everything_in_one_step(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    credential = workspace.add_credential(web01, "admin", "admin", "password")
+    args = ["access", "user", "app", "CVE-2021-43857", "RCE", "--via", "http :8000"]
+    assert main([*args, "--cred", credential]) == 0
+    text = workspace.read(web01)
+    details = sitrep.details_map(text, "WEB01")
+    assert (details["Access"][0], details["Principal"][0]) == ("user", "app")
+    assert details["Method/Path"][0] == "CVE-2021-43857 RCE via http :8000"
+    event = sitrep.read_events(text)[-1]
+    assert event.summary == "Access: user as app via http :8000 (CVE-2021-43857 RCE)"
+    assert "WEB01 · http :8000 · user" in sitrep.read_global(text, "CREDENTIALS")[0][5]
+    assert "Access none → user" in capsys.readouterr().out
+    assert main(["access", "root", "root", "python3.10", "cap_setuid"]) == 0
+    assert workspace.target_details(web01, "WEB01")["Access"][0] == "admin"
+    assert main(["access", "shell", "app", "again"]) == 0
+    assert "Access stays admin" in capsys.readouterr().out
+
+
+def test_access_fails_fast_without_a_terminal(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    before = workspace.read(web01)
+    assert main(["access"]) == 1
+    assert "missing access gained" in capsys.readouterr().err
+    assert workspace.read(web01) == before
+
+
+def test_access_interactive_flow_uses_ports_and_credentials(
+    settings, workspace, web01, monkeypatch, tmp_path
+):
+    main = _cli(monkeypatch, settings, web01)
+    report = tmp_path / "web.nmap"
+    report.write_text("8000/tcp open http WSGIServer 0.2\n")
+    assert main(["ports", "add", "WEB01", str(report)]) == 0
+    workspace.add_credential(web01, "admin", "admin", "password")
+    seen = []
+
+    def fake_choose(choices, prompt, **_kwargs):
+        seen.append(prompt)
+        answers = {
+            "Access gained> ": "user",
+            "Via> ": "http :8000",
+            "Credential used> ": "C001",
+            "C001 itself gives> ": "authenticated",
+        }
+        return answers[prompt]
+
+    asks = iter(["app", "CVE-2021-43857 RCE"])
+    monkeypatch.setattr("tacmux.cli.choose", fake_choose)
+    monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: next(asks))
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)
+    monkeypatch.setattr("tacmux.evidence.offer_capture", lambda *_a: None)
+    assert main(["access"]) == 0
+    text = workspace.read(web01)
+    assert seen == [
+        "Access gained> ",
+        "Via> ",
+        "Credential used> ",
+        "C001 itself gives> ",
+    ]
+    assert sitrep.details_map(text, "WEB01")["Access"][0] == "user"
+    assert (
+        "WEB01 · http :8000 · authenticated"
+        in sitrep.read_global(text, "CREDENTIALS")[0][5]
+    )
+
+
+def test_proof_direct_form_infers_path_and_never_raises_access(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "Principal", "app")
+    assert main(["proof", "u", "9a1d4ff100f424aa5d2f66366b365495"]) == 0
+    event = sitrep.read_events(workspace.read(web01))[-1]
+    assert (
+        event.summary
+        == "user flag /home/app/local.txt 9a1d4ff100f424aa5d2f66366b365495"
+    )
+    assert workspace.target_details(web01, "WEB01")["Access"][0] == "none"
+    assert "hint: Access is none" in capsys.readouterr().out
+    assert main(["flag", "root", "49d8", "/root/proof.txt"]) == 0
+    assert (
+        sitrep.read_events(workspace.read(web01))[-1].summary
+        == "root flag /root/proof.txt 49d8"
+    )
+
+
+def test_proof_interactive_asks_before_raising_and_can_show_in_pane(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    sent, scheduled = [], []
+    monkeypatch.setenv("TMUX_PANE", "%3")
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.run",
+        lambda self, args, **_k: sent.append(args)
+        or __import__("subprocess").CompletedProcess(args, 0, "", ""),
+    )
+    picks = iter(["root", "/root/proof.txt"])
+    monkeypatch.setattr("tacmux.cli.choose", lambda *_a, **_k: next(picks))
+    monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: "49d89584")
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: True)
+    monkeypatch.setattr("tacmux.evidence.offer_capture", lambda *_a: None)
+    monkeypatch.setattr(
+        "tacmux.evidence.schedule_screenshot",
+        lambda _ws, _root, _target, ident, delay="0.4": scheduled.append(
+            (ident, delay)
+        ),
+    )
+    assert main(["proof"]) == 0
+    assert workspace.target_details(web01, "WEB01")["Access"][0] == "admin"
+    assert sent[0] == [
+        "send-keys",
+        "-t",
+        "%3",
+        "-l",
+        "hostname; whoami; ip a; cat /root/proof.txt",
+    ]
+    assert scheduled == [("E001", "1.5")]

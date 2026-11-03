@@ -67,7 +67,12 @@ def _notify(message: str) -> None:
 
 
 def schedule_screenshot(
-    workspace: Workspace, root: Path, target: str, identifier: str
+    workspace: Workspace,
+    root: Path,
+    target: str,
+    identifier: str,
+    *,
+    delay: str = "0.4",
 ) -> bool:
     """Take the screenshot after any popup closes, then attach it to the entry."""
     if not shutil.which("flameshot"):
@@ -96,7 +101,7 @@ def schedule_screenshot(
     if os.environ.get("TMUX") and shutil.which("tmux"):
         # A short delay lets the palette popup close so it is not in the shot.
         subprocess.run(
-            ["tmux", "run-shell", "-b", f"sleep 0.4; {command}"], check=False
+            ["tmux", "run-shell", "-b", f"sleep {delay}; {command}"], check=False
         )
         print(f"Screenshot: select a region for {identifier} (Esc cancels).")
         return True

@@ -861,7 +861,7 @@ class Workspace:
         method = validate_value(method, "method", required=False)
         if credential:
             confirmed, service, _ = _validated_confirmation(
-                credential_access or access, service or method or "access", ""
+                credential_access or access, service or "access", ""
             )
 
         def extra(text: str) -> str:
