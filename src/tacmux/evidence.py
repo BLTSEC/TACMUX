@@ -16,6 +16,14 @@ from .interaction import confirm, forced_noninteractive, text_input_available
 from .workspace import CaptureRecord, Workspace
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_SCHEDULED = False
+
+
+def screenshot_scheduled() -> bool:
+    """True once this process has queued a screenshot (the popup must close)."""
+    return _SCHEDULED
+
+
 # Variables a GUI screenshot tool needs when started from a tmux job.
 GUI_ENVIRONMENT = (
     "DISPLAY",
@@ -98,8 +106,11 @@ def schedule_screenshot(
             identifier,
         ]
     )
+    global _SCHEDULED
     if os.environ.get("TMUX") and shutil.which("tmux"):
-        # A short delay lets the palette popup close so it is not in the shot.
+        # The palette popup closes as soon as this process exits; the delay
+        # makes sure it is gone before flameshot freezes the screen.
+        _SCHEDULED = True
         subprocess.run(
             ["tmux", "run-shell", "-b", f"sleep {delay}; {command}"], check=False
         )

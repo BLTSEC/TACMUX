@@ -119,7 +119,10 @@ Forms:    tm proof [user|root] [VALUE] [PATH] [--show] [-s | --no-screenshot]
 Path:     suggested from OS and Principal (local.txt / proof.txt, Windows Desktop)
 Access:   never raised automatically — reading a flag is not a shell; the
           interactive flow asks, scripts get a hint (tm access …)
---show:   types hostname/whoami/ip/cat into the invoking pane before the shot
+--show:   types hostname/whoami/ip/cat into a target-shell pane you pick
+          (penelope, nc, ssh, evil-winrm…; never a local shell) before the shot
+Shot:     offered (default yes) whenever you are at a terminal; -s forces it,
+          --no-screenshot skips it; scripts and agents never get one
 Examples: tm proof user 9a1d4ff1… /home/<user>/local.txt
           tm flag root 49d89584…            (path defaults to /root/proof.txt)
 """,
@@ -178,8 +181,10 @@ Interactive add avoids putting the secret in shell history.
 """,
         "target": f"""tm target — manage targets
 
-Forms:    tm target add [NAME] [ENDPOINT]
+Forms:    tm target add [NAME] [ENDPOINT]           (inside tmux: offers to open it)
           tm target update [TARGET] [FIELD] [VALUE|--clear]
+          New IP after a box revert: tm target update TARGET endpoint IP from
+          OPS snapshots and restarts the session and copies the /etc/hosts line
           tm target export [--all|--none|TARGET…]
           tm target rename [OLD] [NEW]          (session must be stopped)
           tm target delete [TARGET]             (mistakes only; exact name)
@@ -220,7 +225,8 @@ Forms:    tm sitrep [context|targets|credentials|todo|cleanup|log|TARGET]
         "init": """tm init — create or open an engagement
 
 Forms:    tm init [NAME]
-Then:     tm target add NAME ENDPOINT · tm switch
+At a terminal it offers to add the first target and, inside tmux, to open
+that target's session, so a new box is one command.
 """,
         "switch": """tm switch — pick an engagement operations session or target session
 

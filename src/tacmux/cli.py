@@ -16,10 +16,11 @@ from . import __version__, sitrep
 from .config import Settings, load_settings
 from .context import Context, resolve
 from .discovery import create_reviewed_targets, review_candidates, run_host_discovery
-from .errors import TacmuxError, ValidationError
+from .errors import NonInteractiveError, TacmuxError, ValidationError
 from .help import USAGE, command_help, known_help_topics, wants_help
 from .hooks import LogController, clipboard_copy, status_segment
 from .interaction import (
+    can_prompt,
     forced_noninteractive,
     require_terminal,
     ask,
@@ -324,6 +325,17 @@ def _stop(workspace: Workspace, tmux: TmuxService, arguments: Sequence[str]) -> 
     return 0
 
 
+def _offer_session(tmux: TmuxService, root: Path, target: str) -> int:
+    """Inside tmux, offer to open a new target's session straight away."""
+    canonical = Workspace(tmux.settings).canonical_target(root, target)
+    if os.environ.get("TMUX") and can_prompt():
+        if confirm(f"Open {canonical}'s session now?", default=True):
+            return tmux.attach(tmux.start(root, canonical))
+    else:
+        print(f"Open it with: tm switch ({canonical})")
+    return 0
+
+
 def _target_command(
     settings: Settings,
     workspace: Workspace,
@@ -345,7 +357,7 @@ def _target_command(
         endpoint = rest[1] if len(rest) > 1 else ask("Endpoint")
         workspace.add_target(context.root, name, endpoint)
         print(f"Created {name}: {context.root / 'targets' / name}")
-        return 0
+        return _offer_session(tmux, context.root, name)
     if action == "export":
         return _export_targets(workspace, context, rest)
     if (
@@ -529,11 +541,49 @@ def _update_target(
     else:
         field = TARGET_DETAIL_FIELDS[_choose_target_field(details)]
         value = _interactive_target_value(field, details[field][0])
-    if field in STOPPED_ONLY_TARGET_FIELDS:
-        tmux.require_stopped(context.root, target)
+    restart = False
+    if field in STOPPED_ONLY_TARGET_FIELDS and tmux.target_running(
+        context.root, target
+    ):
+        current_root, current_target = tmux.current_context()
+        inside = (
+            current_root is not None
+            and current_root.resolve() == context.root.resolve()
+            and current_target == target
+        )
+        if field == "Endpoint" and not inside and can_prompt():
+            restart = confirm(
+                f"{target}'s session is running. Snapshot it and restart it with "
+                f"{value}? (its shells and tunnels end)",
+                default=True,
+            )
+        if not restart:
+            tmux.require_stopped(context.root, target)
+    if restart:
+        saved, copied = _snapshot(tmux.settings, workspace, tmux, context.root, target)
+        _report_snapshot(context.root, saved, copied)
+        tmux.stop(context.root, target)
+    old = details[field][0]
     workspace.set_target_detail(context.root, target, field, value)
     print(f"Updated {target} {field}: {value or '-'}")
+    if restart:
+        tmux.start(context.root, target)
+        print(f"Restarted {target} with TARGET={value}; open it with tm switch.")
+    if field == "Endpoint" and old != value and details["Hostnames"][0].strip():
+        _copy_hosts_line(tmux, value, details["Hostnames"][0].split(), old)
     return 0
+
+
+def _copy_hosts_line(
+    tmux: TmuxService, endpoint: str, names: Sequence[str], old: str = ""
+) -> None:
+    command = f"echo '{endpoint} {' '.join(names)}' | sudo tee -a /etc/hosts"
+    note = f" (and remove the old {old} line)" if old else ""
+    try:
+        clipboard_copy(tmux, command.encode())
+        print(f"Copied to clipboard{note}: {command}")
+    except TacmuxError:
+        print(f"Update /etc/hosts{note}: {command}")
 
 
 def _print_status(
@@ -930,7 +980,10 @@ def _service_from_token(token: str, services: Sequence[tuple[str, str]]) -> str:
         name, _, rest = label.partition(" :")
         if port.isdigit() and rest.split("/")[0] == port:
             return label
-    matches = [label for _display, label in services if label.startswith(value + " :")]
+    prefix = value.casefold() + " :"
+    matches = [
+        label for _display, label in services if label.casefold().startswith(prefix)
+    ]
     return matches[0] if len(matches) == 1 else value
 
 
@@ -1376,12 +1429,7 @@ def _add_hostname(workspace: Workspace, tmux: TmuxService, context: Context) -> 
     workspace.change_label = f"hostname {' '.join(added)} → {target}"
     workspace.set_target_detail(context.root, target, "Hostnames", " ".join(names))
     print(f"Updated {target} Hostnames: {' '.join(names)}")
-    command = f"echo '{endpoint} {' '.join(added)}' | sudo tee -a /etc/hosts"
-    try:
-        clipboard_copy(tmux, command.encode())
-        print(f"Copied to clipboard: {command}")
-    except TacmuxError:
-        print(f"Add it to /etc/hosts with: {command}")
+    _copy_hosts_line(tmux, endpoint, added)
     return 0
 
 
@@ -1416,7 +1464,11 @@ def _palette_header(workspace: Workspace, context: Context) -> str:
 
 
 def _wait_in_popup() -> None:
-    if os.environ.get("TACMUX_POPUP") != "1":
+    from .evidence import screenshot_scheduled
+
+    # Never hold the popup open over a pending screenshot: flameshot captures
+    # the whole screen, popup included.
+    if os.environ.get("TACMUX_POPUP") != "1" or screenshot_scheduled():
         return
     try:
         input("\n[Enter] to close ")
@@ -1678,6 +1730,45 @@ def _access_command(
     return 0
 
 
+REMOTE_SHELL_HINTS = (
+    "penelope",
+    "nc",
+    "ncat",
+    "socat",
+    "pwncat",
+    "pwncat-cs",
+    "rlwrap",
+    "ssh",
+    "evil-winrm",
+    "evil-winrm-py",
+    "python",
+    "python3",
+    "msfconsole",
+    "telnet",
+)
+
+
+def _choose_shell_pane(tmux: TmuxService, root: Path, target: str) -> str:
+    """Pick the pane holding the target shell; never a plain local shell."""
+    panes = [
+        (pane, command)
+        for pane, command in tmux.panes(tmux.session_name(root, target))
+        if command and command not in SHELL_COMMANDS
+    ]
+    if not panes:
+        print(f"No pane in {target}'s session runs a remote shell; not showing proof.")
+        return ""
+    panes.sort(key=lambda item: item[1] not in REMOTE_SHELL_HINTS)
+    try:
+        return choose(
+            [*((f"{pane}  {command}", pane) for pane, command in panes), ("Skip", "")],
+            "Show proof in pane> ",
+        )
+    except NonInteractiveError:
+        print("Pick the target-shell pane from a terminal to show proof; skipped.")
+        return ""
+
+
 PROOF_KINDS = ("user", "root")
 PROOF_ALIASES = {
     "local": "user",
@@ -1695,7 +1786,10 @@ def _proof_paths(kind: str, details: Mapping[str, tuple[str, str]]) -> list[str]
         owner = principal.split("\\")[-1] if principal else "Administrator"
         local = f"C:\\Users\\{owner}\\Desktop\\local.txt"
         proof = "C:\\Users\\Administrator\\Desktop\\proof.txt"
-        extra = ["user.txt", "root.txt"]
+        extra = [
+            f"C:\\Users\\{owner}\\Desktop\\user.txt",
+            "C:\\Users\\Administrator\\Desktop\\root.txt",
+        ]
     else:
         home = (
             f"/home/{principal}"
@@ -1705,7 +1799,7 @@ def _proof_paths(kind: str, details: Mapping[str, tuple[str, str]]) -> list[str]
         local, proof, extra = (
             f"{home}/local.txt",
             "/root/proof.txt",
-            ["user.txt", "root.txt"],
+            [f"{home}/user.txt", "/root/root.txt"],
         )
     first = [local, proof] if kind == "user" else [proof, local]
     return [*first, *extra]
@@ -1779,22 +1873,26 @@ def _proof_command(
             print(
                 f"hint: Access is {current}; record a shell with tm access {implied} …"
             )
-    pane = os.environ.get("TMUX_PANE", "")
-    if pane and not show and interactive:
+    pane = ""
+    if not show and interactive:
         show = confirm(
-            f"Show proof in pane {pane} (sends hostname/whoami/ip/cat)?", default=False
+            "Show the proof in your target-shell pane (hostname, whoami, IP, cat)?",
+            default=False,
         )
+    if show:
+        pane = _choose_shell_pane(tmux, context.root, target)
     delay = "0.4"
-    if show and pane:
+    if pane:
+        # cmd /c runs the same line from cmd.exe and PowerShell alike.
         line = (
-            f"hostname & whoami & ipconfig & type {path}"
+            f'cmd /c "hostname & whoami & ipconfig & type {path}"'
             if windows
             else f"hostname; whoami; ip a; cat {shlex.quote(path)}"
         )
         tmux.run(["send-keys", "-t", pane, "-l", line], check=False)
         tmux.run(["send-keys", "-t", pane, "Enter"], check=False)
         delay = "1.5"
-    if not screenshot and not no_screenshot and interactive:
+    if not screenshot and not no_screenshot and (interactive or can_prompt()):
         screenshot = confirm("Take the proof screenshot now?", default=True)
     if screenshot and not no_screenshot:
         schedule_screenshot(workspace, context.root, target, identifier, delay=delay)
@@ -2074,6 +2172,13 @@ def _dispatch(
                 "Warning: this external notes location receives raw credentials "
                 "stored in SITREP."
             )
+        if not workspace.targets(root) and can_prompt():
+            if confirm("Add the first target now?", default=True):
+                target = ask("Target name")
+                endpoint = ask("Endpoint")
+                workspace.add_target(root, target, endpoint)
+                print(f"Created {target}: {root / 'targets' / target}")
+                return _offer_session(tmux, root, target)
         print("Run tacmux switch to enter the operations session.")
         return 0
     if command == "health":
@@ -2113,6 +2218,8 @@ def _dispatch(
     raise ValidationError(f"unknown command: {command}\n\n{USAGE}")
 
 
+# A single word such as -x or --flag; quoted text with spaces is log text.
+OPTION_TOKEN = re.compile(r"--?[A-Za-z][A-Za-z0-9_-]*(=\S*)?")
 EVIDENCE_OPTIONS = (
     "-c",
     "--capture",
@@ -2147,7 +2254,7 @@ def _checked_arguments(command: str, arguments: Sequence[str]) -> list[str]:
             if command in SENTINEL_AWARE:
                 return [*checked, *arguments[index:]]
             return [*checked, *arguments[index + 1 :]]
-        if value.startswith("-") and len(value) > 1 and value not in allowed:
+        if OPTION_TOKEN.fullmatch(value) and value not in allowed:
             raise ValidationError(
                 f"unknown option {value} for tm {command}; put -- before text "
                 f"that starts with '-' (see tm {command} --help)"

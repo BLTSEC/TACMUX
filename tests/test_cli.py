@@ -285,6 +285,9 @@ def test_cli_updates_target_details_and_guards_live_identity_fields(
     assert details["Role"][0] == ""
 
     monkeypatch.setattr("tacmux.tmux.TmuxService.target_running", lambda *_: True)
+    monkeypatch.setattr(
+        "tacmux.cli.confirm", lambda *_a, **_k: False
+    )  # decline restart
     assert main(["target", "update", "WEB01", "endpoint", "192.0.2.11"]) == 1
     assert "stop WEB01 first" in capsys.readouterr().err
 

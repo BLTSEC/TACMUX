@@ -230,6 +230,11 @@ EDITOR_NEEDS_TERMINAL = (
 )
 
 
+def can_prompt() -> bool:
+    """True when an operator is at a terminal and prompts are allowed."""
+    return not forced_noninteractive() and text_input_available()
+
+
 def require_terminal(message: str) -> None:
     """Refuse a step that needs an operator at a terminal, with its own reason."""
     if forced_noninteractive() or not text_input_available():

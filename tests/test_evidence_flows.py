@@ -448,6 +448,7 @@ def test_proof_direct_form_infers_path_and_never_raises_access(
 ):
     main = _cli(monkeypatch, settings, web01)
     principal = "app"
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)  # no shot
     workspace.set_target_detail(web01, "WEB01", "Principal", principal)
     assert main(["proof", "u", "9a1d4ff100f424aa5d2f66366b365495"]) == 0
     event = sitrep.read_events(workspace.read(web01))[-1]
@@ -467,14 +468,24 @@ def test_proof_interactive_asks_before_raising_and_can_show_in_pane(
 ):
     main = _cli(monkeypatch, settings, web01)
     sent, scheduled = [], []
-    monkeypatch.setenv("TMUX_PANE", "%3")
     monkeypatch.setattr(
         "tacmux.tmux.TmuxService.run",
         lambda self, args, **_k: sent.append(args)
         or __import__("subprocess").CompletedProcess(args, 0, "", ""),
     )
-    picks = iter(["root", "/root/proof.txt"])
-    monkeypatch.setattr("tacmux.cli.choose", lambda *_a, **_k: next(picks))
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.panes",
+        lambda self, name: [("%1", "zsh"), ("%3", "penelope"), ("%4", "nvim")],
+    )
+    offered = []
+
+    def fake_choose(choices, prompt, **_kwargs):
+        if prompt == "Show proof in pane> ":
+            offered.extend(value for _display, value in choices)
+            return "%3"
+        return {"Proof> ": "root", "Path> ": "/root/proof.txt"}[prompt]
+
+    monkeypatch.setattr("tacmux.cli.choose", fake_choose)
     monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: "49d89584")
     monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: True)
     monkeypatch.setattr("tacmux.evidence.offer_capture", lambda *_a: None)
@@ -486,6 +497,7 @@ def test_proof_interactive_asks_before_raising_and_can_show_in_pane(
     )
     assert main(["proof"]) == 0
     assert workspace.target_details(web01, "WEB01")["Access"][0] == "admin"
+    assert offered[:2] == ["%3", "%4"] and "%1" not in offered  # never a local shell
     assert sent[0] == [
         "send-keys",
         "-t",
@@ -765,3 +777,174 @@ def test_undo_labels_name_screenshots_captures_and_hostnames(
     monkeypatch.setattr("tacmux.cli.clipboard_copy", lambda *_a: 0)
     assert main(["menu"]) == 0
     assert workspace.last_change(web01)[1]["label"] == "hostname web01.example → WEB01"
+
+
+# --- 3.3.0 -----------------------------------------------------------------------
+
+
+def test_popup_closes_immediately_when_a_screenshot_is_pending(monkeypatch):
+    from tacmux import cli, evidence
+
+    monkeypatch.setenv("TACMUX_POPUP", "1")
+    monkeypatch.setattr(evidence, "_SCHEDULED", True)
+    monkeypatch.setattr(
+        "builtins.input", lambda *_a: (_ for _ in ()).throw(AssertionError("waited"))
+    )
+    cli._wait_in_popup()  # must return without waiting for Enter
+
+
+def test_windows_proof_line_works_in_cmd_and_powershell(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "OS", "Windows")
+    sent = []
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.run",
+        lambda self, args, **_k: sent.append(args)
+        or __import__("subprocess").CompletedProcess(args, 0, "", ""),
+    )
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.panes", lambda self, name: [("%2", "evil-winrm")]
+    )
+    monkeypatch.setattr("tacmux.cli.choose", lambda *_a, **_k: "%2")
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)
+    assert main(["proof", "root", "abc123", "--show"]) == 0
+    assert sent[0][-1] == (
+        'cmd /c "hostname & whoami & ipconfig & type '
+        'C:\\Users\\Administrator\\Desktop\\proof.txt"'
+    )
+
+
+def test_show_without_a_remote_shell_pane_sends_nothing(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    sent = []
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.run", lambda self, args, **_k: sent.append(args)
+    )
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.panes", lambda self, name: [("%1", "zsh")]
+    )
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)
+    assert main(["proof", "user", "abc", "--show"]) == 0
+    assert sent == [] and "runs a remote shell" in capsys.readouterr().out
+
+
+def test_direct_proof_offers_the_screenshot_at_a_terminal(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    scheduled = []
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "tacmux.evidence.schedule_screenshot",
+        lambda _ws, _root, _target, ident, delay="0.4": scheduled.append(ident),
+    )
+    assert main(["proof", "user", "9a1d"]) == 0
+    assert scheduled == ["E001"]
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")  # agents never get a shot
+    assert main(["proof", "root", "49d8"]) == 0
+    assert scheduled == ["E001"]
+
+
+def test_proof_paths_are_full_paths_for_htb_style_flags():
+    from tacmux.cli import _proof_paths
+
+    principal = "app"
+    home = f"/home/{principal}"
+    linux = {"OS": ("Linux", ""), "Principal": (principal, "")}
+    assert _proof_paths("user", linux) == [
+        f"{home}/local.txt",
+        "/root/proof.txt",
+        f"{home}/user.txt",
+        "/root/root.txt",
+    ]
+
+
+def test_quoted_text_starting_with_a_dash_is_logged(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    assert main(["fail", "-sC scan timed out"]) == 0
+    assert sitrep.read_events(workspace.read(web01))[-1].summary == "-sC scan timed out"
+    assert main(["fail", "-sC"]) == 1
+    assert "unknown option -sC" in capsys.readouterr().err
+
+
+def test_service_names_match_ports_in_any_case(
+    settings, workspace, web01, monkeypatch, tmp_path
+):
+    main = _cli(monkeypatch, settings, web01)
+    report = tmp_path / "web.nmap"
+    report.write_text("8000/tcp open http WSGIServer\n")
+    assert main(["ports", "add", "WEB01", str(report)]) == 0
+    credential = workspace.add_credential(web01, "a", "b", "password")
+    assert main(["creds", "confirm", credential, "auth", "HTTP"]) == 0
+    assert (
+        "WEB01 · http :8000 · authenticated"
+        in sitrep.read_global(workspace.read(web01), "CREDENTIALS")[0][5]
+    )
+
+
+def test_new_endpoint_restarts_a_running_session_from_ops(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.chdir(web01)  # OPS-style context, not inside WEB01
+    workspace.set_target_detail(web01, "WEB01", "Hostnames", "web01.example")
+    order = []
+    monkeypatch.setattr("tacmux.tmux.TmuxService.target_running", lambda *_a: True)
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.current_context", lambda self: (None, "")
+    )
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "tacmux.cli._snapshot", lambda *_a, **_k: order.append("snap") or ([], [])
+    )
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.stop",
+        lambda self, root, target="": order.append("stop"),
+    )
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.start",
+        lambda self, root, target="": order.append(
+            ("start", workspace.target_details(root, target)["Endpoint"][0])
+        ),
+    )
+    monkeypatch.setattr("tacmux.cli.clipboard_copy", lambda *_a: 0)
+    assert main(["target", "update", "WEB01", "endpoint", "192.0.2.99"]) == 0
+    assert order == ["snap", "stop", ("start", "192.0.2.99")]
+    out = capsys.readouterr().out
+    assert "echo '192.0.2.99 web01.example' | sudo tee -a /etc/hosts" in out
+    assert "remove the old 192.0.2.10 line" in out
+
+
+def test_target_add_and_init_offer_the_session_inside_tmux(
+    settings, workspace, engagement, monkeypatch, tmp_path
+):
+    from tacmux.cli import main
+
+    monkeypatch.setenv("TACMUX_WORKSPACE", str(settings.workspace))
+    monkeypatch.setenv("TACMUX_CONFIG", str(settings.config_file))
+    monkeypatch.setenv("TMUX", "/tmp/sock,1,0")
+    monkeypatch.chdir(engagement)
+    opened = []
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.start", lambda self, root, target="": (root, target)
+    )
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.attach",
+        lambda self, session: opened.append(session) or 0,
+    )
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.current_context", lambda self: (None, "")
+    )
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: True)
+    assert main(["target", "add", "WEB01", "192.0.2.10"]) == 0
+    assert opened == [(engagement, "WEB01")]
+    answers = iter(["BOX", "192.0.2.50"])
+    monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: next(answers))
+    assert main(["init", "LAB"]) == 0
+    assert opened[-1] == (settings.workspace / "LAB", "BOX")
