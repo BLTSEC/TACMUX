@@ -957,9 +957,7 @@ def test_access_and_proof_collect_penelope_logs(
     assert (shells / "a.log").read_bytes() == b"id\n"
     assert "Shell logs  1 new file(s)" in capsys.readouterr().out
     (session / "b.log").write_bytes(b"cat local.txt\n")
-    assert (
-        main(["proof", "user", "9a1d", "/home/app/local.txt", "--no-screenshot"]) == 0
-    )
+    assert main(["proof", "user", "9a1d", "/root/local.txt", "--no-screenshot"]) == 0
     assert (shells / "b.log").is_file()
 
 
@@ -985,3 +983,27 @@ def test_done_title_code_details_and_last_command(
     assert event.body.startswith("```bash\npython3 50640.py\n```")
     text = workspace.read(web01)
     assert "> [!failure] 50640" in text and "> [!success] Root via cap_setuid" in text
+
+
+def test_evidence_map_refreshes_and_counts(
+    settings, workspace, web01, tmp_path, monkeypatch, capsys
+):
+    from tacmux.journal import append_command
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _penelope(tmp_path / ".penelope/sessions", "h~192.0.2.10-Linux", {"a.log": b"x\n"})
+    day = web01 / "logs/20260101"
+    day.mkdir(parents=True)
+    (day / "WEB01_p1.log").write_bytes(b"=== TACMUX ===\nTarget: WEB01\n\nok\r\n")
+    append_command(web01, "1", "1.0", "1", "WEB01", "%1", "/x", "python3 x.py")
+    main = _cli(monkeypatch, settings, web01)
+    main(["fail", "x.py broken"])
+    monkeypatch.setattr("tacmux.cli.can_prompt", lambda: False)
+    capsys.readouterr()
+    assert main(["evidence"]) == 0
+    out = capsys.readouterr().out
+    assert "SITREP events   1 (1 failed)" in out
+    assert "Commands        1 in logs/commands.tsv (1 non-zero)" in out
+    assert "Pane logs       1 readable .txt under logs/ (1 refreshed)" in out
+    assert "Shell logs      1 under captures/*/shells/ (1 new)" in out
+    assert (day / "WEB01_p1.txt").read_text().endswith("ok\n")

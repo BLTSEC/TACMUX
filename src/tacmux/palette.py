@@ -25,14 +25,15 @@ ACTIONS: tuple[Action, ...] = (
         "✗  Failed / dead end",
         "Record what did not work. AARs and reports are mostly about the "
         "detours, so log them as they happen.",
-        'tm fail "EDB 50640 broken: needs a project"',
+        "tm fail 'EDB 50640 broken :: needs a project' -l",
         ("fail",),
     ),
     Action(
         "done",
         "✓  Step worked",
-        "Record a completed step with outcome success.",
-        'tm done "Shell as app via CVE-2021-43857"',
+        "Record a completed step with outcome success. Prompts: Title, "
+        "Command (prefilled with your last command), Details.",
+        'tm done "Shell as app :: via CVE-2021-43857" -l',
         ("done",),
     ),
     Action(
@@ -155,13 +156,13 @@ ACTIONS: tuple[Action, ...] = (
         ("undo",),
     ),
     Action(
-        "snap",
-        "📸 Snapshot panes now",
-        "Save rendered scrollback of every logging pane (panes with logging "
-        "off are skipped) and copy matching shell-handler (penelope) logs into "
-        "captures/<target>/shells/.",
-        "tm snap [TARGET]",
-        ("snap",),
+        "evidence",
+        "🗂  Evidence & logs",
+        "Everything recorded for this target: SITREP entries, the command "
+        "journal, readable pane logs (rendered from the raw logs), penelope "
+        "logs, captures, screenshots. Refreshes them, then opens any in less.",
+        "tm evidence [TARGET]   ·   tm snap (refresh only)",
+        ("evidence",),
     ),
     Action(
         "close",
@@ -199,6 +200,15 @@ ACTIONS: tuple[Action, ...] = (
         "Scope, rules of engagement, objectives, and reference links.",
         "tm sitrep context",
         ("sitrep", "context"),
+    ),
+    Action(
+        "notes",
+        "📁 Notes folder (SITREP root)",
+        "Choose where new engagements keep their SITREP, e.g. a course folder "
+        "such as Engagements/PG. Existing engagements keep their notes; you "
+        "can also move one.",
+        "tm notes PG   ·   tm notes move ENG FOLDER",
+        ("notes",),
     ),
     Action(
         "target_add",

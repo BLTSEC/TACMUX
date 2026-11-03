@@ -201,7 +201,7 @@ def test_legacy_events_are_read_and_rewritten_as_callouts():
 def test_long_legacy_summary_gets_short_title_and_keeps_text():
     long = (
         "penlope f12 to detach, maintain 3 - creates 3 additional sessions, "
-        "download /home/app/dbs/db.sqlite3, then select password from auth_user"
+        "download dbs/db.sqlite3, then select password from auth_user"
     )
     event = sitrep.read_events(_legacy_text(long, "info"))[0]
     assert len(event.summary) <= 80 and event.summary.startswith("penlope f12")

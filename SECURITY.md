@@ -16,7 +16,7 @@ Foreground Nmap discovery accepts only a literal IP or CIDR and constructs a fix
 
 TACMUX can store raw passwords and hashes in `SITREP.md`, generated credential files, and operator-supplied SSH keys under `credentials/keys/`. `tacmux creds` intentionally prints password and hash values. Generated `targets.txt`, pane logs, and NOCAP captures can also contain sensitive client information.
 
-New engagement directories are `0700` and new TACMUX files are `0600` where supported. An optional `paths.sitrep_root` stores the physical SITREP in an external Markdown notes directory and leaves a strictly validated link in the workspace. Shared folders, FAT filesystems, network mounts, removable media, and cloud-sync directories may ignore or broaden those permissions. Use an approved encrypted evidence location and protect backups separately.
+New engagement directories are `0700` and new TACMUX files are `0600` where supported. An optional `paths.sitrep_root` stores the physical SITREP in an external Markdown notes directory and leaves a strictly validated link in the workspace. Each engagement records its notes folder in the owner-only `.tacmux/notes_root`; the link must resolve to `<that folder>/<engagement>/SITREP.md`, a regular file in a real (non-symlink) directory. Shared folders, FAT filesystems, network mounts, removable media, and cloud-sync directories may ignore or broaden those permissions. Use an approved encrypted evidence location and protect backups separately.
 
 Interactive credential entry avoids terminal echo, but direct credentials remain in shell history and pane logs. Pause logging or use the prompt when required by the engagement's evidence policy.
 

@@ -106,17 +106,22 @@ wait_for '[[ "$(tmux display-message -t "$session:1.1" -p "#{pane_pipe}")" == 1 
 
 print -- '[PASS] v3 central logging, context, and NOCAP environment'
 
-# tm snap: rendered scrollback joins wrapped lines; penelope logs are copied.
+# tm snap: readable copies rendered from raw logs; penelope logs are copied.
 mkdir -p "$HOME/.penelope/sessions/box~192.0.2.10-Linux-x86_64"
 print -r -- "penelope session line" > "$HOME/.penelope/sessions/box~192.0.2.10-Linux-x86_64/a.log"
 tmux send-keys -t "$session:0.0" 'printf "JOIN%.0s" {1..60}; echo' Enter
-wait_for 'rg -q "(JOIN){60}" "$PWD/logs"' || fail "long line was not logged" || exit 1
+tmux send-keys -t "$session:0.0" 'printf "scan 10%%\rscan 100%%\n"' Enter
+wait_for 'rg -q "(JOIN){60}" "$PWD/logs" && rg -q "scan 100" "$PWD/logs"' || \
+    fail "long line was not logged" || exit 1
 tacmux snap WEB01 >/dev/null || fail "tm snap failed" || exit 1
-rg -q '^(JOIN){60}$' "$PWD"/logs/*/scrollback_* || \
-    fail "snapshot did not join the wrapped long line" || exit 1
+rg -q '^(JOIN){60}$' "$PWD"/logs/*/*.txt || \
+    fail "readable log did not keep the long line whole" || exit 1
+rg -q '^scan 100%$' "$PWD"/logs/*/*.txt || fail "progress bar was not collapsed" || exit 1
+rg -q '^scan 10%' "$PWD"/logs/*/*.txt && { fail "progress redraw left in readable log"; exit 1; }
 [[ -f "$PWD/captures/WEB01/shells/penelope/box~192.0.2.10-Linux-x86_64/a.log" ]] || \
     fail "penelope session log was not copied" || exit 1
-# A pane whose logging was turned off stays off disk in automatic snapshots.
+# Output from a period with logging off never reaches disk, even after the
+# pane's logging is turned back on and the session is stopped.
 nolog=$(tmux display-message -t "$session:1.0" -p '#{pane_id}')
 tacmux _internal log toggle "$nolog" || exit 1
 wait_for '[[ "$(tmux display-message -t "$session:1.0" -p "#{pane_pipe}")" == 0 ]]' || \
@@ -124,15 +129,21 @@ wait_for '[[ "$(tmux display-message -t "$session:1.0" -p "#{pane_pipe}")" == 0 
 tmux send-keys -t "$session:1.0" 'printf "NOLOG%s\n" SECRET' Enter
 wait_for 'tmux capture-pane -p -t "$session:1.0" | rg -q NOLOGSECRET' || \
     fail "marker did not reach the no-log pane" || exit 1
-tacmux snap WEB01 | rg -q 'Skipped 1 pane' || fail "snap did not report the skipped pane" || exit 1
-rg -q NOLOGSECRET "$PWD/logs" && { fail "pane with logging off was written to disk"; exit 1; }
-before=$(ls "$PWD"/logs/*/scrollback_* | wc -l)
+tacmux _internal log toggle "$nolog" || exit 1
+wait_for '[[ "$(tmux display-message -t "$session:1.0" -p "#{pane_pipe}")" == 1 ]]' || \
+    fail "logging did not turn back on" || exit 1
+tacmux snap WEB01 >/dev/null || fail "second snap failed" || exit 1
+rg -q NOLOGSECRET "$PWD/logs" && { fail "unlogged output was written to disk"; exit 1; }
+before=$(ls "$PWD"/logs/*/*.txt | wc -l)
+tmux send-keys -t "$session:1.1" 'printf "AFTERSTOP\n"' Enter
+wait_for 'rg -q AFTERSTOP "$PWD"/logs/*/*.log' || fail "late output not logged" || exit 1
 tacmux stop WEB01 >/dev/null || fail "tm stop failed" || exit 1
-rg -q NOLOGSECRET "$PWD/logs" && { fail "tm stop wrote the no-log pane to disk"; exit 1; }
+rg -q NOLOGSECRET "$PWD/logs" && { fail "tm stop wrote unlogged output to disk"; exit 1; }
 tmux has-session -t "=$session:" 2>/dev/null && fail "session still running after stop" && exit 1
-after=$(ls "$PWD"/logs/*/scrollback_* | wc -l)
-(( after > before )) || fail "tm stop did not snapshot panes first" || exit 1
-print -- '[PASS] snapshots, shell-log copy, snapshot on stop, and no-log panes respected'
+rg -q AFTERSTOP "$PWD"/logs/*/*.txt || fail "tm stop did not refresh readable logs" || exit 1
+after=$(ls "$PWD"/logs/*/*.txt | wc -l)
+(( after >= before )) || fail "readable logs disappeared" || exit 1
+print -- '[PASS] readable logs, shell-log copy, refresh on stop, and unlogged output kept off disk'
 
 # Exercise the actual binding's shell formats, not just the Python popup argv.
 # The stub records arguments without opening a popup or touching user sessions.

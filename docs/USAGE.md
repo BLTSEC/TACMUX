@@ -99,16 +99,42 @@ under `targets/<T>/screenshots/` and attached to the entry. Interactive success
 entries also offer the latest unattached NOCAP capture (from `cap …` or
 `cap grab`), and 📎 attaches one to any earlier entry.
 
-## Snapshots, shell logs, and closing out
+## Logs, evidence, and closing out
 
-`tm snap` saves the rendered text of every logging pane (wrapped lines joined)
-to `logs/YYYYMMDD/scrollback_*`. Panes whose logging you turned off with
-prefix+`T` are skipped and reported, so output you kept off disk stays off disk;
-prefix+`S` still saves one explicitly. It also copies matching shell-handler sessions into
+Everything records on its own; `tm evidence` shows it in one place.
+
+| Layer | Written by | When | Where |
+|---|---|---|---|
+| SITREP entries and screenshots | you (`tm log/fail/done/access/proof`, `-s`) | when you record | SITREP, `images/` |
+| Command journal | zsh hook (`tacmux shell-init zsh`) | every command in TACMUX shells | `logs/commands.tsv` |
+| Raw pane log | `pipe-pane` | always (Prefix+`T` toggles) | `logs/YYYYMMDD/*.log` |
+| Readable pane log | renderer | `tm snap`/`stop`/`close`/`evidence` | same name, `.txt` |
+| Exact capture | Prefix+`S` | on request | `logs/YYYYMMDD/scrollback_*.log` |
+| NOCAP | `cap …` / `cap grab` | when you use it | `captures/<target>/…` |
+| Penelope | penelope | each session; copied at `access`/`proof`/`snap`/`stop`/`close` | `captures/<target>/shells/penelope/` |
+
+**Readable pane logs.** `tm snap` renders each raw pane log into
+`<same name>.txt`: progress bars collapse to their final state, line-editor
+redraws resolve, colour codes and window titles disappear, and full-screen
+programs (vim, less) become one `[full-screen program]` line. Closed panes get a
+readable copy too. Only bytes from the raw log are used, so output from a
+period when you turned logging off never appears; Prefix+`S` still saves an
+exact capture of one pane.
+
+**Command journal.** `eval "$(tacmux shell-init zsh)"` (the installer adds it)
+records `epoch, seconds, exit, target, pane, cwd, command` for each command in
+a TACMUX session. A leading space skips one command; `TACMUX_NO_AUTOLOG=1`
+disables it. The pane column matches the `Pane:` header of the pane logs.
+
+**Shell handlers.** Matching sessions are copied into
 `captures/<target>/shells/`. Penelope names sessions `host~IP-OS-arch` (or
 `IP-OS-arch`); sessions for the target's Endpoint are copied with their
-`downloads/`, skipping symlinks and files over 100 MiB, with a README noting the
-local-time UTC offset. `tm stop` snapshots first.
+`downloads/`, skipping symlinks and files over 100 MiB, with a README listing
+the local-time UTC offsets in effect when the logs were written.
+
+**`tm evidence [TARGET]`** refreshes readable logs and shell logs, prints
+counts (entries, failed commands, logs, captures, screenshots), and at a
+terminal lets you open any of them in `$PAGER`.
 
 ```toml
 [behavior]
@@ -120,11 +146,11 @@ shell_log_dirs = ["~/.penelope/sessions"]   # [] disables the copy
 
 `tm close` walks a checklist: Access, open TODO, the cleanup release gate,
 proof, and a confirmed credential. Enter on a line fixes it inline. It then
-sets Status (default `complete`), takes an optional final summary, snapshots,
-and stops the session. Sessions whose panes still run programs (penelope,
+sets Status (default `complete`), takes an optional final summary, writes
+readable logs and copies shell logs, and stops the session. Sessions whose panes still run programs (penelope,
 `nc`, an agent) need confirmation. In the operations session, `tm close`
 (or `--engagement`) shows every target, the engagement-wide cleanup gate, and
-snapshots and stops all sessions: other targets, then OPS, then the session
+writes readable logs and stops all sessions: other targets, then OPS, then the session
 running the command. `--yes` skips every prompt; `--no-stop` keeps sessions.
 
 ## Engagement and target workflow
@@ -186,17 +212,19 @@ Targets and Credentials retain exact Markdown tables. TODO and Cleanup are nativ
 
 `tacmux sitrep sync` offers a one-time, backed-up conversion from the original Narrative/TODO/Completed tables. It then restores absent empty managed structures, normalizes checklists with open work first, adds a section for a manually created target directory after requesting its endpoint, regenerates credential derivative files, and reports bad IDs or references. It refuses malformed or partial markers, target-heading mismatches, and ambiguous manual renames without changing the document; it never rewrites event prose.
 
-### Optional external notes location
+### Notes folders (external SITREP)
 
-TACMUX does not require Obsidian. To store each physical SITREP in Obsidian or another Markdown tree, configure its parent directory before creating an engagement:
+TACMUX does not require Obsidian. To store each physical SITREP in Obsidian or another Markdown tree, pick a notes folder:
 
-```toml
-[paths]
-workspace = "~/workspace"
-sitrep_root = "~/notes/engagements"
+```bash
+tm notes ~/notes/engagements/PG   # path, or a listed folder name: tm notes PG
+tm notes                          # show the current folder and pick another
+tm notes none                     # back to SITREP inside each engagement
 ```
 
-For `ACME`, TACMUX creates `<sitrep_root>/ACME/SITREP.md` and a validated `~/workspace/ACME/SITREP.md` link. Both editors operate on that one file; there is no synchronization daemon or second copy. Existing engagements are not moved automatically. The notes root must already exist, be writable, and not be a symlink. Do not use a cloud-synced location unless its handling of the raw credentials in SITREP is approved.
+This sets `[paths] sitrep_root` in `config.toml` (other lines and comments are kept). For `Fractal`, TACMUX then creates `<folder>/Fractal/SITREP.md` and a validated `~/workspace/Fractal/SITREP.md` link, and records the folder in `.tacmux/notes_root`. Each engagement is validated against its own recorded folder, so switching folders per course never hides or moves existing engagements; engagements created before 3.4 are pinned on their next change or by `tm notes`. `tm notes move ENG FOLDER` relocates a note folder with its `images/` (same filesystem; rolled back on failure).
+
+A notes folder must exist, be writable, not be a symlink, and sit outside the workspace. Do not use a cloud-synced location unless its handling of the raw credentials in SITREP is approved.
 
 ## Operations Log and tasks
 
@@ -210,7 +238,29 @@ tm log success "Validated command execution as svc_web"
 tm done "Established the approved internal pivot"
 ```
 
-Inline logging uses the current target, or `ENGAGEMENT` from the operations session. `tm log` with no arguments prompts for the outcome, summary, and Notes; inside a target session the entry belongs to that target, while the operations session asks which target (or ENGAGEMENT) it is for, defaulting to the most recently used target. `tm fail TEXT` records a dead end, and `tm history --outcome failed` lists them. `tm history` shows the newest engagement events first; pass a target to filter it. The Markdown reads oldest-to-newest as a walkthrough.
+Each entry has a title, an optional code block, and details. Type them as `Title :: details`; any ```` ```cmd``` ```` span becomes a code block, and `-l`/`--last` adds the last command you ran in this pane (from the command journal). Use single quotes when the text contains backticks: inside double quotes zsh would run the code.
+
+```bash
+tm fail 'EDB 50640 broken :: ```python3 50640.py -t $T``` needs an existing project'
+tm done "Root via python3.10 cap_setuid :: proof.txt captured" -l
+```
+
+In SITREP each entry is an Obsidian callout colored by outcome (`success` green, `failure` red, `warning` for partial, `note` for info):
+
+```markdown
+> [!success] Root via python3.10 cap_setuid
+> `E008` · `2026-11-03 05:52:10Z` · `LEVRAM`
+>
+> ```bash
+> /usr/bin/python3.10 -c 'import os; os.setuid(0); os.system("/bin/bash")'
+> ```
+>
+> proof.txt captured.
+```
+
+Edit the title and details freely in Obsidian or `$EDITOR`; keep the chip line (`ID` · `time` · `target`). Entries written by TACMUX 3.3 and earlier are read as before and rewritten in this form on the next change, keeping all text (a long old summary gets a short title).
+
+Inline logging uses the current target, or `ENGAGEMENT` from the operations session. `tm log` with no text prompts for the outcome, Title, Command (prefilled with your last command), and Details; inside a target session the entry belongs to that target, while the operations session asks which target (or ENGAGEMENT) it is for, defaulting to the most recently used target. `tm fail TEXT` records a dead end, and `tm history --outcome failed` lists them. `tm history` shows the newest engagement events first; pass a target to filter it. The Markdown reads oldest-to-newest as a walkthrough.
 
 Attach the most recent NOCAP record and optional screenshots to the same event:
 
@@ -221,7 +271,7 @@ tm done -c -i ~/proof/pivot.png "Established the internal pivot"
 tm log failed -c "The captured service-account hash did not crack"
 ```
 
-`-c`/`--capture` calls `cap inspect --json`, requires a finished retained capture on the current target's route, and records its ID, tool, path, and command. `-i`/`--image` may be repeated; supported images are copied under the SITREP's sibling `images/` directory and embedded in the event. Capture-assisted entries without an image retain an explicit “Not attached” placeholder and editable caption. Draft-finding text and supporting Notes belong inside the event so the evidence and reasoning remain together.
+`-c`/`--capture` calls `cap inspect --json`, requires a finished retained capture on the current target's route, and records its ID, tool, path, and command. `-i`/`--image` may be repeated; supported images are copied under the SITREP's sibling `images/` directory and embedded in the event. Screenshots attached later add a Screenshots section. Draft-finding text and supporting notes belong inside the event so the evidence and reasoning remain together.
 
 After switching targets, NOCAP's latest capture may belong to another route.
 Use `cap timeline` to find the intended ID, then run
@@ -364,5 +414,6 @@ This keeps one NOCAP metadata root at `captures/.nocap` while routing files bene
 
 This route-prefix behavior requires NOCAP 2.3 or newer. `tacmux health` rejects an installed older version while continuing to treat an absent NOCAP installation as optional.
 
-Pane logs are centralized under `logs/YYYYMMDD/`. TACMUX installs logging hooks only on TACMUX-owned sessions, so new windows and splits start logging automatically. Reopening an existing session repairs missing hooks without re-enabling panes you deliberately toggled off. Prefix+`T` toggles current-pane logging and Prefix+`S` captures rendered
-scrollback (wrapped lines joined).
+Pane logs are centralized under `logs/YYYYMMDD/`. TACMUX installs logging hooks only on TACMUX-owned sessions, so new windows and splits start logging automatically. Reopening an existing session repairs missing hooks without re-enabling panes you deliberately toggled off. Prefix+`T` toggles current-pane logging and Prefix+`S` saves an exact capture
+of the pane (wrapped lines joined). Readable `.txt` copies of every raw log are
+written by `tm snap`, `tm stop`, `tm close`, and `tm evidence`.

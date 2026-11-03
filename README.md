@@ -30,7 +30,7 @@ records what happened.
 ## Install
 
 ```bash
-git clone --branch v3.3.0 --depth 1 https://github.com/BLTSEC/TACMUX.git
+git clone --branch v3.4.0 --depth 1 https://github.com/BLTSEC/TACMUX.git
 cd TACMUX
 ./install.sh --workspace ~/workspace   # omit --workspace on reinstall
 exec "$SHELL" -l
@@ -74,14 +74,16 @@ The same flow from the shell:
 
 ```bash
 nmap -sV "$TARGET" | tm ports add          # merge ports into SITREP
-tm fail "Default credentials rejected"     # dead end
+tm fail 'Default creds :: admin:admin rejected'   # Title :: details
+tm done 'Shell as app :: ```python3 exploit.py``` RCE works'   # code block
 tm creds add password 'admin:admin'        # store a credential (C001)
 tm creds confirm C001 auth 8000            # works on WEB01, service from Ports
 tm target update access                    # missing value → picker
 tm access user svc_web "file upload" --via "http :80"   # Access raised, one step
 tm proof root 49d8… /root/proof.txt        # flag + screenshot (alias tm flag)
 tm undo                                    # revert the last TACMUX change
-tm close                                   # checklist, snapshots, stop
+tm evidence                                # pane logs, commands, shells, captures
+tm close                                   # checklist, readable logs, stop
 ```
 
 ## How input works
@@ -97,6 +99,10 @@ tm close                                   # checklist, snapshots, stop
   starts with `-`.
 - **Scripts and agents** set `TACMUX_NONINTERACTIVE=1` (or run without a
   terminal): a missing argument then fails with its name instead of prompting.
+- **Entries are `Title :: details`.** ```` ```cmd``` ```` anywhere becomes a
+  code block and `-l` adds your last command. Use single quotes when the text
+  has backticks (zsh runs them inside double quotes). With no text, the prompts
+  are Title, Command (prefilled with your last command), and Details.
 - **`tm undo`** reverts the last TACMUX change to SITREP. It refuses after
   SITREP was edited outside TACMUX, and target add/rename/delete start a new
   undo history. `tm undo --yes` skips the confirmation.
@@ -104,7 +110,8 @@ tm close                                   # checklist, snapshots, stop
 ## Commands
 
 ```text
-Record      tm log [OUTCOME] [-c] [-i IMAGE] TEXT   outcomes: info success partial failed
+Record      tm log [OUTCOME] [-c] [-l] [-i IMAGE] TEXT  'Title :: details'; outcomes:
+                                                     info success partial failed
             tm fail TEXT · tm done [-s] TEXT         shorthands for failed / success
             tm access [LEVEL] [AS] [HOW…]            access gained, one undoable step
             tm proof|flag [user|root] [VALUE] [PATH] flag/proof with a screenshot
@@ -114,15 +121,18 @@ Record      tm log [OUTCOME] [-c] [-i IMAGE] TEXT   outcomes: info success parti
             tm undo [--yes]
 Inspect     tm status [TARGET] · tm history [TARGET] [--outcome O] · tm ports [TARGET]
             tm sitrep [SECTION|TARGET] · tm log edit [EVENT_ID]
+            tm evidence [TARGET]                     everything recorded, opens any
 Targets     tm init [NAME] · tm target add|update|export|rename|delete
+            tm notes [FOLDER|none|move]              notes folder for new engagements
             tm discover [nmap|hosts|netexec]         reviewed host import
 Sessions    tm (palette in a session, switcher elsewhere) · tm menu · tm switch
             tm snap [TARGET] · tm close [TARGET|--engagement] · tm stop [TARGET]
 Maintain    tm sitrep sync · tm health · tm help [COMMAND] · tm version
+            eval "$(tacmux shell-init zsh)"          command journal (installer adds it)
 ```
 
 **Keys** (after your tmux prefix): `M` palette · `E` switcher · `T` toggle pane
-logging · `S` save pane scrollback. The status line shows `[WEB01 · user · LOG]`
+logging · `S` save an exact pane capture. The status line shows `[WEB01 · user · LOG]`
 so an unrecorded `none` stands out.
 
 ## Workspace and SITREP
@@ -133,13 +143,26 @@ so an unrecorded `none` stands out.
 ├── targets.txt          # tm target export: one endpoint per line
 ├── credentials/         # creds, users, passwords, hashes .txt (from SITREP); keys/
 ├── captures/            # NOCAP evidence, one folder per target
-├── logs/YYYYMMDD/       # automatic pane logs and scrollback snapshots
+├── logs/YYYYMMDD/       # raw pane logs (.log) + readable copies (.txt)
+├── logs/commands.tsv    # command journal: time, duration, exit, target, pane
 ├── targets/WEB01/       # scans/ payloads/ loot/ screenshots/ working/
 └── .tacmux/             # engagement marker, lock, undo journal
 ```
 
 `SITREP.md` keeps current state first (Targets, Credentials, TODO, Cleanup),
-then the Operations Log. It is plain Markdown: edit it in Obsidian or
+then the Operations Log, where each entry is a callout colored by outcome:
+
+```markdown
+> [!success] Root via python3.10 cap_setuid
+> `E008` · `2026-11-03 05:52:10Z` · `LEVRAM`
+>
+> ```bash
+> /usr/bin/python3.10 -c 'import os; os.setuid(0); os.system("/bin/bash")'
+> ```
+>
+> proof.txt captured.
+```
+ It is plain Markdown: edit it in Obsidian or
 `$EDITOR`; checked boxes and prose between markers are understood. Rename
 targets with `tm target rename`, not by editing headings alone.
 
@@ -150,20 +173,34 @@ targets with `tm target rename`, not by editing headings alone.
 - `tm creds view C001` shows a full credential. Displaying secrets puts them
   in pane logs.
 - `tm done -s`, `tm proof`, and the palette take flameshot region screenshots
-  and attach them; `tm snap`, `tm stop`, and `tm close` save rendered pane text
-  and copy penelope session logs into `captures/<target>/shells/`.
+  and attach them.
 
-**External notes:** to keep each SITREP in Obsidian or another notes tree, set
-it before creating an engagement:
+**Logging** is automatic; `tm evidence` shows all of it:
 
-```toml
-# ~/.config/tacmux/config.toml
-[paths]
-workspace = "~/workspace"
-sitrep_root = "~/notes/engagements"
+| Layer | When | Where |
+|---|---|---|
+| Raw pane log | always (Prefix+T toggles) | `logs/YYYYMMDD/*.log` |
+| Readable pane log | `tm snap`/`stop`/`close`/`evidence` | same name, `.txt` (rendered from the raw log; closed panes too) |
+| Command journal | every command (zsh hook) | `logs/commands.tsv` |
+| Penelope sessions | `tm access`/`proof`/`snap`/`stop`/`close` | `captures/<target>/shells/penelope/` |
+| Exact capture | Prefix+S | `logs/YYYYMMDD/scrollback_*.log` |
+
+NOCAP users: `cap grab` reads the last command from your history file, so set
+`setopt INC_APPEND_HISTORY_TIME` in `~/.zshrc`.
+
+**External notes:** keep each SITREP in Obsidian or another notes tree, one
+folder per course or client if you like:
+
+```bash
+tm notes ~/notes/engagements/PG    # or tm notes PG once the folder is listed
+tm init Fractal                    # → ~/notes/engagements/PG/Fractal/SITREP.md
+tm notes HTB                       # next course; PG engagements keep working
+tm notes move Fractal OSCP         # optional: relocate a note folder (+ images)
 ```
 
-TACMUX, Obsidian, and `$EDITOR` then edit the same file. There is no sync
+`tm notes` sets `[paths] sitrep_root` in `~/.config/tacmux/config.toml`. Each
+engagement remembers its own folder, so switching never hides or moves existing
+work. TACMUX, Obsidian, and `$EDITOR` edit the same file; there is no sync
 process or API.
 
 ## Boundaries and safety

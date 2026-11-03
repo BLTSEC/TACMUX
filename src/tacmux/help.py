@@ -28,7 +28,9 @@ Start here:
   tm COMMAND --help              Exact forms, accepted words, and examples
 
 Record:
-  tm log [OUTCOME] TEXT          Operations Log entry (default outcome: info)
+  tm log [OUTCOME] TEXT          Operations Log entry: 'Title :: details'
+                                 (```code``` becomes a code block; -l adds
+                                 your last command; default outcome: info)
   tm fail TEXT                   Dead end or failed attempt (log failed)
   tm done TEXT                   Completed step (log success; -s screenshot)
   tm access [LEVEL] [AS] [HOW]   Access gained: entry + Access + credential used
@@ -43,18 +45,22 @@ Inspect:
   tm status [TARGET]             Target or engagement status
   tm history [TARGET] [--outcome O]
   tm sitrep [SECTION|sync]       Edit or repair SITREP
+  tm evidence [TARGET]           Everything recorded: pane logs, commands,
+                                 shell logs, captures (opens any in less)
 
 Targets and sessions:
   tm init [NAME]                 Create or open an engagement
+  tm notes [FOLDER|move]         Notes folder (SITREP root) for new engagements
   tm target add|update|export|rename|delete
   tm discover [nmap|hosts|netexec]
   tm switch                      Session switcher (Prefix+E)
-  tm snap [TARGET]               Save pane text and shell-handler logs now
+  tm snap [TARGET]               Write readable pane logs and copy shell logs now
   tm close [TARGET|--engagement] Guided close-out, then stop
-  tm stop [TARGET]               Stop a session (saves pane text first)
+  tm stop [TARGET]               Stop a session (writes readable logs first)
 
 Maintenance:
   tm health · tm version · tm help COMMAND
+  eval "$(tacmux shell-init zsh)"  Command journal hook (installer adds it)
 
 Every argument shown in [brackets] may be omitted: TACMUX asks for it.
 Scripts and agents: set TACMUX_NONINTERACTIVE=1 to fail instead of prompting.
@@ -78,11 +84,18 @@ Forms:    tm log [OUTCOME] TEXT…
           tm log [OUTCOME] -c TEXT…            attach the latest NOCAP capture
           tm log [OUTCOME] --capture-id ID TEXT…
           tm log [OUTCOME] -i IMAGE TEXT…      attach a screenshot (repeatable)
+          tm log [OUTCOME] -l TEXT…            add your last command as code
           tm log edit [EVENT_ID]               open SITREP at an entry
           tm log [OUTCOME] -- -TEXT            log text that starts with '-'
+Text:     'Title :: details' — the title heads the entry, details follow.
+          ```cmd``` anywhere becomes a code block. Use SINGLE quotes when the
+          text has backticks: inside double quotes zsh would run the code.
+          At a terminal with no text: Title, Command (prefilled with your
+          last command in this pane), Details.
 Outcomes: {outcomes}   (shortcuts: f p s; default info)
 Examples: tm log "SMB signing disabled"
-          tm log f "EDB 50640 broken: needs a project"
+          tm log f 'EDB 50640 broken :: ```python3 50640.py``` needs a project'
+          tm done "Root via cap_setuid :: proof.txt captured" -l
           tm log p "hash captured, did not crack"
 """,
         "done": """tm done — record a completed step (outcome success)
@@ -90,12 +103,14 @@ Examples: tm log "SMB signing disabled"
 Easiest:  tm → ✓ Step worked
 Forms:    tm done TEXT…   ·   tm done -c TEXT…   ·   tm done -i IMAGE TEXT…
           tm done -s TEXT…   (flameshot region capture, attached to the entry)
+          tm done -l TEXT…   (your last command becomes the code block)
+Text:     'Title :: details' (see tm log --help)
 Example:  tm done "Shell as app via CVE-2021-43857"
 """,
         "fail": """tm fail — record a dead end or failed attempt (outcome failed)
 
 Easiest:  tm → ✗ Failed
-Forms:    tm fail TEXT…   ·   tm fail -c TEXT…
+Forms:    tm fail TEXT…   ·   tm fail -c TEXT…   ·   tm fail -l TEXT…
 Why:      AARs and reports are mostly about the detours; log them as you go.
 Example:  tm fail "feroxbuster on Vue SPA: only static chunks"
 """,
@@ -126,14 +141,44 @@ Shot:     offered (default yes) whenever you are at a terminal; -s forces it,
 Examples: tm proof user 9a1d4ff1… /home/<user>/local.txt
           tm flag root 49d89584…            (path defaults to /root/proof.txt)
 """,
-        "snap": """tm snap — save rendered pane text and shell-handler logs now
+        "snap": """tm snap — write readable pane logs and copy shell logs now
 
 Forms:    tm snap [TARGET]
-Saves:    logs/YYYYMMDD/scrollback_* for every logging pane (wrapped lines
-          joined) and copies matching penelope sessions into
+Writes:   logs/YYYYMMDD/<pane log>.txt next to each raw pane log, rendered
+          from the raw log (progress bars and redraws resolved), including
+          panes already closed. Copies matching penelope sessions into
           captures/<target>/shells/ ([integrations] shell_log_dirs).
-          Panes with logging off (prefix+T) are skipped; prefix+S saves one
-          explicitly. tm stop and tm close do this too.
+          Only logged output is used; prefix+S saves an exact capture of one
+          pane. tm stop, tm close, and tm evidence do this too.
+""",
+        "evidence": """tm evidence — everything recorded for a target, in one place
+
+Easiest:  tm → 🗂 Evidence & logs
+Forms:    tm evidence [TARGET]   (in the operations session: all targets)
+Shows:    SITREP events, the command journal (logs/commands.tsv), readable
+          pane logs, penelope logs, NOCAP captures, and screenshots, after
+          refreshing readable logs and shell logs. At a terminal, pick any
+          item to open it in $PAGER (less -R).
+""",
+        "notes": """tm notes — choose the notes folder (SITREP root) for new engagements
+
+Easiest:  tm → 📁 Notes folder
+Forms:    tm notes                 show the folder and pick another
+          tm notes NAME            a folder by name, e.g. tm notes PG
+          tm notes PATH            any folder, e.g. tm notes ~/notes/OSCP
+          tm notes none            keep SITREP inside each engagement
+          tm notes move [ENG] [FOLDER]   relocate an engagement's notes
+How:      sets [paths] sitrep_root in config.toml. Each engagement remembers
+          its own folder, so switching never hides or moves existing work.
+Example:  tm notes PG   then   tm init Fractal
+          → …/Engagements/PG/Fractal/SITREP.md
+""",
+        "shell-init": """tacmux shell-init zsh — the command journal hook
+
+Add to ~/.zshrc:   eval "$(tacmux shell-init zsh)"
+Records each command in TACMUX sessions to <engagement>/logs/commands.tsv:
+epoch, seconds, exit, target, pane, cwd, command. A command typed with a
+leading space is skipped; TACMUX_NO_AUTOLOG=1 disables it. zsh only.
 """,
         "close": """tm close — guided close-out, then stop
 

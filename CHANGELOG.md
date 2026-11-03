@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+## 3.4.0 — 2026-11-04
+
+### Upgrade notes
+
+- Operations Log entries are written as Obsidian callouts colored by outcome
+  (`> [!success] Title`, then an `ID` · `time` · `target` line). Older entries
+  are still read and are rewritten in the new form on the next change, keeping
+  all text; a long old summary gets a short title.
+- `tm snap`, `tm stop`, and `tm close` no longer capture pane scrollback. They
+  write a readable `.txt` next to each raw pane log, rendered from that log.
+  `[behavior] snapshot_on_stop` keeps its name and now means this. Prefix+S
+  still saves an exact capture.
+- `tm notes` edits `[paths] sitrep_root` in `config.toml` in place.
+- The command journal is part of TACMUX: add
+  `eval "$(tacmux shell-init zsh)"` to `~/.zshrc` (the installer's managed
+  block now includes it). Restart open shells with `exec zsh`.
+
+### Added
+
+- `tm notes [NAME|PATH|none]`: choose the notes folder for new engagements,
+  e.g. one per course (`tm notes PG`). `tm notes move ENG FOLDER` relocates an
+  engagement's note folder with its images.
+- Readable pane logs for every raw log, including panes already closed.
+- `tm evidence [TARGET]` (palette 🗂, replacing 📸): SITREP entries, command
+  journal, readable pane logs, penelope logs, captures, and screenshots, with a
+  picker that opens any in `$PAGER`.
+- `tacmux shell-init zsh`: command journal `logs/commands.tsv` with epoch,
+  seconds, exit, target, pane, cwd, command. `tm health` reports it.
+- `Title :: details` entry text; ```` ```cmd``` ```` becomes a code block;
+  `-l/--last` adds your last command. The palette prompts for Title, Command
+  (prefilled with your last command), and Details.
+- The switcher tags engagements with their notes folder (`[PG]`) and lists live
+  sessions first and completed engagements last.
+
+### Changed
+
+- Penelope logs are also copied after `tm access` and `tm proof`; their README
+  lists the UTC offsets in effect when the logs were written.
+- `tm proof` and `tm access` entries use the title/code/details shape
+  (`User flag (local.txt)` with the value as code; `Access: user as app`).
+- Entries no longer carry empty placeholders (Image not attached, Draft
+  findings, Notes).
+
+### Fixed
+
+- Changing `sitrep_root` no longer hides existing engagements: each one records
+  its notes folder in `.tacmux/notes_root` (older engagements are pinned on
+  their next change, by `tm notes`, or by `tm health`).
+- Automatic snapshots could save output from a period when logging was turned
+  off and on again with Prefix+T; readable copies use only logged bytes.
+
 ## 3.3.0 — 2026-11-03
 
 ### Upgrade notes

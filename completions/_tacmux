@@ -18,7 +18,10 @@ _tacmux() {
     'access:record access gained (entry + Access + credential)'
     'proof:record a flag or proof file with a screenshot'
     'flag:alias of proof'
-    'snap:save pane text and shell-handler logs now'
+    'snap:write readable pane logs and copy shell logs now'
+    'evidence:everything recorded for a target, opens any in less'
+    'notes:notes folder (SITREP root) for new engagements'
+    'shell-init:print the zsh command journal hook'
     'close:guided close-out of a target or the engagement'
     'undo:revert the last TACMUX change to SITREP'
     'init:create or open an engagement'
@@ -50,11 +53,18 @@ _tacmux() {
     init)
       (( CURRENT == 3 )) && _tacmux_dynamic engagement
       ;;
-    stop|status|snap)
+    stop|status|snap|evidence)
       (( CURRENT == 3 )) && _tacmux_dynamic target
       ;;
     close)
       _tacmux_dynamic target --engagement --yes --no-stop
+      ;;
+    notes)
+      (( CURRENT == 3 )) && _values 'notes' move none
+      (( CURRENT == 4 )) && [[ "${words[3]}" == move ]] && _tacmux_dynamic engagement
+      ;;
+    shell-init)
+      (( CURRENT == 3 )) && _values 'shell' zsh
       ;;
     access)
       if (( CURRENT == 3 )); then
@@ -115,7 +125,7 @@ _tacmux() {
       ;;
     log)
       if (( CURRENT == 3 )); then
-        _values 'outcome, option, or action' info success partial failed f p s edit -c --capture --capture-id -i --image -s --screenshot
+        _values 'outcome, option, or action' info success partial failed f p s edit -c --capture --capture-id -i --image -s --screenshot -l --last
       elif [[ "${words[3]}" == edit && CURRENT == 4 ]]; then
         _tacmux_dynamic event
       elif [[ "${words[CURRENT-1]}" == -i || "${words[CURRENT-1]}" == --image ]]; then
@@ -126,7 +136,7 @@ _tacmux() {
       if [[ "${words[CURRENT-1]}" == -i || "${words[CURRENT-1]}" == --image ]]; then
         _files
       else
-        _values 'evidence option' -c --capture --capture-id -i --image
+        _values 'evidence option' -c --capture --capture-id -i --image -s -l --last
       fi
       ;;
     creds)

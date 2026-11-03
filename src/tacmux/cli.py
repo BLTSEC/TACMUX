@@ -276,6 +276,166 @@ def _collect_shells(
         return []
 
 
+def _route(workspace: Workspace, root: Path, target: str) -> str:
+    if not target:
+        return "ops"
+    return workspace.target_details(root, target)["Capture Route"][0] or target
+
+
+def _journal_rows(root: Path, target: str) -> list[dict[str, str]]:
+    from .journal import read_rows
+
+    rows = read_rows(root / "logs" / "commands.tsv")
+    if not target:
+        return rows
+    folder = str(root / "targets" / target)
+    return [
+        row
+        for row in rows
+        if row["target"] == target
+        or (not row["target"] and (row["cwd"] + "/").startswith(folder + "/"))
+    ]
+
+
+def _journal_text(rows: Sequence[Mapping[str, str]]) -> str:
+    from datetime import datetime, timezone
+
+    lines = []
+    for row in rows:
+        try:
+            moment = datetime.fromtimestamp(int(row["epoch"]), timezone.utc)
+            stamp = moment.strftime("%m-%d %H:%M:%S")
+        except ValueError:
+            stamp = row["epoch"]
+        mark = "  " if row["exit"] == "0" else f"✗{row['exit']}"
+        lines.append(f"{stamp}Z {row['seconds']:>7}s {mark:4} {row['command']}")
+    return "\n".join(lines) + "\n"
+
+
+def _page(path: Path | None = None, text: str = "") -> None:
+    argv = shlex.split(os.environ.get("PAGER") or "less -R") or ["less", "-R"]
+    if path is not None:
+        subprocess.run([*argv, str(path)], check=False)
+    else:
+        subprocess.run(argv, input=text, text=True, check=False)
+
+
+def _tail(path: Path, count: int = 15) -> str:
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 4096))
+            text = stream.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    return "\\n".join(text.splitlines()[-count:]).replace("\t", " ")
+
+
+def _evidence_command(
+    settings: Settings,
+    workspace: Workspace,
+    tmux: TmuxService,
+    arguments: Sequence[str],
+) -> int:
+    """One view of everything recorded for a target (or the engagement)."""
+    from datetime import datetime, timezone
+
+    from .render import log_target, raw_logs, readable_path, refresh_readable
+
+    context = resolve(settings, tmux)
+    root = context.root
+    target = arguments[0] if arguments else context.target
+    target = workspace.canonical_target(root, target) if target else ""
+    scope = target or None
+    targets = [target] if target else workspace.targets(root)
+    refreshed = refresh_readable(root, scope)
+    copied = [
+        path
+        for name in targets
+        for path in _collect_shells(settings, workspace, root, name)
+    ]
+    readable = [
+        readable_path(raw)
+        for raw in raw_logs(root)
+        if (scope is None or log_target(raw) == target) and readable_path(raw).is_file()
+    ]
+    readable.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    journal = _journal_rows(root, target)
+    routes = [_route(workspace, root, name) for name in targets] or ["ops"]
+    shells = sorted(
+        path
+        for route in routes
+        for path in (root / "captures" / route / "shells").rglob("*.log")
+        if path.is_file() and not path.is_symlink()
+    )
+    captures = sorted(
+        path
+        for route in routes
+        for path in (root / "captures" / route).rglob("*")
+        if path.is_file()
+        and not path.is_symlink()
+        and "shells" not in path.relative_to(root / "captures" / route).parts
+    )
+    shots = sorted(
+        path
+        for name in targets
+        for path in (root / "targets" / name / "screenshots").glob("*.png")
+    )
+    events = [
+        event
+        for event in sitrep.read_events(workspace.read(root))
+        if not target or event.target == target
+    ]
+    failed_events = sum(event.outcome == "failed" for event in events)
+    failed_commands = sum(row["exit"] not in {"0", ""} for row in journal)
+
+    def when(path: Path) -> str:
+        moment = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        return moment.strftime("%m-%d %H:%MZ")
+
+    print(f"{root.name} / {target or 'all targets'} evidence")
+    print(f"  SITREP events   {len(events)} ({failed_events} failed)")
+    print(
+        f"  Commands        {len(journal)} in logs/commands.tsv ({failed_commands} non-zero)"
+    )
+    print(
+        f"  Pane logs       {len(readable)} readable .txt under logs/"
+        + (f" ({len(refreshed)} refreshed)" if refreshed else "")
+    )
+    print(
+        f"  Shell logs      {len(shells)} under captures/*/shells/"
+        + (f" ({len(copied)} new)" if copied else "")
+    )
+    print(f"  Captures        {len(captures)} under captures/ (cap timeline)")
+    print(f"  Screenshots     {len(shots)} under targets/*/screenshots/")
+    if not can_prompt():
+        return 0
+    choices: list[tuple[str, str, str]] = []
+    if journal:
+        choices.append(
+            (f"⌨  Commands ({len(journal)})", "\x1fjournal", "Command journal")
+        )
+    for path in readable:
+        choices.append((f"▤  {when(path)}  {path.name}", str(path), _tail(path)))
+    for path in reversed(shells):
+        label = f"{path.parent.name}/{path.name}"
+        choices.append((f"⌁  {when(path)}  {label}", str(path), _tail(path)))
+    for path in reversed(captures):
+        label = str(path.relative_to(root / "captures"))
+        choices.append((f"⇣  {when(path)}  {label}", str(path), _tail(path)))
+    if not choices:
+        return 0
+    while True:
+        try:
+            selected = choose(choices, "Evidence> ")
+        except ValidationError:
+            return 0
+        if selected == "\x1fjournal":
+            _page(text=_journal_text(journal))
+        else:
+            _page(Path(selected))
+
+
 def _report_snapshot(root: Path, saved: Sequence[Path], copied: Sequence[Path]) -> None:
     if saved:
         print(f"Readable logs  {len(saved)} → logs/…/*.txt")
@@ -2220,6 +2380,8 @@ def _dispatch(
         return _undo(workspace, resolve(settings, tmux), rest)
     if command == "snap":
         return _snap_command(settings, workspace, tmux, rest)
+    if command == "evidence":
+        return _evidence_command(settings, workspace, tmux, rest)
     if command == "access":
         return _access_command(settings, workspace, tmux, rest)
     if command in {"proof", "flag"}:
