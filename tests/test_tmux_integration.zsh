@@ -156,15 +156,24 @@ for index, name in enumerate(names):
     ).stdout.strip()
     try:
         import time
+        pid = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{pane_pid}"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
         for _ in range(50):  # the pane's shell must finish its cd first
-            actual_directory = subprocess.run(
-                ["tmux", "display-message", "-p", "-t", pane, "#{pane_current_path}"],
-                text=True, capture_output=True, check=True,
-            ).stdout.strip()
-            if actual_directory == str(folder):
-                break
+            try:
+                if os.readlink(f"/proc/{pid}/cwd") == str(folder):
+                    break
+            except OSError:
+                pass
             time.sleep(0.1)
-        assert actual_directory == str(folder), (name, actual_directory)
+        assert os.readlink(f"/proc/{pid}/cwd") == str(folder), name
+        # What tmux reports for the pane; some tmux releases render "$" inside
+        # quotes with a backslash. The binding must pass it through unchanged.
+        reported = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{pane_current_path}"],
+            text=True, capture_output=True, check=True,
+        ).stdout.rstrip("\n")
         arguments = test_root / "popup-args"
         arguments.unlink(missing_ok=True)
         subprocess.run(
@@ -174,7 +183,9 @@ for index, name in enumerate(names):
         )
         argv = arguments.read_bytes().split(b"\0")[:-1]
         assert argv[:3] == [b"_internal", b"popup", pane.encode()], argv
-        assert argv[-1].decode() == str(folder), (name, argv)
+        assert argv[-1].decode() == reported, (name, argv, reported)
+        if reported == str(folder):
+            assert argv[-1].decode() == str(folder), (name, argv)
         assert not marker.exists(), f"popup binding executed directory syntax: {name}"
     finally:
         subprocess.run(["tmux", "kill-window", "-t", pane], check=True)
