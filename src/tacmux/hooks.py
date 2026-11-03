@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 from .config import Settings
-from .errors import ExternalToolError, ValidationError
+from .errors import ExternalToolError, TacmuxError, ValidationError
 from .workspace import Workspace, _private_directory
 from .tmux import TmuxService
 
@@ -203,6 +203,42 @@ def clipboard_copy(tmux: TmuxService, data: bytes) -> int:
     raise ExternalToolError("no trusted clipboard path is available")
 
 
+def _cached_access(
+    settings: Settings, tmux: TmuxService, session: str, root: str, target: str
+) -> str:
+    """Target Access from SITREP, re-read only when the SITREP mtime changes."""
+    if not target:
+        return ""
+    workspace = Workspace(settings)
+    try:
+        path = workspace.sitrep_path(Path(root))
+        stamp = str(path.stat().st_mtime_ns)
+    except (OSError, TacmuxError, ValueError):
+        return ""
+    cached = tmux.run(
+        ["show-option", "-qv", "-t", f"={session}:", "@tacmux_status_cache"],
+        check=False,
+    ).stdout.strip()
+    cached_stamp, _, cached_access = cached.partition("|")
+    if cached_stamp == stamp and cached_access:
+        return cached_access
+    try:
+        access = workspace.target_details(Path(root), target)["Access"][0] or "none"
+    except (OSError, TacmuxError, ValueError):
+        return ""
+    tmux.run(
+        [
+            "set-option",
+            "-t",
+            f"={session}:",
+            "@tacmux_status_cache",
+            f"{stamp}|{access}",
+        ],
+        check=False,
+    )
+    return access
+
+
 def status_segment(settings: Settings, tmux: TmuxService) -> str:
     if not os.environ.get("TMUX"):
         return ""
@@ -210,17 +246,26 @@ def status_segment(settings: Settings, tmux: TmuxService) -> str:
         [
             "display-message",
             "-p",
-            "#{@tacmux_target_name}\t#{@tacmux_root}\t#{pane_pipe}",
+            "#{@tacmux_target_name}\t#{@tacmux_root}\t#{pane_pipe}\t#S",
         ],
         check=False,
     )
-    name, separator, remainder = result.stdout.rstrip("\r\n").partition("\t")
-    if not separator:
+    fields = result.stdout.rstrip("\r\n").split("\t")
+    if len(fields) < 3:
         return ""
-    root, separator, active = remainder.partition("\t")
+    name, root, active = fields[0], fields[1], fields[2]
+    session = fields[3] if len(fields) > 3 else ""
     if not root:
         return ""
     state = "LOG" if active == "1" else "---"
     color = "green,bold" if active == "1" else "yellow"
     label = (name or Path(root).name).replace("#", "").replace("\n", " ")
+    access = _cached_access(settings, tmux, session, root, name) if session else ""
+    if access:
+        access_style = "yellow,bold" if access == "none" else color
+        access = access.replace("#", "")
+        return (
+            f"#[fg={color}][{label} · #[fg={access_style}]{access}"
+            f"#[fg={color}] · {state}]#[default]"
+        )
     return f"#[fg={color}][{label} {state}]#[default]"

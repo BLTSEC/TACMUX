@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import subprocess
 
+from tacmux import __version__
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -174,7 +176,7 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
     version = subprocess.run(
         [str(command), "version"], env=env, text=True, capture_output=True, check=True
     )
-    assert version.stdout.strip() == "tacmux 3.0.0"
+    assert version.stdout.strip() == f"tacmux {__version__}"
 
     subprocess.run([str(command), "init", "ACME"], env=env, text=True, check=True)
     evidence = workspace / "ACME/targets/operator-evidence.txt"

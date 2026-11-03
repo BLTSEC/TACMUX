@@ -19,3 +19,7 @@ class ExternalToolError(TacmuxError):
 
 class SafetyError(TacmuxError):
     """A containment or destructive-operation guard rejected an action."""
+
+
+class NonInteractiveError(ValidationError):
+    """A prompt was required but no interactive terminal is available."""

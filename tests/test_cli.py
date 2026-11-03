@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tacmux import sitrep
+from tacmux import __version__, sitrep
 from tacmux.cli import main
 from tacmux.workspace import CaptureRecord
 
@@ -15,9 +15,9 @@ def _configure(monkeypatch, settings):
 def test_version_help_and_unknown(monkeypatch, settings, capsys):
     _configure(monkeypatch, settings)
     assert main(["version"]) == 0
-    assert "3.0.0" in capsys.readouterr().out
+    assert __version__ in capsys.readouterr().out
     assert main(["help"]) == 0
-    assert "tacmux log" in capsys.readouterr().out
+    assert "tm log" in capsys.readouterr().out
     assert main(["unknown"]) == 1
     assert "unknown command" in capsys.readouterr().err
 

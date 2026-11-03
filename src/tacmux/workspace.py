@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
@@ -30,6 +31,7 @@ from . import sitrep
 
 
 TARGET_DIRECTORIES = ("scans", "payloads", "loot", "screenshots", "working")
+UNDO_LIMIT = 25
 OUTCOMES = ("info", "success", "partial", "failed")
 TARGET_STATUSES = ("new", "active", "blocked", "complete")
 ACCESS_LEVELS = ("none", "authenticated", "user", "admin", "system", "domain")
@@ -125,6 +127,7 @@ def _atomic_write(path: Path, text: str) -> None:
 class Workspace:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.change_label = ""
 
     def initialize(self) -> None:
         _private_directory(self.settings.workspace)
@@ -323,6 +326,7 @@ class Workspace:
         updated: str,
         *,
         allow_reference_problems: bool = False,
+        journal: bool = True,
     ) -> str:
         if not updated.endswith("\n"):
             updated += "\n"
@@ -339,6 +343,8 @@ class Workspace:
             raise ConflictError("SITREP changed in another editor; retry the command")
         os.chmod(path, 0o600)
         if updated != previous:
+            if journal:
+                self._journal_change(root, previous, updated)
             try:
                 _atomic_write(path, updated)
             except OSError:
@@ -359,6 +365,60 @@ class Workspace:
                 file=sys.stderr,
             )
         return updated
+
+    # Undo journal ---------------------------------------------------------
+    # Each committed change stores the previous SITREP and a hash of the new
+    # one. Undo restores only while SITREP still matches that hash, so manual
+    # Obsidian or $EDITOR work is never overwritten.
+
+    def _undo_directory(self, root: Path) -> Path:
+        directory = self._contained(root, ".tacmux", "undo")
+        _private_directory(directory)
+        return directory
+
+    def _journal_change(self, root: Path, previous: str, updated: str) -> None:
+        try:
+            directory = self._undo_directory(root)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            entry = {
+                "time": utc_now(),
+                "label": self.change_label or "TACMUX change",
+                "before": previous,
+                "after_sha256": hashlib.sha256(updated.encode()).hexdigest(),
+            }
+            _atomic_write(directory / f"{stamp}.json", json.dumps(entry))
+            entries = sorted(directory.glob("*.json"))
+            for stale in entries[:-UNDO_LIMIT]:
+                stale.unlink(missing_ok=True)
+        except (OSError, TacmuxError) as exc:
+            print(f"tacmux: undo journal not written: {exc}", file=sys.stderr)
+
+    def last_change(self, root: Path) -> tuple[Path, dict] | None:
+        directory = self._undo_directory(root)
+        entries = sorted(directory.glob("*.json"))
+        if not entries:
+            return None
+        path = entries[-1]
+        try:
+            return path, json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValidationError(f"undo journal entry is unreadable: {path}") from exc
+
+    def undo_last_change(self, root: Path) -> dict:
+        with self.locked(root):
+            change = self.last_change(root)
+            if change is None:
+                raise ValidationError("nothing to undo")
+            path, entry = change
+            current = self.read(root)
+            if hashlib.sha256(current.encode()).hexdigest() != entry["after_sha256"]:
+                raise ConflictError(
+                    "SITREP changed after that TACMUX change (manual or other edit); "
+                    "undo refused — fix it with tm sitrep or tm log edit"
+                )
+            self._commit(root, current, entry["before"], journal=False)
+            path.unlink(missing_ok=True)
+        return entry
 
     def _target_path(self, root: Path, target: str) -> Path:
         target = validate_target_name(target)

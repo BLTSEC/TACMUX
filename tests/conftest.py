@@ -8,6 +8,14 @@ from tacmux.config import Settings
 from tacmux.workspace import Workspace
 
 
+@pytest.fixture(autouse=True)
+def interactive_terminal(monkeypatch):
+    """Tests drive prompts through patched input/fzf; pretend a terminal exists."""
+    monkeypatch.delenv("TACMUX_NONINTERACTIVE", raising=False)
+    monkeypatch.setattr("tacmux.interaction.text_input_available", lambda: True)
+    monkeypatch.setattr("tacmux.interaction.picker_available", lambda: True)
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(

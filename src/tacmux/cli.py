@@ -9,13 +9,14 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from . import __version__, sitrep
 from .config import Settings, load_settings
 from .context import Context, resolve
 from .discovery import create_reviewed_targets, review_candidates, run_host_discovery
 from .errors import TacmuxError, ValidationError
+from .help import USAGE, command_help, known_help_topics, wants_help
 from .hooks import LogController, clipboard_copy, status_segment
 from .interaction import (
     ask,
@@ -27,6 +28,16 @@ from .interaction import (
     open_editor,
 )
 from .tmux import TmuxService
+from .vocab import (
+    ACCESS_ALIASES,
+    FIELD_ALIASES,
+    LOG_OUTCOME_SHORTCUTS,
+    OUTCOME_ALIASES,
+    STATUS_ALIASES,
+    AmbiguousWordError,
+    is_word,
+    match_word,
+)
 from .workspace import (
     ACCESS_LEVELS,
     OUTCOMES,
@@ -35,38 +46,6 @@ from .workspace import (
     parse_host_candidates,
     parse_nmap_ports,
 )
-
-
-USAGE = """TACMUX — lean tmux-native engagement workspaces
-
-Usage:
-  tacmux                         Switch engagement/target with fzf
-  tacmux init [NAME]             Create or open an engagement
-  tacmux switch                  Switch engagement/target with fzf
-  tacmux stop [TARGET]           Stop a target or operations session
-  tacmux target add [NAME] [IP]  Create a target and file tree
-  tacmux target update [TARGET] [FIELD] [VALUE|--clear]
-  tacmux target export [--all|--none|TARGET...]
-  tacmux target rename [OLD] [NEW]
-  tacmux target delete [TARGET]
-  tacmux status [TARGET]         Show target or engagement status
-  tacmux sitrep [SECTION]        Edit SITREP, optionally at a heading
-  tacmux sitrep sync             Upgrade, validate, and repair SITREP
-  tacmux log [OUTCOME] [-c] [-i IMAGE] [TEXT...]
-  tacmux done [-c] [-i IMAGE] [TEXT...]
-  tacmux log edit [EVENT_ID]     Edit the log or jump to one event
-  tacmux done --capture-id ID [TEXT...]
-  tacmux history [TARGET]        Show Operations Log history
-  tacmux creds [view [ID]|add|confirm] View or confirm working credentials
-  tacmux ports [TARGET]          View normalized target ports
-  tacmux ports add [TARGET] [FILE]
-  tacmux todo [add|done|reopen]  View or update planned work
-  tacmux cleanup [add|done|reopen]
-  tacmux discover [nmap|hosts|netexec] [INPUT]
-  tacmux health                  Check required and optional tools
-  tacmux clip                    Copy stdin through a trusted clipboard path
-  tacmux version                 Print the version
-"""
 
 
 def _settings_services() -> tuple[Settings, Workspace, TmuxService]:
@@ -114,6 +93,13 @@ def _completion_values(arguments: Sequence[str]) -> int:
             elif kind in {"todo", "cleanup"}:
                 tasks = sitrep.read_tasks(workspace.read(context.root), kind.upper())
                 values = [task.identifier for task in tasks if not task.complete]
+            elif kind == "port":
+                text = workspace.read(context.root)
+                values = [
+                    row[0]
+                    for target in ([context.target] if context.target else targets)
+                    for row in sitrep.read_target(text, target, "PORTS")
+                ]
             elif kind in {"todo_done", "cleanup_done"}:
                 name = kind.removesuffix("_done").upper()
                 tasks = sitrep.read_tasks(workspace.read(context.root), name)
@@ -132,22 +118,53 @@ def _target_choice(workspace: Workspace, root: Path, default: str = "") -> str:
     return choose([(name, name) for name in targets], "Target> ", default=default)
 
 
+def _recent_target(workspace: Workspace, root: Path) -> str:
+    targets = set(workspace.targets(root))
+    for event in reversed(sitrep.read_events(workspace.read(root))):
+        if event.target in targets:
+            return event.target
+    return ""
+
+
 def _record_target(workspace: Workspace, context: Context, *, interactive: bool) -> str:
-    default = context.target or "ENGAGEMENT"
-    if not interactive:
-        return default
+    # Inside a target session the entry belongs to that target; only the
+    # operations session needs to ask which target (or ENGAGEMENT) it is for.
+    if context.target or not interactive:
+        return context.target or "ENGAGEMENT"
+    default = context.target or _recent_target(workspace, context.root) or "ENGAGEMENT"
     choices = [("ENGAGEMENT", "ENGAGEMENT")]
     choices.extend((name, name) for name in workspace.targets(context.root))
     return choose(choices, "Record for> ", default=default)
 
 
-def _switch(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
+def resolve_word(
+    word: str,
+    choices: Sequence[str],
+    aliases: Mapping[str, str] | None,
+    label: str,
+) -> str:
+    """Match a vocabulary word; on ambiguity open a picker pre-filtered with it."""
+    try:
+        return match_word(word, choices, aliases, label)
+    except AmbiguousWordError as exc:
+        options = exc.candidates or tuple(choices)
+        return choose(
+            [(value, value) for value in options],
+            f"{label.capitalize()}> ",
+            query=word if exc.candidates else "",
+        )
+
+
+SESSION_SEPARATOR = "\x1f"
+
+
+def _session_choices(workspace: Workspace, tmux: TmuxService) -> list[tuple[str, str]]:
     live = {
         (str(session.root.resolve()), session.target): session
         for session in tmux.sessions()
     }
     choices: list[tuple[str, str]] = []
-    separator = "\x1f"
+    separator = SESSION_SEPARATOR
     for root in workspace.engagement_candidates():
         if not workspace.is_engagement(root):
             print(
@@ -176,10 +193,18 @@ def _switch(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
                     f"{root}{separator}{target}",
                 )
             )
-    selected = choose(choices, "Session> ")
-    root_value, _, target = selected.partition(separator)
+    return choices
+
+
+def _attach_selection(tmux: TmuxService, selected: str) -> int:
+    root_value, _, target = selected.partition(SESSION_SEPARATOR)
     session = tmux.start(Path(root_value), target)
     return tmux.attach(session)
+
+
+def _switch(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
+    selected = choose(_session_choices(workspace, tmux), "Session> ")
+    return _attach_selection(tmux, selected)
 
 
 def _stop(workspace: Workspace, tmux: TmuxService, arguments: Sequence[str]) -> int:
@@ -236,6 +261,14 @@ def _target_command(
         return 0
     if action == "export":
         return _export_targets(workspace, context, rest)
+    if (
+        action == "update"
+        and rest
+        and not workspace.target_exists(context.root, rest[0])
+        and is_word(rest[0], tuple(TARGET_DETAIL_FIELDS), FIELD_ALIASES)
+    ):
+        # "tm target update access admin" inside a target session.
+        rest = [context.target or _target_choice(workspace, context.root), *rest]
     old = rest[0] if rest else context.target
     if not old:
         old = _target_choice(workspace, context.root)
@@ -312,6 +345,9 @@ REQUIRED_TARGET_FIELDS = {"Endpoint", "Status", "Capture Route"}
 STOPPED_ONLY_TARGET_FIELDS = {"Endpoint", "Capture Route"}
 
 
+PRIMARY_TARGET_FIELDS = ("status", "access", "principal", "method", "os", "hostnames")
+
+
 def _interactive_target_value(field: str, current: str) -> str:
     if field == "Status":
         return choose(
@@ -346,7 +382,37 @@ def _interactive_target_value(field: str, current: str) -> str:
         )
         if mode == "clear":
             return ""
-    return ask(field, default=current, required=field in REQUIRED_TARGET_FIELDS)
+    return ask(
+        field,
+        default=current,
+        required=field in REQUIRED_TARGET_FIELDS,
+        prefill=True,
+    )
+
+
+def _choose_target_field(details: Mapping[str, tuple[str, str]]) -> str:
+    def row(key: str) -> tuple[str, str]:
+        label = TARGET_DETAIL_FIELDS[key]
+        return (f"{label:14} {details[label][0] or '-'}", key)
+
+    selected = choose(
+        [*(row(key) for key in PRIMARY_TARGET_FIELDS), ("More…", "")],
+        "Target field> ",
+    )
+    if selected:
+        return selected
+    return choose(
+        [row(key) for key in TARGET_DETAIL_FIELDS if key not in PRIMARY_TARGET_FIELDS],
+        "Target field> ",
+    )
+
+
+def _typed_target_value(field: str, value: str) -> str:
+    if field == "Status":
+        return resolve_word(value, TARGET_STATUSES, STATUS_ALIASES, "status")
+    if field == "Access":
+        return resolve_word(value, ACCESS_LEVELS, ACCESS_ALIASES, "access")
+    return value
 
 
 def _update_target(
@@ -359,28 +425,20 @@ def _update_target(
     details = workspace.target_details(context.root, target)
     if arguments:
         field_key, *value_parts = arguments
-        field = TARGET_DETAIL_FIELDS.get(field_key.casefold())
-        if field is None:
-            raise ValidationError(
-                "target field must be: " + ", ".join(TARGET_DETAIL_FIELDS)
-            )
+        key = resolve_word(
+            field_key, tuple(TARGET_DETAIL_FIELDS), FIELD_ALIASES, "target field"
+        )
+        field = TARGET_DETAIL_FIELDS[key]
         if not value_parts:
-            raise ValidationError("target update requires a value or --clear")
-        if value_parts == ["--clear"]:
+            value = _interactive_target_value(field, details[field][0])
+        elif value_parts == ["--clear"]:
             if field in REQUIRED_TARGET_FIELDS:
                 raise ValidationError(f"{field} cannot be cleared")
             value = ""
         else:
-            value = " ".join(value_parts)
+            value = _typed_target_value(field, " ".join(value_parts))
     else:
-        field_key = choose(
-            [
-                (f"{label:14} {details[label][0] or '-'}", key)
-                for key, label in TARGET_DETAIL_FIELDS.items()
-            ],
-            "Target field> ",
-        )
-        field = TARGET_DETAIL_FIELDS[field_key]
+        field = TARGET_DETAIL_FIELDS[_choose_target_field(details)]
         value = _interactive_target_value(field, details[field][0])
     if field in STOPPED_ONLY_TARGET_FIELDS:
         tmux.require_stopped(context.root, target)
@@ -509,10 +567,10 @@ def _log_command(
     tmux: TmuxService,
     arguments: Sequence[str],
     *,
-    force_success: bool = False,
+    forced_outcome: str = "",
 ) -> int:
     context = resolve(settings, tmux)
-    if arguments and arguments[0] == "edit" and not force_success:
+    if arguments and arguments[0] == "edit" and not forced_outcome:
         if len(arguments) > 2 or (
             len(arguments) == 2 and not re.fullmatch(r"E\d{3,}", arguments[1])
         ):
@@ -550,17 +608,22 @@ def _log_command(
         position += 1
     interactive = not words
     target = _record_target(workspace, context, interactive=interactive)
-    if force_success:
-        outcome = "success"
-        summary = " ".join(words).strip() if words else ask("Completed step")
+    if forced_outcome:
+        outcome = forced_outcome
+        label = "Completed step" if forced_outcome == "success" else "Failed step"
+        summary = " ".join(words).strip() if words else ask(label)
     elif interactive:
         outcome = choose(
             [(value, value) for value in OUTCOMES], "Outcome> ", default="info"
         )
         summary = ask("Summary")
     else:
-        outcome = words[0] if words[0] in OUTCOMES else "info"
-        summary_words = words[1:] if words[0] in OUTCOMES else words
+        first = words[0]
+        explicit = first if first in OUTCOMES else LOG_OUTCOME_SHORTCUTS.get(first, "")
+        outcome = explicit or "info"
+        summary_words = words[1:] if explicit else words
+        if explicit and not summary_words:
+            summary_words = [ask("Summary")]
         summary = " ".join(summary_words).strip()
     if not summary:
         raise ValidationError("summary cannot be empty")
@@ -589,13 +652,26 @@ def _log_command(
     return 0
 
 
-def _history(workspace: Workspace, context: Context, target: str = "") -> None:
-    if target:
-        target = workspace.canonical_target(context.root, target)
+def _history(workspace: Workspace, context: Context, arguments: Sequence[str]) -> None:
+    target = ""
+    outcome = ""
+    values = list(arguments)
+    while values:
+        value = values.pop(0)
+        if value == "--outcome":
+            if not values:
+                raise ValidationError("--outcome requires " + ", ".join(OUTCOMES))
+            outcome = match_word(values.pop(0), OUTCOMES, OUTCOME_ALIASES, "outcome")
+        elif not target:
+            target = workspace.canonical_target(context.root, value)
+        else:
+            raise ValidationError("history accepts one target and --outcome")
     events = sitrep.read_events(workspace.read(context.root))
     rows = [event.row() for event in reversed(events)]
     if target:
         rows = [row for row in rows if row[1] == target]
+    if outcome:
+        rows = [row for row in rows if row[2] == outcome]
     print(format_table(sitrep.NARRATIVE, rows) if rows else "No operations logged.")
 
 
@@ -651,39 +727,107 @@ def _credential_command(
             context.root, principal, secret, secret_type, source, notes
         )
         print(f"Added {identifier} ({principal}, {secret_type})")
+        if not supplied and confirm("Works somewhere now?", default=True):
+            return _confirm_credential(workspace, context, [identifier])
         return 0
     if action == "confirm":
-        credentials = sitrep.read_global(text, "CREDENTIALS")
-        credential = (
-            rest[0]
-            if rest
-            else choose(
-                [(f"{row[0]}  {row[1]}  {row[2]}", row[0]) for row in credentials],
-                "Credential> ",
+        return _confirm_credential(workspace, context, rest)
+    raise ValidationError("creds supports view, add, or confirm")
+
+
+def _service_label(row: Sequence[str]) -> str:
+    port, protocol, _state, service = row[0], row[1], row[2], row[3]
+    suffix = f"/{protocol}" if protocol and protocol != "tcp" else ""
+    return f"{service or 'unknown'} :{port}{suffix}"
+
+
+def _port_services(workspace: Workspace, root: Path, targets: Sequence[str]):
+    text = workspace.read(root)
+    seen: dict[str, tuple[str, str]] = {}
+    for target in targets:
+        for row in sitrep.read_target(text, target, "PORTS"):
+            if row[2] and row[2] != "open":
+                continue
+            label = _service_label(row)
+            version = row[4] if len(row) > 4 else ""
+            seen.setdefault(label, (f"{label:20} {version}".rstrip(), label))
+    return list(seen.values())
+
+
+def _service_from_token(token: str, services: Sequence[tuple[str, str]]) -> str:
+    """Map '8000', 'tcp:8000', or 'http' to a Ports label; else keep the text."""
+    value = token.strip()
+    port = value.rsplit(":", 1)[-1].rsplit("/", 1)[0] if value else ""
+    for _display, label in services:
+        name, _, rest = label.partition(" :")
+        if port.isdigit() and rest.split("/")[0] == port:
+            return label
+    matches = [label for _display, label in services if label.startswith(value + " :")]
+    return matches[0] if len(matches) == 1 else value
+
+
+def _choose_service(workspace: Workspace, root: Path, targets: Sequence[str]) -> str:
+    services = _port_services(workspace, root, targets)
+    selected = choose([*services, ("Other…", "")], "Service> ")
+    return selected or ask("Service")
+
+
+def _confirm_credential(
+    workspace: Workspace, context: Context, arguments: Sequence[str]
+) -> int:
+    """creds confirm [ID] [TARGET…] [ACCESS] [SERVICE] [NOTES…]; asks for gaps."""
+    text = workspace.read(context.root)
+    credentials = sitrep.read_global(text, "CREDENTIALS")
+    if not credentials:
+        raise ValidationError("no credentials recorded; add one with tm creds add")
+    rest = list(arguments)
+    prompted = False
+    if rest and re.fullmatch(r"C\d{3,}", rest[0]):
+        credential = rest.pop(0)
+    else:
+        credential = choose(
+            [(f"{row[0]}  {row[1]}  {row[2]}", row[0]) for row in credentials],
+            "Credential> ",
+        )
+        prompted = True
+    targets: list[str] = []
+    while rest and workspace.target_exists(context.root, rest[0]):
+        targets.append(workspace.canonical_target(context.root, rest.pop(0)))
+    if not targets:
+        if context.target:
+            targets = [context.target]
+        else:
+            targets = choose_many(
+                [(name, name) for name in workspace.targets(context.root)],
+                "Works on (Tab selects several)> ",
             )
+            prompted = True
+    confirmable = tuple(value for value in ACCESS_LEVELS if value != "none")
+    if rest and is_word(rest[0], confirmable, ACCESS_ALIASES):
+        access = match_word(rest.pop(0), confirmable, ACCESS_ALIASES, "access")
+    else:
+        access = choose(
+            [(value, value) for value in confirmable],
+            "Confirmed access> ",
+            default="authenticated",
         )
-        target = (
-            rest[1]
-            if len(rest) > 1
-            else _target_choice(workspace, context.root, context.target)
-        )
-        access = (
-            rest[2]
-            if len(rest) > 2
-            else choose(
-                [(value, value) for value in ACCESS_LEVELS if value != "none"],
-                "Confirmed access> ",
-                default="authenticated",
-            )
-        )
-        service = rest[3] if len(rest) > 3 else ask("Service")
-        notes = " ".join(rest[4:]) if len(rest) > 4 else ask("Notes", required=False)
+        prompted = True
+    if rest:
+        services = _port_services(workspace, context.root, targets)
+        service = _service_from_token(rest.pop(0), services)
+    else:
+        service = _choose_service(workspace, context.root, targets)
+        prompted = True
+    if rest:
+        notes = " ".join(rest)
+    else:
+        notes = ask("Notes", required=False) if prompted else ""
+    for target in targets:
         workspace.confirm_credential(
             context.root, credential, target, access, service, notes
         )
         print(f"Confirmed {credential} on {target} via {service} ({access})")
-        return 0
-    raise ValidationError("creds supports view, add, or confirm")
+    return 0
 
 
 def _input_text(settings: Settings, source: str = "") -> str:
@@ -927,6 +1071,36 @@ def _internal(arguments: Sequence[str]) -> int:
     if command == "status-segment":
         print(status_segment(settings, tmux), end="")
         return 0
+    if command == "popup":
+        if len(rest) != 3:
+            raise ValidationError("popup requires pane, client, and directory")
+        pane, client, directory = rest
+        executable = shutil.which("tacmux") or str(Path.home() / ".local/bin/tacmux")
+        tmux.run(
+            [
+                "display-popup",
+                "-E",
+                "-c",
+                client,
+                "-t",
+                pane,
+                "-d",
+                directory,
+                "-w",
+                "80%",
+                "-h",
+                "75%",
+                "-e",
+                f"TMUX_PANE={pane}",
+                "-e",
+                "TACMUX_POPUP=1",
+                executable,
+                "menu",
+            ],
+            check=False,
+            capture_output=False,
+        )
+        return 0
     if command == "hooks" and rest == ["repair"]:
         print(tmux.repair_autolog_hooks())
         return 0
@@ -952,11 +1126,297 @@ def _internal(arguments: Sequence[str]) -> int:
     raise ValidationError(f"unknown internal command: {command}")
 
 
+def _palette_target(workspace: Workspace, context: Context) -> str:
+    if context.target:
+        return context.target
+    return _target_choice(
+        workspace, context.root, _recent_target(workspace, context.root)
+    )
+
+
+def _import_nmap_file(
+    settings: Settings, workspace: Workspace, tmux: TmuxService, context: Context
+) -> int:
+    target = _palette_target(workspace, context)
+    folder = context.root / "targets" / target
+    candidates = {
+        path
+        for pattern in ("*.nmap", "scans/*.nmap", "scans/*.txt", "*.txt")
+        for path in folder.glob(pattern)
+        if path.is_file() and not path.is_symlink()
+    }
+    if not candidates:
+        raise ValidationError(
+            f"no Nmap output under {folder}; run nmap -oA or pipe into tm ports add"
+        )
+    ordered = sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)
+    selected = choose(
+        [(str(path.relative_to(folder)), str(path)) for path in ordered],
+        "Nmap output> ",
+    )
+    return _ports_command(settings, workspace, tmux, ["add", target, selected])
+
+
+def _add_hostname(workspace: Workspace, tmux: TmuxService, context: Context) -> int:
+    target = _palette_target(workspace, context)
+    details = workspace.target_details(context.root, target)
+    endpoint = details["Endpoint"][0]
+    current = details["Hostnames"][0].split()
+    added = [name for name in re.split(r"[\s,]+", ask("Hostname(s)")) if name]
+    names = list(dict.fromkeys([*current, *added]))
+    workspace.set_target_detail(context.root, target, "Hostnames", " ".join(names))
+    print(f"Updated {target} Hostnames: {' '.join(names)}")
+    command = f"echo '{endpoint} {' '.join(added)}' | sudo tee -a /etc/hosts"
+    try:
+        clipboard_copy(tmux, command.encode())
+        print(f"Copied to clipboard: {command}")
+    except TacmuxError:
+        print(f"Add it to /etc/hosts with: {command}")
+    return 0
+
+
+def _edit_log_entry(
+    settings: Settings, workspace: Workspace, tmux: TmuxService, context: Context
+) -> int:
+    events = sitrep.read_events(workspace.read(context.root))
+    if not events:
+        raise ValidationError("the Operations Log is empty")
+    selected = choose(
+        [
+            (
+                f"{event.identifier}  {event.timestamp}  {event.target:12} "
+                f"{event.outcome:8} {event.summary[:60]}",
+                event.identifier,
+            )
+            for event in reversed(events[-30:])
+        ],
+        "Entry> ",
+    )
+    return _log_command(settings, workspace, tmux, ["edit", selected])
+
+
+def _palette_header(workspace: Workspace, context: Context) -> str:
+    if not context.target:
+        return f"{context.root.name} / OPS"
+    details = workspace.target_details(context.root, context.target)
+    return (
+        f"{context.root.name} / {context.target} · {details['Endpoint'][0]} · "
+        f"Access: {details['Access'][0]} · Status: {details['Status'][0]}"
+    )
+
+
+def _wait_in_popup() -> None:
+    if os.environ.get("TACMUX_POPUP") != "1":
+        return
+    try:
+        input("\n[Enter] to close ")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+def _palette(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
+    from .palette import ACTION_KEYS, ACTIONS, SESSION_PREFIX
+
+    context = resolve(settings, tmux)
+    choices: list[tuple[str, str, str]] = [
+        (action.label, action.key, action.preview()) for action in ACTIONS
+    ]
+    choices.extend(
+        (
+            f"⇄  {display}",
+            f"{SESSION_PREFIX}{value}",
+            "Switch to this session (starts it when stopped).\\n\\n"
+            "Direct command:\\n  tm switch   ·   Prefix+E",
+        )
+        for display, value in _session_choices(workspace, tmux)
+    )
+    selected = choose(
+        choices,
+        "TACMUX> ",
+        header=_palette_header(workspace, context),
+    )
+    if selected.startswith(SESSION_PREFIX):
+        return _attach_selection(tmux, selected.removeprefix(SESSION_PREFIX))
+    action = ACTION_KEYS[selected]
+    try:
+        if action.key == "ports":
+            result = _import_nmap_file(settings, workspace, tmux, context)
+        elif action.key == "hostname":
+            result = _add_hostname(workspace, tmux, context)
+        elif action.key == "edit_entry":
+            result = _edit_log_entry(settings, workspace, tmux, context)
+        else:
+            command, *rest = action.argv
+            result = _dispatch(settings, workspace, tmux, command, rest)
+    except TacmuxError as exc:
+        print(f"tacmux: {exc}", file=sys.stderr)
+        result = 1
+    _wait_in_popup()
+    return result
+
+
+def _default_entry(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
+    """Bare `tm`: the palette inside TACMUX sessions, the switcher elsewhere."""
+    if os.environ.get("TMUX") and tmux.current_context()[0] is not None:
+        return _palette(settings, workspace, tmux)
+    return _switch(settings, workspace, tmux)
+
+
+def _change_label(command: str, rest: Sequence[str]) -> str:
+    if command == "creds":  # never copy secrets into the journal label
+        return f"tm creds {rest[0] if rest else ''}".strip()
+    text = " ".join(["tm", command, *rest])
+    return text if len(text) <= 120 else text[:119] + "…"
+
+
+def _undo_preview(before: str, current: str) -> list[str]:
+    import difflib
+
+    lines: list[str] = []
+    for line in difflib.unified_diff(
+        current.splitlines(), before.splitlines(), lineterm="", n=0
+    ):
+        if line.startswith(("---", "+++", "@@")) or not line[1:].strip():
+            continue
+        if line[1:].startswith("<!--"):
+            continue
+        credential = re.match(r"^([+-])\| (C\d{3,}) ", line)
+        if credential:
+            line = f"{credential.group(1)} credential {credential.group(2)} row"
+        lines.append(line[:110])
+    return lines
+
+
+def _undo(workspace: Workspace, context: Context, arguments: Sequence[str]) -> int:
+    change = workspace.last_change(context.root)
+    if change is None:
+        print("Nothing to undo.")
+        return 0
+    _path, entry = change
+    current = workspace.read(context.root)
+    print(f"Last change: {entry.get('label', '-')}  ({entry.get('time', '-')})")
+    preview = _undo_preview(entry["before"], current)
+    for line in preview[:14]:
+        print(f"  {line}")
+    if len(preview) > 14:
+        print(f"  … {len(preview) - 14} more line(s)")
+    if not ({"--yes", "-y"} & set(arguments)) and not confirm("Undo this change?"):
+        raise ValidationError("undo cancelled")
+    workspace.undo_last_change(context.root)
+    print(f"Undid: {entry.get('label', '-')}")
+    images = re.findall(r"\]\(<(images/[^>]+)>\)", current)
+    restored = set(re.findall(r"\]\(<(images/[^>]+)>\)", entry["before"]))
+    for image in sorted(set(images) - restored):
+        print(f"Image left on disk: {image}")
+    return 0
+
+
+def _dispatch(
+    settings: Settings,
+    workspace: Workspace,
+    tmux: TmuxService,
+    command: str,
+    rest: list[str],
+) -> int:
+    workspace.change_label = _change_label(command, rest)
+    if command == "menu":
+        return _palette(settings, workspace, tmux)
+    if command == "undo":
+        return _undo(workspace, resolve(settings, tmux), rest)
+    if command == "switch":
+        return _switch(settings, workspace, tmux)
+    if command == "init":
+        name = rest[0] if rest else ask("Engagement name")
+        root = workspace.create_engagement(name)
+        print(root)
+        if settings.sitrep_root and (root / "SITREP.md").is_symlink():
+            print(f"SITREP: {workspace.sitrep_path(root)}")
+            print(
+                "Warning: this external notes location receives raw credentials "
+                "stored in SITREP."
+            )
+        print("Run tacmux switch to enter the operations session.")
+        return 0
+    if command == "health":
+        return _health(settings, workspace, tmux)
+    if command == "stop":
+        return _stop(workspace, tmux, rest)
+    if command == "target":
+        return _target_command(settings, workspace, tmux, rest)
+    if command == "status":
+        context = resolve(settings, tmux)
+        _print_status(workspace, tmux, context, rest[0] if rest else "")
+        return 0
+    if command == "sitrep":
+        return _sitrep_command(settings, workspace, tmux, rest)
+    if command == "log":
+        return _log_command(settings, workspace, tmux, rest)
+    if command == "done":
+        return _log_command(settings, workspace, tmux, rest, forced_outcome="success")
+    if command == "fail":
+        return _log_command(settings, workspace, tmux, rest, forced_outcome="failed")
+    if command == "history":
+        context = resolve(settings, tmux)
+        _history(workspace, context, rest)
+        return 0
+    if command == "creds":
+        return _credential_command(workspace, resolve(settings, tmux), rest)
+    if command == "ports":
+        return _ports_command(settings, workspace, tmux, rest)
+    if command == "todo":
+        return _task_command(workspace, resolve(settings, tmux), rest, cleanup=False)
+    if command == "cleanup":
+        return _task_command(workspace, resolve(settings, tmux), rest, cleanup=True)
+    if command == "discover":
+        return _discover_command(settings, workspace, tmux, rest)
+    if command == "clip":
+        return clipboard_copy(tmux, sys.stdin.buffer.read())
+    raise ValidationError(f"unknown command: {command}\n\n{USAGE}")
+
+
+# Options each command accepts before the "--" sentinel. Everything else that
+# starts with "-" is refused so a mistyped flag is never recorded as data.
+COMMAND_OPTIONS: dict[str, frozenset[str]] = {
+    "log": frozenset({"-c", "--capture", "--capture-id", "-i", "--image"}),
+    "done": frozenset({"-c", "--capture", "--capture-id", "-i", "--image"}),
+    "fail": frozenset({"-c", "--capture", "--capture-id", "-i", "--image"}),
+    "target": frozenset({"--clear", "--all", "--none"}),
+    "history": frozenset({"--outcome"}),
+    "undo": frozenset({"--yes", "-y"}),
+}
+SENTINEL_AWARE = frozenset({"log", "done", "fail"})
+
+
+def _checked_arguments(command: str, arguments: Sequence[str]) -> list[str]:
+    allowed = COMMAND_OPTIONS.get(command, frozenset())
+    checked: list[str] = []
+    for index, value in enumerate(arguments):
+        if value == "--":
+            if command in SENTINEL_AWARE:
+                return [*checked, *arguments[index:]]
+            return [*checked, *arguments[index + 1 :]]
+        if value.startswith("-") and len(value) > 1 and value not in allowed:
+            raise ValidationError(
+                f"unknown option {value} for tm {command}; put -- before text "
+                f"that starts with '-' (see tm {command} --help)"
+            )
+        checked.append(value)
+    return checked
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
         if arguments and arguments[0] in {"help", "--help", "-h"}:
-            print(USAGE, end="")
+            topic = arguments[1] if len(arguments) > 1 else ""
+            print(command_help(topic) if topic else USAGE, end="")
+            return 0
+        if (
+            arguments
+            and arguments[0] in known_help_topics()
+            and wants_help(arguments[1:])
+        ):
+            print(command_help(arguments[0]), end="")
             return 0
         if arguments and arguments[0] in {"version", "--version", "-v"}:
             print(f"tacmux {__version__}")
@@ -967,56 +1427,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _completion_values(arguments[1:])
         settings, workspace, tmux = _settings_services()
         workspace.initialize()
-        if not arguments or arguments == ["switch"]:
+        if not arguments:
+            return _default_entry(settings, workspace, tmux)
+        if arguments == ["switch"]:
             return _switch(settings, workspace, tmux)
         command, *rest = arguments
-        if command == "init":
-            name = rest[0] if rest else ask("Engagement name")
-            root = workspace.create_engagement(name)
-            print(root)
-            if settings.sitrep_root and (root / "SITREP.md").is_symlink():
-                print(f"SITREP: {workspace.sitrep_path(root)}")
-                print(
-                    "Warning: this external notes location receives raw credentials "
-                    "stored in SITREP."
-                )
-            print("Run tacmux switch to enter the operations session.")
-            return 0
-        if command == "health":
-            return _health(settings, workspace, tmux)
-        if command == "stop":
-            return _stop(workspace, tmux, rest)
-        if command == "target":
-            return _target_command(settings, workspace, tmux, rest)
-        if command == "status":
-            context = resolve(settings, tmux)
-            _print_status(workspace, tmux, context, rest[0] if rest else "")
-            return 0
-        if command == "sitrep":
-            return _sitrep_command(settings, workspace, tmux, rest)
-        if command == "log":
-            return _log_command(settings, workspace, tmux, rest)
-        if command == "done":
-            return _log_command(settings, workspace, tmux, rest, force_success=True)
-        if command == "history":
-            context = resolve(settings, tmux)
-            _history(workspace, context, rest[0] if rest else "")
-            return 0
-        if command == "creds":
-            return _credential_command(workspace, resolve(settings, tmux), rest)
-        if command == "ports":
-            return _ports_command(settings, workspace, tmux, rest)
-        if command == "todo":
-            return _task_command(
-                workspace, resolve(settings, tmux), rest, cleanup=False
-            )
-        if command == "cleanup":
-            return _task_command(workspace, resolve(settings, tmux), rest, cleanup=True)
-        if command == "discover":
-            return _discover_command(settings, workspace, tmux, rest)
-        if command == "clip":
-            return clipboard_copy(tmux, sys.stdin.buffer.read())
-        raise ValidationError(f"unknown command: {command}\n\n{USAGE}")
+        rest = _checked_arguments(command, rest)
+        return _dispatch(settings, workspace, tmux, command, rest)
     except (KeyboardInterrupt, EOFError):
         print("tacmux: cancelled", file=sys.stderr)
         return 130

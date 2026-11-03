@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tacmux import __version__
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/release-preflight.py"
@@ -20,7 +22,7 @@ def run_preflight(*args: str) -> subprocess.CompletedProcess[str]:
 
 def test_current_release_tree_is_complete(tmp_path: Path) -> None:
     notes = tmp_path / "notes.md"
-    result = run_preflight("--version", "3.0.0", "--notes-output", str(notes))
+    result = run_preflight("--version", __version__, "--notes-output", str(notes))
 
     assert result.returncode == 0, result.stderr
     assert "### Changed" in notes.read_text()

@@ -13,6 +13,9 @@ _tacmux() {
   local command action
   local -a commands
   commands=(
+    'menu:action palette (bare tm inside a session)'
+    'fail:record a dead end or failed attempt'
+    'undo:revert the last TACMUX change to SITREP'
     'init:create or open an engagement'
     'switch:switch engagement or target session'
     'stop:stop a target or operations session'
@@ -28,7 +31,6 @@ _tacmux() {
     'cleanup:view, add, or complete cleanup work'
     'discover:identify and review hosts'
     'health:check TACMUX and its tools'
-    'clip:copy standard input to the clipboard'
     'version:show the TACMUX version'
     'help:show command help'
   )
@@ -43,8 +45,15 @@ _tacmux() {
     init)
       (( CURRENT == 3 )) && _tacmux_dynamic engagement
       ;;
-    stop|status|history)
+    stop|status)
       (( CURRENT == 3 )) && _tacmux_dynamic target
+      ;;
+    history)
+      if [[ "${words[CURRENT-1]}" == --outcome ]]; then
+        _values 'outcome' info success partial failed
+      else
+        _tacmux_dynamic target --outcome
+      fi
       ;;
     sitrep)
       if (( CURRENT == 3 )); then
@@ -58,7 +67,10 @@ _tacmux() {
       fi
       action="${words[3]}"
       case "$action" in
-        update|rename|delete)
+        update)
+          (( CURRENT == 4 )) && _tacmux_dynamic target endpoint network status hostnames role os access principal method route
+          ;;
+        rename|delete)
           (( CURRENT == 4 )) && _tacmux_dynamic target
           ;;
       esac
@@ -79,14 +91,14 @@ _tacmux() {
       ;;
     log)
       if (( CURRENT == 3 )); then
-        _values 'outcome, option, or action' info success partial failed edit -c --capture --capture-id -i --image
+        _values 'outcome, option, or action' info success partial failed f p s edit -c --capture --capture-id -i --image
       elif [[ "${words[3]}" == edit && CURRENT == 4 ]]; then
         _tacmux_dynamic event
       elif [[ "${words[CURRENT-1]}" == -i || "${words[CURRENT-1]}" == --image ]]; then
         _files
       fi
       ;;
-    done)
+    done|fail)
       if [[ "${words[CURRENT-1]}" == -i || "${words[CURRENT-1]}" == --image ]]; then
         _files
       else
@@ -103,8 +115,12 @@ _tacmux() {
         view:4) _tacmux_dynamic credential ;;
         add:4) _values 'credential type' password hash ;;
         confirm:4) _tacmux_dynamic credential ;;
-        confirm:5) _tacmux_dynamic target ;;
-        confirm:6) _values 'access level' authenticated user admin system domain ;;
+        confirm:*)
+          if (( CURRENT >= 5 )); then
+            _tacmux_dynamic target authenticated user admin system domain auth shell root
+            _tacmux_dynamic port
+          fi
+          ;;
       esac
       ;;
     ports)

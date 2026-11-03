@@ -6,53 +6,165 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 from typing import Iterable, Sequence
 
 from .config import Settings
-from .errors import ExternalToolError, ValidationError
+from .errors import ExternalToolError, NonInteractiveError, ValidationError
+
+NONINTERACTIVE_ENV = "TACMUX_NONINTERACTIVE"
 
 
-def ask(label: str, default: str = "", *, required: bool = True) -> str:
-    suffix = f" [{default}]" if default else ""
-    value = input(f"{label}{suffix}: ").strip()
-    value = value or default
+def _label(prompt: str) -> str:
+    return prompt.strip().rstrip(">:").strip().lower() or "value"
+
+
+def forced_noninteractive() -> bool:
+    return os.environ.get(NONINTERACTIVE_ENV, "").strip() not in {"", "0"}
+
+
+def text_input_available() -> bool:
+    """True when line prompts can read an operator's answer from stdin."""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def picker_available() -> bool:
+    """True when fzf can draw on the controlling terminal."""
+    try:
+        descriptor = os.open("/dev/tty", os.O_RDWR | getattr(os, "O_NOCTTY", 0))
+    except OSError:
+        return False
+    os.close(descriptor)
+    return True
+
+
+def require_interactive(label: str, *, picker: bool = False) -> None:
+    """Refuse to prompt from scripts, pipes, or agents; name the missing input."""
+    available = picker_available() if picker else text_input_available()
+    if forced_noninteractive() or not available:
+        raise NonInteractiveError(
+            f"missing {label}: pass it as an argument "
+            "(run the command with --help for its exact form)"
+        )
+
+
+def _prefilled_input(prompt: str, default: str) -> str:
+    try:
+        import readline
+    except ImportError:  # pragma: no cover - readline exists on supported Linux
+        return input(f"{prompt} [{default}]: ") or default
+    readline.set_startup_hook(lambda: readline.insert_text(default))
+    try:
+        return input(f"{prompt}: ")
+    finally:
+        readline.set_startup_hook()
+
+
+def ask(
+    label: str,
+    default: str = "",
+    *,
+    required: bool = True,
+    prefill: bool = False,
+) -> str:
+    """Prompt for one line; with prefill the default is editable in place."""
+    require_interactive(label.lower())
+    if prefill and default:
+        value = _prefilled_input(label, default).strip()
+    else:
+        try:
+            import readline  # noqa: F401  # enables line editing for input()
+        except ImportError:  # pragma: no cover
+            pass
+        suffix = f" [{default}]" if default else ""
+        value = input(f"{label}{suffix}: ").strip()
+        value = value or default
     if required and not value:
         raise ValidationError(f"{label.lower()} cannot be empty")
     return value
 
 
-def confirm(prompt: str) -> bool:
-    return input(f"{prompt} [y/N]: ").strip().casefold() in {"y", "yes"}
+def confirm(prompt: str, *, default: bool = False) -> bool:
+    require_interactive(f"confirmation for: {prompt}")
+    answer = input(f"{prompt} [{'Y/n' if default else 'y/N'}]: ").strip().casefold()
+    if not answer:
+        return default
+    return answer in {"y", "yes"}
+
+
+def _picker_argv(
+    binary: str,
+    prompt: str,
+    *,
+    header: str = "",
+    preview: bool = False,
+    query: str = "",
+) -> list[str]:
+    argv = [
+        binary,
+        "--delimiter=\t",
+        "--with-nth=1",
+        "--prompt",
+        prompt,
+        "--height=60%",
+        "--reverse",
+        "--border=rounded",
+    ]
+    if header:
+        argv.extend(["--header", header])
+    if preview:
+        argv.extend(
+            [
+                "--preview",
+                "printf '%b\\n' {3}",
+                "--preview-window=right,45%,wrap",
+            ]
+        )
+    if query:
+        argv.extend(["--query", query])
+    return argv
 
 
 def choose(
-    choices: Sequence[tuple[str, str]],
+    choices: Sequence[tuple[str, str]] | Sequence[tuple[str, str, str]],
     prompt: str,
     *,
     default: str = "",
+    header: str = "",
+    query: str = "",
 ) -> str:
-    """Select (display, value) with fzf, placing a default first."""
+    """Select (display, value[, preview]) with fzf, placing a default first."""
     if not choices:
         raise ValidationError(f"nothing is available for {prompt.rstrip(': ')}")
+    require_interactive(_label(prompt), picker=True)
     binary = shutil.which("fzf")
     if binary is None:
         raise ExternalToolError("fzf is required; install it before using pickers")
     ordered = list(choices)
     if default:
         ordered.sort(key=lambda item: item[1] != default)
-    payload = "".join(f"{display}\t{value}\n" for display, value in ordered)
+    preview = any(len(item) > 2 for item in ordered)
+    payload = "".join(
+        "\t".join(
+            [
+                item[0],
+                item[1],
+                *(
+                    [(item[2] if len(item) > 2 else "").replace("\t", " ")]
+                    if preview
+                    else []
+                ),
+            ]
+        )
+        + "\n"
+        for item in ordered
+    )
     result = subprocess.run(
-        [
-            binary,
-            "--delimiter=\t",
-            "--with-nth=1",
-            "--prompt",
-            prompt,
-            "--height=60%",
-            "--reverse",
-            "--border=rounded",
-        ],
+        _picker_argv(binary, prompt, header=header, preview=preview, query=query),
         input=payload,
         text=True,
         capture_output=True,
@@ -63,9 +175,10 @@ def choose(
     if result.returncode != 0:
         raise ExternalToolError((result.stderr or "fzf selection failed").strip())
     line = result.stdout.rstrip("\n")
-    _, separator, value = line.partition("\t")
+    _, separator, remainder = line.partition("\t")
     if not separator:
         raise ExternalToolError("fzf returned an invalid selection")
+    value, _, _preview = remainder.partition("\t")
     return value
 
 
@@ -73,6 +186,7 @@ def choose_many(choices: Sequence[tuple[str, str]], prompt: str) -> list[str]:
     """Select one or more values with fzf without exposing hidden columns."""
     if not choices:
         raise ValidationError(f"nothing is available for {prompt.rstrip(': ')}")
+    require_interactive(_label(prompt), picker=True)
     binary = shutil.which("fzf")
     if binary is None:
         raise ExternalToolError("fzf is required; install it before using pickers")
