@@ -144,15 +144,23 @@ for name in names:
     folder = test_root / name
     folder.mkdir()
     pane = subprocess.run(
+        # Pass the path through the environment: tmux versions differ in how
+        # they expand "$" and "#" inside -c, but never touch -e values.
         ["tmux", "new-window", "-d", "-P", "-F", "#{pane_id}",
-         "-t", "bootstrap:", "-c", str(folder).replace("#", "##"), "sleep 120"],
+         "-t", "bootstrap:", "-e", f"POPUP_TEST_DIR={folder}",
+         'cd "$POPUP_TEST_DIR" && exec sleep 120'],
         text=True, capture_output=True, check=True,
     ).stdout.strip()
     try:
-        actual_directory = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", pane, "#{pane_current_path}"],
-            text=True, capture_output=True, check=True,
-        ).stdout.strip()
+        import time
+        for _ in range(50):  # the pane's shell must finish its cd first
+            actual_directory = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", pane, "#{pane_current_path}"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip()
+            if actual_directory == str(folder):
+                break
+            time.sleep(0.1)
         assert actual_directory == str(folder), (name, actual_directory)
         arguments = test_root / "popup-args"
         arguments.unlink(missing_ok=True)
