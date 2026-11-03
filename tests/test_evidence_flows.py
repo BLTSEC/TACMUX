@@ -489,3 +489,101 @@ def test_proof_interactive_asks_before_raising_and_can_show_in_pane(
         "hostname; whoami; ip a; cat /root/proof.txt",
     ]
     assert scheduled == [("E001", "1.5")]
+
+
+# --- 2.6 tm close --------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_sessions(monkeypatch):
+    """Live sessions and pane programs keyed by target ('' = OPS)."""
+    state = {
+        "live": {"", "WEB01"},
+        "panes": {},
+        "stopped": [],
+        "snapped": [],
+        "inside": None,
+    }
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.target_running",
+        lambda self, root, target: target in state["live"],
+    )
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.session_name",
+        lambda self, root, target="": f"s-{target or 'ops'}",
+    )
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.panes",
+        lambda self, name: state["panes"].get(name, [("%1", "zsh")]),
+    )
+
+    def stop(self, root, target=""):
+        state["stopped"].append(target)
+        state["live"].discard(target)
+
+    monkeypatch.setattr("tacmux.tmux.TmuxService.stop", stop)
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.current_context",
+        lambda self: (state["inside"][0], state["inside"][1])
+        if state["inside"]
+        else (None, ""),
+    )
+    monkeypatch.setattr(
+        "tacmux.cli._snapshot",
+        lambda _s, _w, _t, _root, target, shells=True: state["snapped"].append(target)
+        or ([], []),
+    )
+    return state
+
+
+def test_close_yes_completes_snapshots_and_stops(
+    settings, workspace, web01, monkeypatch, fake_sessions, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    assert main(["close", "--yes", "--no-stop"]) == 0
+    assert workspace.target_details(web01, "WEB01")["Status"][0] == "complete"
+    assert fake_sessions["snapped"] == ["WEB01"] and fake_sessions["stopped"] == []
+    fake_sessions["panes"]["s-WEB01"] = [("%1", "zsh"), ("%2", "penelope")]
+    assert main(["close", "--yes"]) == 0
+    assert fake_sessions["stopped"] == ["WEB01"]
+    assert "running programs: %2 penelope" in capsys.readouterr().out
+
+
+def test_close_interactive_checklist_fixes_cleanup_and_keeps_busy_sessions(
+    settings, workspace, web01, monkeypatch, fake_sessions
+):
+    main = _cli(monkeypatch, settings, web01)
+    workspace.add_cleanup(web01, "WEB01", "Gerapy project evil_project")
+    fake_sessions["panes"]["s-WEB01"] = [("%2", "penelope")]
+    shown = []
+
+    def fake_choose(choices, prompt, **_kwargs):
+        shown.append([display for display, *_ in choices])
+        if prompt.startswith("Close WEB01"):
+            return "cleanup" if len(shown) == 1 else "continue"
+        if prompt.startswith("Complete"):
+            return "X001"
+        return "complete"  # Status>
+
+    monkeypatch.setattr("tacmux.cli.choose", fake_choose)
+    monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: "Rooted via cap_setuid")
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)
+    assert main(["close"]) == 0
+    assert any("Cleanup X001" in line and "release gate" in line for line in shown[0])
+    assert any("Access none" in line for line in shown[0])
+    text = workspace.read(web01)
+    assert sitrep.read_tasks(text, "CLEANUP")[0].complete
+    assert sitrep.read_events(text)[-1].summary == "Rooted via cap_setuid"
+    assert fake_sessions["stopped"] == []  # penelope still running → kept
+
+
+def test_engagement_close_stops_the_invoking_session_last(
+    settings, workspace, web01, monkeypatch, fake_sessions
+):
+    main = _cli(monkeypatch, settings, web01)
+    workspace.add_target(web01, "DC01", "192.0.2.20")
+    fake_sessions["live"] = {"", "WEB01", "DC01"}
+    fake_sessions["inside"] = (web01, "WEB01")
+    assert main(["close", "--engagement", "--yes"]) == 0
+    assert fake_sessions["stopped"] == ["DC01", "", "WEB01"]
+    assert fake_sessions["snapped"] == ["DC01", "WEB01", ""]

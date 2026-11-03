@@ -1546,6 +1546,8 @@ def _access_command(
     workspace: Workspace,
     tmux: TmuxService,
     arguments: Sequence[str],
+    *,
+    target: str = "",
 ) -> int:
     """tm access [LEVEL] [PRINCIPAL] [HOW…] [--via SERVICE] [--cred CID] [-c] [-s]"""
     from .evidence import offer_capture, schedule_screenshot
@@ -1559,7 +1561,7 @@ def _access_command(
     if "--" in words:
         words.remove("--")
     interactive = not words
-    target = _flow_target(workspace, context)
+    target = target or _flow_target(workspace, context)
     details = workspace.target_details(context.root, target)
     granted = tuple(value for value in ACCESS_LEVELS if value != "none")
     if words and is_word(words[0], granted, ACCESS_ALIASES):
@@ -1682,6 +1684,8 @@ def _proof_command(
     workspace: Workspace,
     tmux: TmuxService,
     arguments: Sequence[str],
+    *,
+    target: str = "",
 ) -> int:
     """tm proof [user|root] [VALUE] [PATH] [--show] [-s|--no-screenshot]"""
     from .evidence import offer_capture, schedule_screenshot
@@ -1694,7 +1698,7 @@ def _proof_command(
     if "--" in words:
         words.remove("--")
     interactive = not words
-    target = _flow_target(workspace, context)
+    target = target or _flow_target(workspace, context)
     details = workspace.target_details(context.root, target)
     if words and is_word(words[0], PROOF_KINDS, PROOF_ALIASES):
         kind = match_word(words.pop(0), PROOF_KINDS, PROOF_ALIASES, "proof kind")
@@ -1765,6 +1769,237 @@ def _proof_command(
     return 0
 
 
+PROOF_SUMMARY = re.compile(r"^(user|root) flag ")
+
+
+def _close_items(
+    workspace: Workspace, root: Path, target: str
+) -> list[tuple[str, str]]:
+    text = workspace.read(root)
+    details = sitrep.details_map(text, target)
+    access = details["Access"][0] or "none"
+    items: list[tuple[str, str]] = []
+    if access == "none":
+        items.append(("!  Access none — record the access you gained", "access"))
+    else:
+        principal = details["Principal"][0] or "-"
+        items.append((f"✓  Access {access} as {principal}", "ok"))
+    todo = [
+        t
+        for t in sitrep.read_tasks(text, "TODO")
+        if t.target == target and not t.complete
+    ]
+    if todo:
+        items.append((f"!  {len(todo)} open TODO — complete or leave", "todo"))
+    cleanup = [
+        t
+        for t in sitrep.read_tasks(text, "CLEANUP")
+        if t.target == target and not t.complete
+    ]
+    for task in cleanup:
+        items.append(
+            (
+                f"!  Cleanup {task.identifier}: {task.item[:50]} (release gate)",
+                "cleanup",
+            )
+        )
+    events = [e for e in sitrep.read_events(text) if e.target == target]
+    proofs = [
+        e for e in events if e.outcome == "success" and PROOF_SUMMARY.match(e.summary)
+    ]
+    items.append(
+        (f"✓  Proof: {', '.join(e.identifier for e in proofs)}", "ok")
+        if proofs
+        else ("·  No proof recorded (info)", "proof")
+    )
+    confirmed = any(
+        entry[0] == target
+        for row in sitrep.read_global(text, "CREDENTIALS")
+        for entry in sitrep.parse_confirmed_access(row[5])
+    )
+    items.append(
+        ("✓  Credential confirmed", "ok")
+        if confirmed
+        else ("·  No confirmed credential (info)", "creds")
+    )
+    return items
+
+
+def _busy_panes(tmux: TmuxService, root: Path, target: str) -> list[str]:
+    name = tmux.session_name(root, target)
+    return [
+        f"{pane} {command}"
+        for pane, command in tmux.panes(name)
+        if command and command not in SHELL_COMMANDS
+    ]
+
+
+def _stop_after_close(tmux: TmuxService, root: Path, target: str, *, yes: bool) -> bool:
+    label = target or "OPS"
+    if not tmux.target_running(root, target):
+        return False
+    busy = _busy_panes(tmux, root, target)
+    if busy:
+        detail = ", ".join(busy)
+        if yes:
+            print(f"Stopping {label} with running programs: {detail}")
+        elif not confirm(
+            f"{label} still runs {detail}. Stop it anyway?", default=False
+        ):
+            print(f"Left {label} running.")
+            return False
+    print(f"Stopping {label}")
+    tmux.stop(root, target)
+    return True
+
+
+def _close_target(
+    settings: Settings,
+    workspace: Workspace,
+    tmux: TmuxService,
+    root: Path,
+    target: str,
+    *,
+    yes: bool,
+    no_stop: bool,
+) -> int:
+    context = Context(root, target)
+    _print_status(workspace, tmux, context, target)
+    status = "complete"
+    summary = ""
+    if not yes:
+        while True:
+            print()
+            choice = choose(
+                [*_close_items(workspace, root, target), ("→  Continue", "continue")],
+                f"Close {target} (Enter fixes a line)> ",
+            )
+            if choice == "continue":
+                break
+            if choice == "access":
+                _access_command(settings, workspace, tmux, [], target=target)
+            elif choice == "proof":
+                _proof_command(settings, workspace, tmux, [], target=target)
+            elif choice == "todo":
+                _task_command(workspace, context, ["done"], cleanup=False)
+            elif choice == "cleanup":
+                _task_command(workspace, context, ["done"], cleanup=True)
+            elif choice == "creds":
+                _confirm_credential(workspace, context, [])
+        status = choose(
+            [(value, value) for value in TARGET_STATUSES],
+            "Status> ",
+            default="complete",
+        )
+        summary = ask("Final summary (optional)", required=False)
+    if workspace.target_details(root, target)["Status"][0] != status:
+        workspace.set_target_detail(root, target, "Status", status)
+        print(f"Updated {target} Status: {status}")
+    if summary:
+        identifier = workspace.add_event(root, target, "success", summary)
+        print(f"Logged {identifier} success: {target} — {summary}")
+    saved, copied = _snapshot(settings, workspace, tmux, root, target)
+    _report_snapshot(root, saved, copied)
+    if not no_stop:
+        _stop_after_close(tmux, root, target, yes=yes)
+    return 0
+
+
+def _close_engagement(
+    settings: Settings,
+    workspace: Workspace,
+    tmux: TmuxService,
+    root: Path,
+    *,
+    yes: bool,
+    no_stop: bool,
+) -> int:
+    _print_status(workspace, tmux, Context(root, ""), "")
+    text = workspace.read(root)
+    open_cleanup = [t for t in sitrep.read_tasks(text, "CLEANUP") if not t.complete]
+    if open_cleanup:
+        print("\nOpen cleanup (release gate):")
+        for task in open_cleanup:
+            print(f"  {task.identifier}  {task.target:12} {task.item}")
+        while (
+            not yes
+            and open_cleanup
+            and confirm("Mark a cleanup item done now?", default=False)
+        ):
+            _task_command(workspace, Context(root, ""), ["done"], cleanup=True)
+            text = workspace.read(root)
+            open_cleanup = [
+                t for t in sitrep.read_tasks(text, "CLEANUP") if not t.complete
+            ]
+    if not yes and not confirm(
+        "Snapshot and stop every session of this engagement?", default=True
+    ):
+        raise ValidationError("engagement close cancelled")
+    current_root, current_target = tmux.current_context()
+    inside = (
+        current_target
+        if current_root is not None and current_root.resolve() == root.resolve()
+        else None
+    )
+    live = [t for t in workspace.targets(root) if tmux.target_running(root, t)]
+    # The session running this command is stopped last so the output survives.
+    ordered = [t for t in live if t != inside] + [t for t in live if t == inside]
+    for target in ordered:
+        saved, copied = _snapshot(settings, workspace, tmux, root, target)
+        _report_snapshot(root, saved, copied)
+    if tmux.target_running(root, ""):
+        saved, _ = _snapshot(settings, workspace, tmux, root, "", shells=False)
+        _report_snapshot(root, saved, [])
+    if open_cleanup:
+        print(f"Reminder: {len(open_cleanup)} cleanup item(s) still open.")
+    if not no_stop:
+        # Other targets, then OPS, then the session running this command.
+        sequence = [t for t in ordered if t != inside] + [""]
+        if inside:
+            sequence.append(inside)
+        for target in sequence:
+            _stop_after_close(tmux, root, target, yes=yes)
+    return 0
+
+
+def _close_command(
+    settings: Settings,
+    workspace: Workspace,
+    tmux: TmuxService,
+    arguments: Sequence[str],
+) -> int:
+    """tm close [TARGET | --engagement] [--yes] [--no-stop]"""
+    context = resolve(settings, tmux)
+    words = list(arguments)
+    yes = bool(_take_option(words, {"--yes", "-y"}))
+    no_stop = bool(_take_option(words, {"--no-stop"}))
+    engagement = bool(_take_option(words, {"--engagement"}))
+    if words:
+        target = workspace.canonical_target(context.root, words[0])
+    elif engagement:
+        target = ""
+    elif context.target:
+        target = context.target
+    elif yes:
+        target = ""
+    else:
+        target = choose(
+            [
+                ("Entire engagement", ""),
+                *((t, t) for t in workspace.targets(context.root)),
+            ],
+            "Close> ",
+            default="",
+        )
+    if target:
+        return _close_target(
+            settings, workspace, tmux, context.root, target, yes=yes, no_stop=no_stop
+        )
+    return _close_engagement(
+        settings, workspace, tmux, context.root, yes=yes, no_stop=no_stop
+    )
+
+
 def _dispatch(
     settings: Settings,
     workspace: Workspace,
@@ -1783,6 +2018,8 @@ def _dispatch(
         return _access_command(settings, workspace, tmux, rest)
     if command in {"proof", "flag"}:
         return _proof_command(settings, workspace, tmux, rest)
+    if command == "close":
+        return _close_command(settings, workspace, tmux, rest)
     if command == "switch":
         return _switch(settings, workspace, tmux)
     if command == "init":
@@ -1854,6 +2091,7 @@ COMMAND_OPTIONS: dict[str, frozenset[str]] = {
     "undo": frozenset({"--yes", "-y"}),
     "access": frozenset({"--via", "--cred", "-c", "--capture", "-s", "--screenshot"}),
     "proof": frozenset({"--show", "-s", "--screenshot", "--no-screenshot"}),
+    "close": frozenset({"--yes", "-y", "--no-stop", "--engagement"}),
     "flag": frozenset({"--show", "-s", "--screenshot", "--no-screenshot"}),
 }
 SENTINEL_AWARE = frozenset({"log", "done", "fail"})

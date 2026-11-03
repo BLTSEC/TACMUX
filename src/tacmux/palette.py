@@ -43,6 +43,22 @@ ACTIONS: tuple[Action, ...] = (
         ("log",),
     ),
     Action(
+        "access",
+        "★  Got access (shell / login)",
+        "Record the access you gained: level, principal, via which service, how, "
+        "and the credential used. One undoable entry that raises Access.",
+        'tm access user app "CVE-2021-43857 RCE" --via "http :8000"',
+        ("access",),
+    ),
+    Action(
+        "proof",
+        "⚑  Proof / flag",
+        "Record local.txt/proof.txt (or user/root.txt) with a screenshot. Asks "
+        "before raising Access: reading a flag is not a shell.",
+        "tm proof root <value> /root/proof.txt",
+        ("proof",),
+    ),
+    Action(
         "attach_capture",
         "📎 Attach latest capture to an entry",
         "Attach the latest NOCAP capture on this target's route (from cap … or "
@@ -137,6 +153,23 @@ ACTIONS: tuple[Action, ...] = (
         "history; directory changes cannot be undone.",
         "tm undo",
         ("undo",),
+    ),
+    Action(
+        "snap",
+        "📸 Snapshot panes now",
+        "Save rendered scrollback of every pane and copy matching shell-handler "
+        "(penelope) logs into captures/<target>/shells/.",
+        "tm snap [TARGET]",
+        ("snap",),
+    ),
+    Action(
+        "close",
+        "⏹  Close out",
+        "Checklist (access, TODO, cleanup gate, proof, credentials), status, final "
+        "note, snapshots and shell logs, then stop the session. In the operations "
+        "session it can close the whole engagement.",
+        "tm close [TARGET|--engagement] [--yes] [--no-stop]",
+        ("close",),
     ),
     Action(
         "status",
