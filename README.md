@@ -123,7 +123,7 @@ so an unrecorded `none` stands out.
 ~/workspace/ACME/
 ├── SITREP.md            # the record (file, or link to sitrep_root)
 ├── targets.txt          # tm target export: one endpoint per line
-├── credentials/         # creds/users/passwords/hashes.txt generated from SITREP; keys/
+├── credentials/         # creds, users, passwords, hashes .txt (from SITREP); keys/
 ├── captures/            # NOCAP evidence, one folder per target
 ├── logs/YYYYMMDD/       # automatic pane logs and scrollback snapshots
 ├── targets/WEB01/       # scans/ payloads/ loot/ screenshots/ working/
