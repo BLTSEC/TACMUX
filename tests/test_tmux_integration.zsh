@@ -140,15 +140,18 @@ names = (
     '`touch "$TACMUX_POPUP_MARKER"`',
     "semi; amp& pipe| redirect> dollar$HOME hash#",
 )
-for name in names:
+for index, name in enumerate(names):
     folder = test_root / name
     folder.mkdir()
+    # Never hand the shell-sensitive path to tmux during setup: older tmux
+    # releases re-escape "$" inside quoted arguments (-c and -e alike). The pane
+    # follows a plainly named symlink with cd -P, so only the binding under
+    # test ever expands the real directory name.
+    link = test_root / f"popup-link-{index}"
+    link.symlink_to(folder)
     pane = subprocess.run(
-        # Pass the path through the environment: tmux versions differ in how
-        # they expand "$" and "#" inside -c, but never touch -e values.
         ["tmux", "new-window", "-d", "-P", "-F", "#{pane_id}",
-         "-t", "bootstrap:", "-e", f"POPUP_TEST_DIR={folder}",
-         'cd "$POPUP_TEST_DIR" && exec sleep 120'],
+         "-t", "bootstrap:", f"cd -P {link} && exec sleep 120"],
         text=True, capture_output=True, check=True,
     ).stdout.strip()
     try:
