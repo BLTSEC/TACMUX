@@ -1299,6 +1299,14 @@ def _health(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
         ),
         ("cap", cap_ok, cap_detail, True),
         ("log hooks", hooks_ok, hooks_detail, True),
+        (
+            "journal",
+            os.environ.get("TACMUX_SHELL_HOOK") == "zsh",
+            "zsh hook loaded"
+            if os.environ.get("TACMUX_SHELL_HOOK") == "zsh"
+            else 'add to ~/.zshrc: eval "$(tacmux shell-init zsh)"',
+            False,
+        ),
     ]
     invalid: list[tuple[Path, str]] = []
     for root in workspace.engagement_candidates():
@@ -2299,6 +2307,22 @@ def _checked_arguments(command: str, arguments: Sequence[str]) -> list[str]:
     return checked
 
 
+def _shell_init(arguments: Sequence[str]) -> int:
+    from . import journal
+
+    shell = arguments[0] if arguments else ""
+    if shell != "zsh":
+        raise ValidationError(
+            "tm shell-init supports zsh only for now: "
+            'add eval "$(tacmux shell-init zsh)" to ~/.zshrc'
+        )
+    print(
+        journal.zsh_snippet(sys.executable, str(Path(journal.__file__).resolve())),
+        end="",
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
@@ -2316,6 +2340,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments and arguments[0] in {"version", "--version", "-v"}:
             print(f"tacmux {__version__}")
             return 0
+        if arguments and arguments[0] == "shell-init":
+            return _shell_init(arguments[1:])
         if arguments and arguments[0] == "_internal":
             return _internal(arguments[1:])
         if arguments and arguments[0] == "_complete":

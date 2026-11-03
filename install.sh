@@ -155,15 +155,17 @@ fi
 
 if command -v zsh >/dev/null 2>&1; then
     if [[ -L "$HOME/.zshrc" ]]; then
-        warn "Skipped linked ~/.zshrc; add $COMPLETION_DIR to fpath manually"
+        warn "Skipped linked ~/.zshrc; add $COMPLETION_DIR to fpath and eval \"\$(tacmux shell-init zsh)\" manually"
     else
         ZSH_COMPLETION_BLOCK='fpath=("$HOME/.local/share/tacmux/completions" $fpath)
 autoload -Uz compinit
 (( $+functions[compdef] )) || compinit -i
 autoload -Uz _tacmux
-compdef _tacmux tacmux tm'
+compdef _tacmux tacmux tm
+# Command journal: records commands only inside TACMUX sessions.
+(( $+commands[tacmux] )) && eval "$(tacmux shell-init zsh)"'
         install_block "$HOME/.zshrc" "$ZSH_COMPLETION_BLOCK"
-        info "Installed Zsh completion for tacmux and tm"
+        info "Installed Zsh completion and command journal for tacmux and tm"
     fi
 fi
 printf 'TMUX_MODE=%s\n' "$TMUX_MODE" > "$STATE_FILE"
