@@ -68,10 +68,10 @@ def test_record_access_never_lowers(workspace, web01):
     ]
 
 
-def test_attach_screenshot_replaces_the_placeholder(workspace, web01, tmp_path):
+def test_attach_screenshot_adds_one_section(workspace, web01, tmp_path):
     capture = _capture(web01)
     event = workspace.add_event(web01, "WEB01", "success", "Shell", capture=capture)
-    assert "_Not attached._" in workspace.read(web01)
+    assert "_Not attached._" not in workspace.read(web01)
     workspace.attach_to_event(web01, event, images=[_png(tmp_path)])
     body = sitrep.read_events(workspace.read(web01))[-1].body
     assert "_Not attached._" not in body
@@ -382,7 +382,8 @@ def test_access_direct_form_records_everything_in_one_step(
     assert (details["Access"][0], details["Principal"][0]) == ("user", "app")
     assert details["Method/Path"][0] == "CVE-2021-43857 RCE via http :8000"
     event = sitrep.read_events(text)[-1]
-    assert event.summary == "Access: user as app via http :8000 (CVE-2021-43857 RCE)"
+    assert event.summary == "Access: user as app"
+    assert event.body == "via http :8000 — CVE-2021-43857 RCE"
     assert (
         "WEB01 · http :8000 · authenticated"
         in sitrep.read_global(text, "CREDENTIALS")[0][5]
@@ -454,14 +455,14 @@ def test_proof_direct_form_infers_path_and_never_raises_access(
     workspace.set_target_detail(web01, "WEB01", "Principal", principal)
     assert main(["proof", "u", "9a1d4ff100f424aa5d2f66366b365495"]) == 0
     event = sitrep.read_events(workspace.read(web01))[-1]
-    expected = f"user flag /home/{principal}/local.txt 9a1d4ff100f424aa5d2f66366b365495"
-    assert event.summary == expected
+    assert event.summary == "User flag (local.txt)"
+    assert "9a1d4ff100f424aa5d2f66366b365495\n```" in event.body
+    assert f"/home/{principal}/local.txt" in event.body
     assert workspace.target_details(web01, "WEB01")["Access"][0] == "none"
     assert "hint: Access is none" in capsys.readouterr().out
     assert main(["flag", "root", "49d8", "/root/proof.txt"]) == 0
     assert (
-        sitrep.read_events(workspace.read(web01))[-1].summary
-        == "root flag /root/proof.txt 49d8"
+        sitrep.read_events(workspace.read(web01))[-1].summary == "Root flag (proof.txt)"
     )
 
 
@@ -960,3 +961,27 @@ def test_access_and_proof_collect_penelope_logs(
         main(["proof", "user", "9a1d", "/home/app/local.txt", "--no-screenshot"]) == 0
     )
     assert (shells / "b.log").is_file()
+
+
+def test_done_title_code_details_and_last_command(
+    settings, workspace, web01, monkeypatch
+):
+    from tacmux.journal import append_command
+
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setenv("TMUX_PANE", "%3")
+    append_command(
+        web01, "1", "1.0", "0", "WEB01", "%3", "/x", "getcap -r / 2>/dev/null"
+    )
+    append_command(web01, "2", "1.0", "0", "WEB01", "%9", "/x", "other pane")
+    append_command(web01, "3", "0.1", "0", "WEB01", "%3", "/x", "tm status")
+    assert main(["done", "Root via cap_setuid :: proof.txt captured", "-l"]) == 0
+    event = sitrep.read_events(workspace.read(web01))[-1]
+    assert event.summary == "Root via cap_setuid"
+    assert event.body == "```bash\ngetcap -r / 2>/dev/null\n```\n\nproof.txt captured"
+    assert main(["fail", "50640 :: ```python3 50640.py``` broken"]) == 0
+    event = sitrep.read_events(workspace.read(web01))[-1]
+    assert (event.outcome, event.summary) == ("failed", "50640")
+    assert event.body.startswith("```bash\npython3 50640.py\n```")
+    text = workspace.read(web01)
+    assert "> [!failure] 50640" in text and "> [!success] Root via cap_setuid" in text

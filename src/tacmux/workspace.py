@@ -951,6 +951,7 @@ class Workspace:
         service: str = "",
         capture: CaptureRecord | None = None,
         images: Sequence[Path] = (),
+        code: str = "",
     ) -> str:
         """One undoable change: success event + Access raise + credential use."""
         target = self.canonical_target(root, target)
@@ -981,6 +982,7 @@ class Workspace:
             capture=capture,
             images=images,
             transform=extra,
+            code=code,
         )
 
     def attach_to_event(
@@ -1018,9 +1020,12 @@ class Workspace:
                         f"capture is already attached: {capture.identifier}"
                     )
                 capture_id = capture.identifier
-                evidence = self._event_body(event.summary, "", capture, ())
-                evidence = evidence.split("\n\n#### Screenshots", 1)[0]
-                body = f"{evidence}\n\n{body}".strip() if body else evidence
+                evidence = self._evidence_sections(capture)
+                head, marker, tail = body.partition("#### Screenshots")
+                if marker:
+                    body = f"{head.rstrip()}\n\n{evidence}\n\n{marker}{tail}".strip()
+                else:
+                    body = f"{body}\n\n{evidence}".strip()
             try:
                 links = [
                     self._copy_event_image(root, source, created_images)
@@ -1045,6 +1050,7 @@ class Workspace:
         capture: CaptureRecord | None = None,
         images: Sequence[Path] = (),
         transform: Callable[[str], str] | None = None,
+        code: str = "",
     ) -> str:
         if target != "ENGAGEMENT":
             target = self.canonical_target(root, target)
@@ -1070,7 +1076,7 @@ class Workspace:
                     self._copy_event_image(root, source, created_images)
                     for source in image_sources
                 ]
-                body = self._event_body(summary, notes, capture, image_links)
+                body = self._event_body(summary, notes, capture, image_links, code)
                 event = sitrep.Event(
                     identifier,
                     utc_now(),
@@ -1165,36 +1171,33 @@ class Workspace:
         notes: str,
         capture: CaptureRecord | None,
         images: Sequence[str],
+        code: str = "",
     ) -> str:
+        """Code block, then details, then evidence sections (no placeholders)."""
         sections: list[str] = []
+        if code:
+            sections.append(sitrep.fenced(code))
+        if notes:
+            sections.append(notes)
         if capture:
-            sections.append(
-                "#### Evidence\n\n"
-                f"- **Status:** {capture.status}\n"
-                f"- **Tool:** {capture.tool}\n"
-                f"- **Path:** captures/{capture.path}\n\n"
-                "#### Command\n\n"
-                f"{self._fenced_command(capture.command)}"
+            sections.append(self._evidence_sections(capture))
+        if images:
+            alt = summary.replace("\\", "\\\\").replace("]", "\\]")
+            rendered = "\n\n".join(
+                f"![{alt}](<{path}>)\n\n**Caption:** {summary}" for path in images
             )
-        if capture or images:
-            if images:
-                alt = summary.replace("\\", "\\\\").replace("]", "\\]")
-                rendered = "\n\n".join(
-                    f"![{alt}](<{path}>)\n\n**Caption:** {summary}" for path in images
-                )
-            else:
-                rendered = (
-                    "**Image:** _Not attached._\n\n"
-                    f"**Caption:** _Evidence supporting: {summary}._"
-                )
             sections.append(f"#### Screenshots\n\n{rendered}")
-            sections.append("#### Draft findings\n\n_None recorded._")
-        if notes or capture or images:
-            sections.append(
-                "#### Notes\n\n"
-                + (notes if notes else "_Add supporting context here._")
-            )
         return "\n\n".join(sections)
+
+    def _evidence_sections(self, capture: CaptureRecord) -> str:
+        return (
+            "#### Evidence\n\n"
+            f"- **Status:** {capture.status}\n"
+            f"- **Tool:** {capture.tool}\n"
+            f"- **Path:** captures/{capture.path}\n\n"
+            "#### Command\n\n"
+            f"{self._fenced_command(capture.command)}"
+        )
 
     def inspect_capture(
         self, root: Path, target: str, selector: str = ""

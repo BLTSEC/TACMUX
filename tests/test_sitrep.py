@@ -42,7 +42,7 @@ def test_event_and_target_round_trip():
     assert sitrep.target_sections(text)[0].name == "WEB [prod]"
     assert sitrep.read_events(text)[0] == event
     assert sitrep.details_map(text, "WEB [prod]")["Endpoint"][0] == "192.0.2.10"
-    assert "<!-- TACMUX:EVENT:START E001 -->\n\n### " in text
+    assert "<!-- TACMUX:EVENT:START E001 -->\n\n> [!note] pipe" in text
     assert "\n\n<!-- TACMUX:EVENT:END E001 -->" in text
 
 
@@ -155,16 +155,95 @@ def test_confirmed_access_round_trip_and_malformed_value():
 
 
 def test_malformed_event_fails_closed():
-    text = sitrep.initial_document("ACME").replace(
-        "- **Outcome:** success", "- Outcome: success"
-    )
     text = sitrep.append_event(
-        text,
+        sitrep.initial_document("ACME"),
         sitrep.Event("E001", "now", "ENGAGEMENT", "success", "Started"),
     )
-    text = text.replace("- **Outcome:** success", "- Outcome: success")
+    broken = text.replace("`E001` · `now` · `ENGAGEMENT`", "E001 now")
+    with pytest.raises(ValidationError, match="metadata"):
+        sitrep.read_events(broken)
+    unknown = text.replace("[!success]", "[!banana]")
+    with pytest.raises(ValidationError, match="unknown callout"):
+        sitrep.read_events(unknown)
+
+
+def _legacy_text(summary: str, outcome: str = "success", extra: str = "") -> str:
+    block = (
+        "<!-- TACMUX:EVENT:START E001 -->\n\n"
+        f"### 2026-11-03T05:52:10Z — {summary}\n\n"
+        "- **Target:** ENGAGEMENT\n"
+        f"- **Outcome:** {outcome}\n"
+        "- **Capture ID:** -"
+        f"{extra}\n\n<!-- TACMUX:EVENT:END E001 -->"
+    )
+    return sitrep.write_events(sitrep.initial_document("ACME"), []).replace(
+        "<!-- TACMUX:OPERATIONS:END -->", block + "\n\n<!-- TACMUX:OPERATIONS:END -->"
+    )
+
+
+def test_legacy_events_are_read_and_rewritten_as_callouts():
+    text = _legacy_text("Started", extra="\n\n#### Notes\n\nnote")
+    event = sitrep.read_events(text)[0]
+    assert (event.outcome, event.summary, event.timestamp) == (
+        "success",
+        "Started",
+        "2026-11-03T05:52:10Z",
+    )
+    rewritten = sitrep.write_events(text, [event])
+    assert "> [!success] Started" in rewritten
+    assert "> `E001` · `2026-11-03 05:52:10Z` · `ENGAGEMENT`" in rewritten
+    assert sitrep.read_events(rewritten)[0] == event
+    broken = text.replace("- **Outcome:** success", "- Outcome: success")
     with pytest.raises(ValidationError, match="missing Outcome"):
-        sitrep.read_events(text)
+        sitrep.read_events(broken)
+
+
+def test_long_legacy_summary_gets_short_title_and_keeps_text():
+    long = (
+        "penlope f12 to detach, maintain 3 - creates 3 additional sessions, "
+        "download /home/app/dbs/db.sqlite3, then select password from auth_user"
+    )
+    event = sitrep.read_events(_legacy_text(long, "info"))[0]
+    assert len(event.summary) <= 80 and event.summary.startswith("penlope f12")
+    assert long in event.body
+
+
+def test_callout_reading_is_lenient_and_keeps_nesting():
+    text = sitrep.append_event(
+        sitrep.initial_document("ACME"),
+        sitrep.Event(
+            "E001",
+            "2026-01-01T00:00:00Z",
+            "WEB",
+            "failed",
+            "PoC broken",
+            body="```bash\necho `id` > out\n```\n\n> quoted output",
+        ),
+    )
+    assert "> > quoted output" in text
+    edited = text.replace(
+        "> > quoted output", "> > quoted output\nadded without prefix"
+    )
+    event = sitrep.read_events(edited)[0]
+    assert event.outcome == "failed"
+    assert event.body.endswith("> quoted output\nadded without prefix")
+    aliased = text.replace("[!failure]", "[!fail]-")
+    assert sitrep.read_events(aliased)[0].outcome == "failed"
+
+
+def test_compose_title_code_details():
+    assert sitrep.compose("Root via cap_setuid :: proof captured") == (
+        "Root via cap_setuid",
+        "",
+        "proof captured",
+    )
+    assert sitrep.compose(
+        "Root :: ```python3 -c 'import os'``` proof.txt captured"
+    ) == ("Root", "python3 -c 'import os'", "proof.txt captured")
+    assert sitrep.compose("short note") == ("short note", "", "")
+    title, code, details = sitrep.compose("word " * 30)
+    assert title.endswith("…") and details.startswith("word word")
+    assert sitrep.fenced("a ``` b").startswith("````bash")
 
 
 def test_legacy_upgrade_preserves_rows_and_completion():

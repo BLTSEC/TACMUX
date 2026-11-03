@@ -709,6 +709,21 @@ def _sitrep_command(
     return 0
 
 
+def _last_command(root: Path) -> str:
+    """This pane's latest journaled command, skipping TACMUX's own."""
+    from .journal import read_rows
+
+    pane = os.environ.get("TMUX_PANE", "")
+    for row in reversed(read_rows(root / "logs" / "commands.tsv")):
+        command = row["command"].strip()
+        if pane and row["pane"] and row["pane"] != pane:
+            continue
+        if not command or command.split()[0] in {"tm", "tacmux"}:
+            continue
+        return command
+    return ""
+
+
 def _log_command(
     settings: Settings,
     workspace: Workspace,
@@ -730,6 +745,7 @@ def _log_command(
     capture_requested = False
     screenshot = False
     capture_selector = ""
+    use_last = False
     images: list[Path] = []
     position = 0
     while position < len(words):
@@ -752,6 +768,10 @@ def _log_command(
             screenshot = True
             words.pop(position)
             continue
+        if value in {"-l", "--last"}:
+            use_last = True
+            words.pop(position)
+            continue
         if value in {"-i", "--image"}:
             if position + 1 >= len(words):
                 raise ValidationError(f"{value} requires an image path")
@@ -761,26 +781,38 @@ def _log_command(
         position += 1
     interactive = not words
     target = _record_target(workspace, context, interactive=interactive)
+    code = ""
+    notes = ""
     if forced_outcome:
         outcome = forced_outcome
-        label = "Completed step" if forced_outcome == "success" else "Failed step"
-        summary = " ".join(words).strip() if words else ask(label)
     elif interactive:
         outcome = choose(
             [(value, value) for value in OUTCOMES], "Outcome> ", default="info"
         )
-        summary = ask("Summary")
     else:
         first = words[0]
         explicit = first if first in OUTCOMES else LOG_OUTCOME_SHORTCUTS.get(first, "")
         outcome = explicit or "info"
-        summary_words = words[1:] if explicit else words
-        if explicit and not summary_words:
-            summary_words = [ask("Summary")]
-        summary = " ".join(summary_words).strip()
+        if explicit:
+            words = words[1:]
+            interactive = not words
+    last = _last_command(context.root) if (interactive or use_last) else ""
+    if interactive:
+        summary = ask("Title")
+        code = (
+            ask("Command", last, required=False, prefill=True)
+            if last
+            else ask("Command", required=False)
+        )
+        notes = ask("Details", required=False)
+    else:
+        summary, code, notes = sitrep.compose(" ".join(words))
+        if use_last:
+            if not last:
+                raise ValidationError("no earlier command in the journal for -l")
+            code = "\n".join(part for part in (code, last) if part)
     if not summary:
-        raise ValidationError("summary cannot be empty")
-    notes = ask("Notes", required=False) if interactive else ""
+        raise ValidationError("title cannot be empty")
     capture = (
         workspace.inspect_capture(context.root, target, capture_selector)
         if capture_requested
@@ -801,6 +833,7 @@ def _log_command(
         notes,
         capture=capture,
         images=images,
+        code=code,
     )
     extras = []
     if capture:
@@ -1720,7 +1753,8 @@ def _access_command(
                 default="authenticated",
             )
     route = f" via {via}" if via and via != "local" else ""
-    summary = f"Access: {level} as {principal}{route}" + (f" ({how})" if how else "")
+    summary = f"Access: {level} as {principal}"
+    details_text = " — ".join(part for part in (route.strip(), how) if part)
     method = " via ".join(part for part in (how, via if via != "local" else "") if part)
     capture = (
         workspace.inspect_capture(context.root, target)
@@ -1735,6 +1769,7 @@ def _access_command(
         summary,
         principal=principal,
         method=method or summary,
+        notes=details_text,
         credential=credential,
         credential_access=credential_access,
         service=via if via and via != "local" else "",
@@ -1872,10 +1907,11 @@ def _proof_command(
         path = path or ask("Path")
     else:
         path = suggestions[0]
-    summary = f"{kind} flag {path} {value}"
+    filename = re.split(r"[\\/]", path)[-1] or path
+    summary = f"{kind.capitalize()} flag ({filename})"
     capture = offer_capture(workspace, context.root, target) if interactive else None
     identifier = workspace.add_event(
-        context.root, target, "success", summary, capture=capture
+        context.root, target, "success", summary, path, capture=capture, code=value
     )
     print(f"Logged {identifier} success: {target} — {summary}")
     windows = details["OS"][0].casefold().startswith("win")
@@ -2272,6 +2308,8 @@ EVIDENCE_OPTIONS = (
     "--image",
     "-s",
     "--screenshot",
+    "-l",
+    "--last",
 )
 # Options each command accepts before the "--" sentinel. Everything else that
 # starts with "-" is refused so a mistyped flag is never recorded as data.

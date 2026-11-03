@@ -568,7 +568,7 @@ def test_image_attachment_rejects_links_and_bad_signatures(
         )
 
 
-def test_capture_without_image_has_placeholder(workspace, engagement):
+def test_capture_event_has_no_empty_placeholders(workspace, engagement):
     capture = CaptureRecord("capture-1", "completed", "nmap", "ops/scan.txt", "nmap")
     identifier = workspace.add_event(
         engagement, "ENGAGEMENT", "success", "Discovery complete", capture=capture
@@ -578,8 +578,9 @@ def test_capture_without_image_has_placeholder(workspace, engagement):
         for value in sitrep.read_events(workspace.read(engagement))
         if value.identifier == identifier
     )
-    assert "**Image:** _Not attached._" in event.body
-    assert "Evidence supporting: Discovery complete" in event.body
+    assert event.body.startswith("#### Evidence")
+    assert "_Not attached._" not in event.body
+    assert "Draft findings" not in event.body and "_Add supporting" not in event.body
 
 
 def test_hash_uses_first_colon_and_generated_files(workspace, engagement):

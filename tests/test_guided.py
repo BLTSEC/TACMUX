@@ -333,7 +333,11 @@ def test_target_lifecycle_starts_a_safe_undo_history(
 
 def test_palette_runs_actions_and_switches_sessions(web01, workspace, monkeypatch):
     _sequence(monkeypatch, "choose", ["fail"])
-    _sequence(monkeypatch, "ask", ["EDB 50640 broken", ""])
+    _sequence(
+        monkeypatch,
+        "ask",
+        ["EDB 50640 broken", "python3 50640.py -t x", "needs a project"],
+    )
     assert main(["menu"]) == 0
     event = sitrep.read_events(workspace.read(web01))[-1]
     assert (event.outcome, event.target, event.summary) == (
@@ -341,6 +345,7 @@ def test_palette_runs_actions_and_switches_sessions(web01, workspace, monkeypatc
         "WEB01",
         "EDB 50640 broken",
     )
+    assert event.body == "```bash\npython3 50640.py -t x\n```\n\nneeds a project"
 
     started = []
     monkeypatch.setattr(

@@ -374,17 +374,52 @@ def normalize_document(text: str) -> str:
     return write_events(updated, read_events(updated))
 
 
+OUTCOME_CALLOUT = {
+    "success": "success",
+    "failed": "failure",
+    "partial": "warning",
+    "info": "note",
+}
+CALLOUT_OUTCOME = {
+    **{value: key for key, value in OUTCOME_CALLOUT.items()},
+    "check": "success",
+    "done": "success",
+    "fail": "failed",
+    "missing": "failed",
+    "error": "failed",
+    "danger": "failed",
+    "bug": "failed",
+    "caution": "partial",
+    "attention": "partial",
+    "info": "info",
+}
+CALLOUT_HEADING = re.compile(r"^\[!([A-Za-z-]+)\][+-]?\s*(.*)$")
+CHIP = re.compile(r"`([^`]*)`")
+TITLE_LIMIT = 80
+
+
+def _quoted(text: str) -> str:
+    return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
+
+
 def _event_block(event: Event) -> str:
-    capture = event.capture_id or "-"
+    chips = [
+        f"`{event.identifier}`",
+        f"`{event.timestamp.replace('T', ' ')}`",
+        f"`{event.target}`",
+    ]
+    if event.capture_id:
+        chips.append(f"📎 `{event.capture_id}`")
+    lines = [
+        f"[!{OUTCOME_CALLOUT.get(event.outcome, 'note')}] {event.summary}",
+        " · ".join(chips),
+    ]
     body = event.body.strip()
-    suffix = f"\n\n{body}" if body else ""
+    if body:
+        lines.extend(["", body])
     return (
         f"<!-- TACMUX:EVENT:START {event.identifier} -->\n\n"
-        f"### {event.timestamp} — {event.summary}\n\n"
-        f"- **Target:** {event.target}\n"
-        f"- **Outcome:** {event.outcome}\n"
-        f"- **Capture ID:** {capture}"
-        f"{suffix}\n\n"
+        f"{_quoted(chr(10).join(lines))}\n\n"
         f"<!-- TACMUX:EVENT:END {event.identifier} -->"
     )
 
@@ -393,6 +428,74 @@ def operations_block(events: Iterable[Event]) -> str:
     rendered = "\n\n".join(_event_block(event) for event in events)
     spacing = f"\n\n{rendered}\n\n" if rendered else "\n\n"
     return f"{_marker('OPERATIONS', 'START')}{spacing}{_marker('OPERATIONS', 'END')}"
+
+
+def _unquote(line: str) -> str:
+    if line.startswith("> "):
+        return line[2:]
+    if line.startswith(">"):
+        return line[1:]
+    return line  # lenient: a line that lost its ">" while being edited
+
+
+def _legacy_event(identifier: str, lines: list[str]) -> Event:
+    if len(lines) < 5:
+        raise ValidationError(f"operation {identifier} is malformed")
+    heading = EVENT_HEADING.fullmatch(lines[0])
+    if heading is None:
+        raise ValidationError(f"operation {identifier} has a malformed heading")
+    if lines[1].strip():
+        raise ValidationError(f"operation {identifier} metadata is malformed")
+    metadata: list[str] = []
+    for line, label in zip(
+        lines[2:5], ("Target", "Outcome", "Capture ID"), strict=True
+    ):
+        expected = f"- **{label}:**"
+        if not line.startswith(expected):
+            raise ValidationError(f"operation {identifier} is missing {label}")
+        metadata.append(line[len(expected) :].strip())
+    capture = "" if metadata[2] == "-" else metadata[2]
+    summary = heading.group(2).strip()
+    body = "\n".join(lines[5:]).strip()
+    title, details = split_title(summary)
+    if details:
+        body = f"{details}\n\n{body}".strip()
+    return Event(
+        identifier, heading.group(1), metadata[0], metadata[1], title, capture, body
+    )
+
+
+def _callout_event(identifier: str, lines: list[str]) -> Event:
+    lines = [_unquote(line) for line in lines]
+    heading = CALLOUT_HEADING.fullmatch(lines[0].strip())
+    if heading is None:
+        raise ValidationError(f"operation {identifier} has a malformed callout")
+    kind = heading.group(1).casefold()
+    if kind not in CALLOUT_OUTCOME:
+        raise ValidationError(
+            f"operation {identifier} has unknown callout type [!{kind}]; "
+            "use success, failure, warning, or note"
+        )
+    title = heading.group(2).strip()
+    if not title:
+        raise ValidationError(f"operation {identifier} has no title")
+    if len(lines) < 2:
+        raise ValidationError(f"operation {identifier} is missing its metadata line")
+    chips = CHIP.findall(lines[1])
+    if len(chips) < 3:
+        raise ValidationError(
+            f"operation {identifier} metadata must be `ID` · `time` · `target`"
+        )
+    capture = chips[3].strip() if len(chips) > 3 else ""
+    return Event(
+        identifier,
+        chips[1].strip().replace(" ", "T"),
+        chips[2].strip(),
+        CALLOUT_OUTCOME[kind],
+        title,
+        capture,
+        "\n".join(lines[2:]).strip(),
+    )
 
 
 def read_events(text: str) -> list[Event]:
@@ -407,37 +510,58 @@ def read_events(text: str) -> list[Event]:
             raise ValidationError("SITREP has text outside an Operations Log event")
         identifier = match.group(1)
         lines = match.group(2).strip().splitlines()
-        if len(lines) < 5:
+        if not lines:
             raise ValidationError(f"operation {identifier} is malformed")
-        heading = EVENT_HEADING.fullmatch(lines[0])
-        if heading is None:
-            raise ValidationError(f"operation {identifier} has a malformed heading")
-        if lines[1].strip():
-            raise ValidationError(f"operation {identifier} metadata is malformed")
-        metadata: list[str] = []
-        for line, label in zip(
-            lines[2:5], ("Target", "Outcome", "Capture ID"), strict=True
-        ):
-            expected = f"- **{label}:**"
-            if not line.startswith(expected):
-                raise ValidationError(f"operation {identifier} is missing {label}")
-            metadata.append(line[len(expected) :].strip())
-        capture = "" if metadata[2] == "-" else metadata[2]
-        events.append(
-            Event(
-                identifier,
-                heading.group(1),
-                metadata[0],
-                metadata[1],
-                heading.group(2).strip(),
-                capture,
-                "\n".join(lines[5:]).strip(),
-            )
-        )
+        if lines[0].startswith(">"):
+            events.append(_callout_event(identifier, lines))
+        else:
+            events.append(_legacy_event(identifier, lines))
         cursor = match.end()
     if body[cursor:].strip():
         raise ValidationError("SITREP has malformed Operations Log event markers")
     return events
+
+
+def _short_title(text: str) -> str:
+    for separator in (". ", "; ", " - ", ", "):
+        head = text.split(separator, 1)[0].strip()
+        if 10 <= len(head) <= TITLE_LIMIT and head != text:
+            return head.rstrip(".")
+    cut = text[:60].rsplit(" ", 1)[0] if " " in text[:60] else text[:60]
+    return f"{cut}…"
+
+
+def split_title(text: str) -> tuple[str, str]:
+    """Title before the first ' :: ', else a short title for long text."""
+    text = " ".join(text.split())
+    title, separator, details = text.partition(" :: ")
+    if separator:
+        return title.strip(), details.strip()
+    if len(text) <= TITLE_LIMIT:
+        return text, ""
+    return _short_title(text), text
+
+
+INLINE_CODE_BLOCK = re.compile(r"```(.+?)```", re.DOTALL)
+
+
+def compose(text: str) -> tuple[str, str, str]:
+    """Operator text → (title, code, details).
+
+    `Title :: details`, with any ```code``` span lifted into a code block.
+    """
+    code = "\n".join(part.strip() for part in INLINE_CODE_BLOCK.findall(text))
+    remaining = INLINE_CODE_BLOCK.sub(" ", text)
+    title, details = split_title(remaining)
+    if not title and code:
+        title = split_title(code)[0]
+    return title.strip(" :"), code, details
+
+
+def fenced(code: str, language: str = "bash") -> str:
+    longest = max((len(run) for run in re.findall(r"`+", code)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{language}\n{code}\n{fence}"
 
 
 def write_events(text: str, events: Iterable[Event]) -> str:
@@ -456,7 +580,9 @@ def event_notes(event: Event) -> str:
     if match:
         value = match.group(1).strip()
         return "" if value.startswith("_Add supporting") else value
-    return ""
+    lead = re.split(r"(?m)^#### ", event.body, maxsplit=1)[0]
+    lead = re.sub(r"(?ms)^(`{3,})[^\n]*\n.*?^\1\s*$", "", lead)
+    return " ".join(lead.split())
 
 
 def next_event_id(events: Sequence[Event]) -> str:
