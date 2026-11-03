@@ -21,6 +21,7 @@ from .help import USAGE, command_help, known_help_topics, wants_help
 from .hooks import LogController, clipboard_copy, status_segment
 from .interaction import (
     forced_noninteractive,
+    require_terminal,
     ask,
     choose,
     choose_many,
@@ -804,6 +805,7 @@ def _attach_capture_action(workspace: Workspace, context: Context) -> int:
         raise ValidationError(
             f"no unattached NOCAP capture on {target}'s route (run cap … or cap grab first)"
         )
+    workspace.change_label = f"capture {capture.identifier} → {identifier}"
     workspace.attach_to_event(context.root, identifier, capture=capture)
     print(f"Attached capture {capture.identifier} ({capture.tool}) to {identifier}")
     return 0
@@ -1133,6 +1135,13 @@ def _discover_command(
     arguments: Sequence[str],
 ) -> int:
     context = resolve(settings, tmux)
+    # Every source ends in an $EDITOR review and a final confirmation, so fail
+    # before reading piped input or offering to run a scan.
+    require_terminal(
+        "tm discover reviews candidates in $EDITOR, so run it from a terminal: "
+        "paste the hosts into the editor, or pass a FILE (tm discover hosts "
+        "FILE); piped input is not supported"
+    )
     source = (
         arguments[0]
         if arguments
@@ -1353,6 +1362,7 @@ def _import_nmap_file(
         [(str(path.relative_to(folder)), str(path)) for path in ordered],
         "Nmap output> ",
     )
+    workspace.change_label = f"tm ports add {target} {Path(selected).name}"
     return _ports_command(settings, workspace, tmux, ["add", target, selected])
 
 
@@ -1363,6 +1373,7 @@ def _add_hostname(workspace: Workspace, tmux: TmuxService, context: Context) -> 
     current = details["Hostnames"][0].split()
     added = [name for name in re.split(r"[\s,]+", ask("Hostname(s)")) if name]
     names = list(dict.fromkeys([*current, *added]))
+    workspace.change_label = f"hostname {' '.join(added)} → {target}"
     workspace.set_target_detail(context.root, target, "Hostnames", " ".join(names))
     print(f"Updated {target} Hostnames: {' '.join(names)}")
     command = f"echo '{endpoint} {' '.join(added)}' | sudo tee -a /etc/hosts"

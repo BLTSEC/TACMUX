@@ -688,3 +688,80 @@ def test_logging_panes_reads_pane_pipe(settings, monkeypatch):
         ),
     )
     assert tmux.logging_panes("s") == {"%1", "%3"}
+
+
+# --- 3.2.3: terminal messages and undo labels -------------------------------
+
+
+def test_editor_without_terminal_names_the_real_requirement(
+    settings, monkeypatch, tmp_path
+):
+    from tacmux.errors import NonInteractiveError
+    from tacmux.interaction import open_editor
+
+    monkeypatch.setattr("tacmux.interaction.text_input_available", lambda: False)
+    with pytest.raises(
+        NonInteractiveError,
+        match=r"opens \$EDITOR, which needs an interactive terminal",
+    ):
+        open_editor(settings, tmp_path / "SITREP.md")
+
+
+def test_discover_without_terminal_fails_before_reading_or_scanning(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setattr("tacmux.interaction.text_input_available", lambda: False)
+
+    def must_not_run(*_args, **_kwargs):
+        raise AssertionError("discovery read input or scanned without a terminal")
+
+    monkeypatch.setattr("tacmux.cli._input_text", must_not_run)
+    monkeypatch.setattr("tacmux.cli.run_host_discovery", must_not_run)
+    for argv in (["discover", "hosts"], ["discover", "nmap", "192.0.2.0/24"]):
+        assert main(argv) == 1
+        assert (
+            "paste the hosts into the editor, or pass a FILE" in capsys.readouterr().err
+        )
+    assert workspace.targets(web01) == ["WEB01"]
+
+
+def test_discover_from_a_terminal_with_a_file_still_creates_targets(
+    settings, workspace, web01, monkeypatch, tmp_path, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    hosts = tmp_path / "hosts.txt"
+    hosts.write_text("DC01 192.0.2.20\n")
+    monkeypatch.setattr(
+        "tacmux.cli.review_candidates", lambda _s, candidates: candidates
+    )
+    monkeypatch.setattr("tacmux.discovery.confirm", lambda *_a, **_k: True)
+    assert main(["discover", "hosts", str(hosts)]) == 0
+    assert "DC01" in workspace.targets(web01)
+
+
+def test_undo_labels_name_screenshots_captures_and_hostnames(
+    settings, workspace, web01, monkeypatch, tmp_path
+):
+    from tacmux.evidence import take_screenshot
+
+    main = _cli(monkeypatch, settings, web01)
+    event = workspace.add_event(web01, "WEB01", "success", "proof")
+    _fake_flameshot(tmp_path, monkeypatch, PNG)
+    take_screenshot(workspace, web01, "WEB01", event)
+    assert workspace.last_change(web01)[1]["label"] == f"screenshot → {event}"
+
+    record = _capture(web01)
+    monkeypatch.setattr("tacmux.evidence.latest_unattached_capture", lambda *_a: record)
+    picks = iter(["attach_capture", event])
+    monkeypatch.setattr("tacmux.cli.choose", lambda *_a, **_k: next(picks))
+    monkeypatch.setattr("tacmux.tmux.TmuxService.sessions", lambda self: [])
+    assert main(["menu"]) == 0
+    assert workspace.last_change(web01)[1]["label"] == f"capture cap-1 → {event}"
+
+    picks = iter(["hostname"])
+    monkeypatch.setattr("tacmux.cli.choose", lambda *_a, **_k: next(picks))
+    monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: "web01.example")
+    monkeypatch.setattr("tacmux.cli.clipboard_copy", lambda *_a: 0)
+    assert main(["menu"]) == 0
+    assert workspace.last_change(web01)[1]["label"] == "hostname web01.example → WEB01"

@@ -224,8 +224,20 @@ def choose_many(choices: Sequence[tuple[str, str]], prompt: str) -> list[str]:
     return values
 
 
+EDITOR_NEEDS_TERMINAL = (
+    "this step opens $EDITOR, which needs an interactive terminal; run the "
+    "command from a terminal, not through a pipe, script, or agent"
+)
+
+
+def require_terminal(message: str) -> None:
+    """Refuse a step that needs an operator at a terminal, with its own reason."""
+    if forced_noninteractive() or not text_input_available():
+        raise NonInteractiveError(message)
+
+
 def open_editor(settings: Settings, path: Path, line: int | None = None) -> None:
-    require_interactive("editor interaction")
+    require_terminal(EDITOR_NEEDS_TERMINAL)
     argv = list(settings.editor_argv)
     executable = Path(argv[0]).name
     if line and executable in {"vi", "vim", "nvim", "view", "nvim-qt"}:

@@ -332,8 +332,13 @@ files change. Pasted port rows without a report header apply to the selected tar
 `tm discover` offers three foreground inputs:
 
 - `nmap`: fixed `nmap -sn --reason -oG - IP_OR_CIDR` after confirmation
-- `hosts`: pasted or piped `NAME IP`, `IP`, or Nmap report lines
-- `netexec`: pasted or piped NetExec SMB output
+- `hosts`: `NAME IP`, `IP`, or Nmap report lines, pasted into `$EDITOR` or read
+  from a file (`tm discover hosts FILE`)
+- `netexec`: NetExec SMB output, pasted or read from a file
+
+Every source ends in a review in `$EDITOR` and a final confirmation, so run
+`tm discover` from a terminal. Piping input into it is not supported; TACMUX
+says so before reading anything or offering to scan.
 
 Candidates open in `$EDITOR` as `TARGET_NAME<TAB>IP`. Delete gateways or unwanted entries and rename targets as needed. Save and close to stage the review; quit without saving to cancel. After a save, TACMUX shows the accepted count and requires a final default-No confirmation before creating any target trees. Existing names or endpoints are skipped, and sessions never auto-start. If Nmap reports implausibly broad liveness through a pivot, cancel and use the `netexec` or `hosts` input instead.
 

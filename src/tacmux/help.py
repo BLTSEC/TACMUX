@@ -239,7 +239,8 @@ Forms:    tm stop [TARGET]
         "discover": """tm discover — reviewed host identification
 
 Forms:    tm discover [nmap|hosts|netexec] [CIDR|FILE]
-Candidates open in $EDITOR for review before any target is created.
+Candidates open in $EDITOR for review before any target is created, so run it
+from a terminal: paste hosts into the editor or pass a FILE (no piping).
 """,
         "health": """tm health — check required and optional tools and SITREP health
 """,

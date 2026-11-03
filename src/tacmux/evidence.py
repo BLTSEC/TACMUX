@@ -135,6 +135,7 @@ def take_screenshot(
     descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(data)
+    workspace.change_label = f"screenshot → {identifier}"
     try:
         workspace.attach_to_event(root, identifier, images=[path])
     except TacmuxError as exc:
