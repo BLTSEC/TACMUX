@@ -378,7 +378,10 @@ def test_access_direct_form_records_everything_in_one_step(
     assert details["Method/Path"][0] == "CVE-2021-43857 RCE via http :8000"
     event = sitrep.read_events(text)[-1]
     assert event.summary == "Access: user as app via http :8000 (CVE-2021-43857 RCE)"
-    assert "WEB01 · http :8000 · user" in sitrep.read_global(text, "CREDENTIALS")[0][5]
+    assert (
+        "WEB01 · http :8000 · authenticated"
+        in sitrep.read_global(text, "CREDENTIALS")[0][5]
+    )
     assert "Access none → user" in capsys.readouterr().out
     assert main(["access", "root", "root", "python3.10", "cap_setuid"]) == 0
     assert workspace.target_details(web01, "WEB01")["Access"][0] == "admin"
@@ -441,13 +444,12 @@ def test_proof_direct_form_infers_path_and_never_raises_access(
     settings, workspace, web01, monkeypatch, capsys
 ):
     main = _cli(monkeypatch, settings, web01)
-    workspace.set_target_detail(web01, "WEB01", "Principal", "app")
+    principal = "app"
+    workspace.set_target_detail(web01, "WEB01", "Principal", principal)
     assert main(["proof", "u", "9a1d4ff100f424aa5d2f66366b365495"]) == 0
     event = sitrep.read_events(workspace.read(web01))[-1]
-    assert (
-        event.summary
-        == "user flag /home/app/local.txt 9a1d4ff100f424aa5d2f66366b365495"
-    )
+    expected = f"user flag /home/{principal}/local.txt 9a1d4ff100f424aa5d2f66366b365495"
+    assert event.summary == expected
     assert workspace.target_details(web01, "WEB01")["Access"][0] == "none"
     assert "hint: Access is none" in capsys.readouterr().out
     assert main(["flag", "root", "49d8", "/root/proof.txt"]) == 0
@@ -587,3 +589,29 @@ def test_engagement_close_stops_the_invoking_session_last(
     assert main(["close", "--engagement", "--yes"]) == 0
     assert fake_sessions["stopped"] == ["DC01", "", "WEB01"]
     assert fake_sessions["snapped"] == ["DC01", "WEB01", ""]
+
+
+def test_access_credential_level_can_be_stated(settings, workspace, web01, monkeypatch):
+    main = _cli(monkeypatch, settings, web01)
+    credential = workspace.add_credential(web01, "app", "pw", "password")
+    assert (
+        main(
+            [
+                "access",
+                "user",
+                "app",
+                "ssh",
+                "login",
+                "--via",
+                "ssh :22",
+                "--cred",
+                f"{credential}:shell",
+            ]
+        )
+        == 0
+    )
+    assert (
+        "WEB01 · ssh :22 · user"
+        in sitrep.read_global(workspace.read(web01), "CREDENTIALS")[0][5]
+    )
+    assert main(["access", "user", "app", "x", "--cred", "WEB01"]) == 1

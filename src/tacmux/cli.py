@@ -1590,9 +1590,16 @@ def _access_command(
             via = ask("Via")
     credential_access = ""
     if credential:
+        # The credential's own capability: a web login that enabled an exploit
+        # is "authenticated" even when the exploit gave a shell.
+        credential, _, stated = credential.partition(":")
         if not re.fullmatch(r"C\d{3,}", credential):
-            raise ValidationError("--cred expects a credential ID such as C001")
-        credential_access = level
+            raise ValidationError("--cred expects a credential ID such as C001[:LEVEL]")
+        credential_access = (
+            match_word(stated, granted, ACCESS_ALIASES, "credential access")
+            if stated
+            else "authenticated"
+        )
     elif interactive:
         rows = sitrep.read_global(workspace.read(context.root), "CREDENTIALS")
         credential = choose(
