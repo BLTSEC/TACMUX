@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 3.1.2 — 2026-11-03
+
+### Fixed
+
+- Opening a session for a `new` target no longer fails when TACMUX cannot mark
+  it `active` (for example while SITREP is mid-edit or invalid); a warning is
+  printed and the session opens.
+- Only a bare `help` argument is a help request: `tm done help desk password
+  reused` records the entry, while `tm done help` still shows help.
+- In the operations session, `tm creds confirm C001 WEB1 …` with a mistyped
+  target is refused with the known targets listed, instead of the typo silently
+  becoming the service.
+- The palette's Nmap import lists `*.nmap` and files under `scans/` only, not
+  every `.txt` in the target folder.
+- `docs/USAGE.md`: only the palette's hostname action copies the `/etc/hosts`
+  line.
+
 ## 3.1.1 — 2026-11-03
 
 ### Changed
