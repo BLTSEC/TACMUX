@@ -69,6 +69,38 @@ def _copy(source: Path, destination: Path, stop: Path) -> bool:
     return True
 
 
+def _local_offsets(session: Path) -> str:
+    """UTC offsets in effect when the logs were written (DST-aware)."""
+    offsets = sorted(
+        {
+            datetime.fromtimestamp(path.stat().st_mtime).astimezone().strftime("%z")
+            for path in session.glob("*.log")
+            if path.is_file() and not path.is_symlink()
+        }
+    )
+    return ", ".join(offsets) or datetime.now().astimezone().strftime("%z")
+
+
+def _write_readme(destination: Path, session: Path, tool: str) -> None:
+    note = destination / "README.txt"
+    if note.is_symlink():
+        raise SafetyError(f"refusing linked file: {note}")
+    text = (
+        f"Copied by TACMUX from {session}\n"
+        f"Last refreshed {datetime.now(timezone.utc).isoformat()}\n"
+        f"{tool} timestamps are local time (UTC offset {_local_offsets(session)}).\n"
+    )
+    descriptor, temporary = tempfile.mkstemp(prefix=".README.", dir=destination)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, note)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
 def collect_shell_logs(
     root: Path, route: str, endpoint: str, directories: Iterable[Path]
 ) -> list[Path]:
@@ -98,13 +130,5 @@ def collect_shell_logs(
                 if _copy(source, destination / relative, root):
                     copied.append(destination / relative)
             if destination.is_dir():
-                offset = datetime.now().astimezone().strftime("%z")
-                note = destination / "README.txt"
-                note.write_text(
-                    f"Copied by TACMUX from {session}\n"
-                    f"Last refreshed {datetime.now(timezone.utc).isoformat()}\n"
-                    f"{tool} timestamps are local time (UTC offset {offset}).\n",
-                    encoding="utf-8",
-                )
-                os.chmod(note, 0o600)
+                _write_readme(destination, session, tool)
     return copied

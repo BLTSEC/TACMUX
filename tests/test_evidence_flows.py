@@ -210,36 +210,38 @@ def test_settings_parse_snapshot_and_shell_log_dirs(tmp_path):
     assert default.shell_log_dirs == (tmp_path / ".penelope/sessions",)
 
 
-def test_stop_snapshots_before_killing(
+def test_stop_renders_readable_logs_before_killing(
     settings, workspace, engagement, monkeypatch, capsys
 ):
     from tacmux.cli import main
 
     workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    day = engagement / "logs/20260101"
+    day.mkdir(parents=True)
+    raw = day / "WEB01_WEB01_host_p1_000000_000000.log"
+    raw.write_bytes(
+        b"=== TACMUX pane log ===\nSession: s\nTarget: WEB01\nPane: %1\n\n"
+        b"scan 10%\rscan 100%\r\n"
+    )
+    other = day / "ENGAGEMENT_OPS_host_p1_000000_000001.log"
+    other.write_bytes(b"=== TACMUX pane log ===\nTarget: ENGAGEMENT\n\nops\r\n")
     monkeypatch.setenv("TACMUX_WORKSPACE", str(settings.workspace))
     monkeypatch.setenv("TACMUX_CONFIG", str(settings.config_file))
-    monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.chdir(engagement / "targets/WEB01")
     order = []
     monkeypatch.setattr("tacmux.tmux.TmuxService.has_session", lambda self, name: True)
     monkeypatch.setattr(
-        "tacmux.tmux.TmuxService.panes",
-        lambda self, name: [("%1", "zsh"), ("%2", "penelope")],
-    )
-    monkeypatch.setattr(
-        "tacmux.tmux.TmuxService.logging_panes", lambda self, name: {"%1", "%2"}
-    )
-    monkeypatch.setattr(
-        "tacmux.hooks.LogController.capture",
-        lambda self, pane: order.append(("capture", pane)) or engagement / "logs/x.log",
-    )
-    monkeypatch.setattr(
         "tacmux.tmux.TmuxService.stop",
-        lambda self, root, target="": order.append(("stop", target)),
+        lambda self, root, target="": order.append(
+            ("stop", target, raw.with_suffix(".txt").exists())
+        ),
     )
     assert main(["stop"]) == 0
-    assert order == [("capture", "%1"), ("capture", "%2"), ("stop", "WEB01")]
-    assert "Snapshot  2 pane(s)" in capsys.readouterr().out
+    assert order == [("stop", "WEB01", True)]
+    assert "scan 100%" in raw.with_suffix(".txt").read_text()
+    assert "scan 10%" not in raw.with_suffix(".txt").read_text()
+    assert not other.with_suffix(".txt").exists()
+    assert "Readable logs  1" in capsys.readouterr().out
 
 
 # --- 2.5 evidence helpers ----------------------------------------------------
@@ -662,28 +664,19 @@ def test_rename_inside_its_own_session_says_where_to_stop_it(
     assert "stop WEB01 first with: tacmux stop WEB01" in capsys.readouterr().err
 
 
-def test_snapshots_skip_panes_with_logging_turned_off(
-    settings, workspace, web01, monkeypatch, capsys
+def test_automatic_snapshot_never_captures_scrollback(
+    settings, workspace, web01, monkeypatch
 ):
+    """Readable copies come from raw logs only; an off→on toggle cannot leak."""
     from tacmux.cli import _snapshot
     from tacmux.tmux import TmuxService
 
-    captured = []
-    monkeypatch.setattr("tacmux.tmux.TmuxService.has_session", lambda self, name: True)
-    monkeypatch.setattr(
-        "tacmux.tmux.TmuxService.panes",
-        lambda self, name: [("%1", "zsh"), ("%2", "zsh"), ("%3", "penelope")],
-    )
-    monkeypatch.setattr(
-        "tacmux.tmux.TmuxService.logging_panes", lambda self, name: {"%1", "%3"}
-    )
     monkeypatch.setattr(
         "tacmux.hooks.LogController.capture",
-        lambda self, pane: captured.append(pane) or web01 / "logs/x.log",
+        lambda self, pane: pytest.fail("automatic snapshot must not capture-pane"),
     )
     saved, _ = _snapshot(settings, workspace, TmuxService(settings), web01, "WEB01")
-    assert captured == ["%1", "%3"] and len(saved) == 2
-    assert "Skipped 1 pane(s) with logging off" in capsys.readouterr().out
+    assert saved == []
 
 
 def test_logging_panes_reads_pane_pipe(settings, monkeypatch):
@@ -948,3 +941,22 @@ def test_target_add_and_init_offer_the_session_inside_tmux(
     monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: next(answers))
     assert main(["init", "LAB"]) == 0
     assert opened[-1] == (settings.workspace / "LAB", "BOX")
+
+
+def test_access_and_proof_collect_penelope_logs(
+    settings, workspace, web01, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    base = tmp_path / ".penelope/sessions"
+    session = _penelope(base, "ubuntu~192.0.2.10-Linux-x86_64", {"a.log": b"id\n"})
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setattr("tacmux.cli.can_prompt", lambda: False)
+    assert main(["access", "user", "app", "rce"]) == 0
+    shells = web01 / "captures/WEB01/shells/penelope/ubuntu~192.0.2.10-Linux-x86_64"
+    assert (shells / "a.log").read_bytes() == b"id\n"
+    assert "Shell logs  1 new file(s)" in capsys.readouterr().out
+    (session / "b.log").write_bytes(b"cat local.txt\n")
+    assert (
+        main(["proof", "user", "9a1d", "/home/app/local.txt", "--no-screenshot"]) == 0
+    )
+    assert (shells / "b.log").is_file()

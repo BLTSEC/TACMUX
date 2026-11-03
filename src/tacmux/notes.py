@@ -236,7 +236,9 @@ def notes_command(
     if arguments and arguments[0] == "move":
         return move_command(workspace, arguments[1:])
     if arguments:
-        return switch_folder(settings, workspace, _resolve_argument(workspace, arguments[0]))
+        return switch_folder(
+            settings, workspace, _resolve_argument(workspace, arguments[0])
+        )
     if not can_prompt():
         _print_current(workspace)
         return 0

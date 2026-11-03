@@ -65,8 +65,8 @@ def test_write_sitrep_root_keeps_comments_and_keys(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     config = tmp_path / "config.toml"
     config.write_text(
-        "# top comment\n[paths]\nworkspace = \"~/ws\"\n"
-        "# Optional notes\nsitrep_root = \"~/old\"\n\n[behavior]\nauto_log = true\n"
+        '# top comment\n[paths]\nworkspace = "~/ws"\n'
+        '# Optional notes\nsitrep_root = "~/old"\n\n[behavior]\nauto_log = true\n'
     )
     config.chmod(0o600)
     write_sitrep_root(config, tmp_path / "notes" / "PG")
@@ -78,15 +78,16 @@ def test_write_sitrep_root_keeps_comments_and_keys(tmp_path, monkeypatch):
     assert loaded.sitrep_root == (tmp_path / "notes" / "PG").resolve()
     assert loaded.auto_log is True
     write_sitrep_root(config, None)
-    assert load_settings(
-        {"HOME": str(tmp_path), "TACMUX_CONFIG": str(config)}
-    ).sitrep_root is None
+    assert (
+        load_settings({"HOME": str(tmp_path), "TACMUX_CONFIG": str(config)}).sitrep_root
+        is None
+    )
 
 
 def test_write_sitrep_root_inserts_paths_table(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     config = tmp_path / "config.toml"
-    config.write_text('[behavior]\nauto_log = false\n')
+    config.write_text("[behavior]\nauto_log = false\n")
     write_sitrep_root(config, Path("/srv/notes"))
     loaded = load_settings({"HOME": str(tmp_path), "TACMUX_CONFIG": str(config)})
     assert loaded.sitrep_root == Path("/srv/notes") and loaded.auto_log is False
@@ -108,7 +109,9 @@ def test_notes_by_name_pins_and_switches(settings, tmp_path, monkeypatch, capsys
         {"HOME": str(tmp_path), "TACMUX_CONFIG": str(settings.config_file)}
     )
     assert loaded.sitrep_root == (base / "PG").resolve()
-    assert Workspace(dataclasses.replace(settings, sitrep_root=loaded.sitrep_root)).is_engagement(root)
+    assert Workspace(
+        dataclasses.replace(settings, sitrep_root=loaded.sitrep_root)
+    ).is_engagement(root)
 
 
 def test_notes_refuses_workspace_and_symlink(settings, tmp_path):

@@ -238,50 +238,47 @@ def _snapshot(
     *,
     shells: bool = True,
 ) -> tuple[list[Path], list[Path]]:
-    """Save rendered scrollback of logging panes, then copy shell-handler logs.
+    """Write readable copies of the target's pane logs, then copy shell logs.
 
-    A pane whose logging was turned off (prefix+T) is skipped: the operator
-    chose to keep that output off disk. prefix+S still captures it on request.
+    Readable copies are rendered from the raw pane logs only, so output from a
+    period when logging was off (prefix+T) never reaches disk. prefix+S still
+    saves an exact capture of one pane on request.
     """
-    name = tmux.session_name(root, target)
-    saved: list[Path] = []
-    if tmux.has_session(name):
-        controller = LogController(settings, tmux)
-        logging = tmux.logging_panes(name)
-        skipped = 0
-        for pane, _command in tmux.panes(name):
-            if pane not in logging:
-                skipped += 1
-                continue
-            try:
-                saved.append(controller.capture(pane))
-            except TacmuxError as exc:
-                print(f"tacmux: snapshot of {pane} failed: {exc}", file=sys.stderr)
-        if skipped:
-            print(
-                f"Skipped {skipped} pane(s) with logging off "
-                "(prefix+S saves one explicitly)"
-            )
-    copied: list[Path] = []
-    if shells and target and settings.shell_log_dirs:
-        from .integrations import collect_shell_logs
+    from .render import refresh_readable
 
-        details = workspace.target_details(root, target)
-        try:
-            copied = collect_shell_logs(
-                root,
-                details["Capture Route"][0] or target,
-                details["Endpoint"][0],
-                settings.shell_log_dirs,
-            )
-        except (OSError, TacmuxError) as exc:
-            print(f"tacmux: shell-log copy failed: {exc}", file=sys.stderr)
+    saved: list[Path] = []
+    try:
+        saved = refresh_readable(root, target)
+    except OSError as exc:
+        print(f"tacmux: readable logs failed: {exc}", file=sys.stderr)
+    copied = _collect_shells(settings, workspace, root, target) if shells else []
     return saved, copied
+
+
+def _collect_shells(
+    settings: Settings, workspace: Workspace, root: Path, target: str
+) -> list[Path]:
+    """Copy shell-handler (penelope) session logs for the target's endpoint."""
+    if not target or not settings.shell_log_dirs:
+        return []
+    from .integrations import collect_shell_logs
+
+    try:
+        details = workspace.target_details(root, target)
+        return collect_shell_logs(
+            root,
+            details["Capture Route"][0] or target,
+            details["Endpoint"][0],
+            settings.shell_log_dirs,
+        )
+    except (OSError, TacmuxError) as exc:
+        print(f"tacmux: shell-log copy failed: {exc}", file=sys.stderr)
+        return []
 
 
 def _report_snapshot(root: Path, saved: Sequence[Path], copied: Sequence[Path]) -> None:
     if saved:
-        print(f"Snapshot  {len(saved)} pane(s) → {saved[0].parent.relative_to(root)}/")
+        print(f"Readable logs  {len(saved)} → logs/…/*.txt")
     if copied:
         print(f"Shell logs  {len(copied)} new file(s) → captures/…/shells/")
 
@@ -297,7 +294,7 @@ def _snap_command(
     target = workspace.canonical_target(context.root, target) if target else ""
     saved, copied = _snapshot(settings, workspace, tmux, context.root, target)
     if not saved and not copied:
-        print("Nothing to snapshot (no live panes or matching shell logs).")
+        print("Readable logs and shell logs are up to date.")
     _report_snapshot(context.root, saved, copied)
     return 0
 
@@ -1742,6 +1739,9 @@ def _access_command(
         if after != current
         else f"Access stays {after} (already at or above {level})"
     )
+    copied = _collect_shells(settings, workspace, context.root, target)
+    if copied:
+        print(f"Shell logs  {len(copied)} new file(s) → captures/…/shells/")
     if not screenshot and interactive:
         screenshot = confirm("Take a screenshot for this entry?", default=False)
     if screenshot:
@@ -1911,6 +1911,9 @@ def _proof_command(
         tmux.run(["send-keys", "-t", pane, "-l", line], check=False)
         tmux.run(["send-keys", "-t", pane, "Enter"], check=False)
         delay = "1.5"
+    copied = _collect_shells(settings, workspace, context.root, target)
+    if copied:
+        print(f"Shell logs  {len(copied)} new file(s) → captures/…/shells/")
     if not screenshot and not no_screenshot and (interactive or can_prompt()):
         screenshot = confirm("Take the proof screenshot now?", default=True)
     if screenshot and not no_screenshot:
@@ -2193,8 +2196,10 @@ def _dispatch(
         root = workspace.create_engagement(name)
         print(root)
         if existed and (root / "SITREP.md").is_symlink():
-            print(f"Opened existing {root.name}; notes: "
-                  f"{display_path(workspace.sitrep_path(root).parent)}")
+            print(
+                f"Opened existing {root.name}; notes: "
+                f"{display_path(workspace.sitrep_path(root).parent)}"
+            )
         elif settings.sitrep_root:
             print(f"Notes: {display_path(settings.sitrep_root)} (change: tm notes)")
         if settings.sitrep_root and (root / "SITREP.md").is_symlink():
