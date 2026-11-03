@@ -53,7 +53,7 @@ tm switch                             # pick any session (Prefix+E)
 ```
 
 Box reverted with a new IP? `tm target update WEB01 endpoint 192.0.2.11` from
-OPS snapshots and restarts the session and copies the new `/etc/hosts` line.
+OPS saves its logs, restarts the session, and copies the new `/etc/hosts` line.
 
 Inside a target session, press **Prefix+`M`** (or type `tm`) and pick what
 happened. Each entry previews the direct command it runs:

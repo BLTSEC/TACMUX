@@ -280,6 +280,11 @@ def test_legacy_upgrade_preserves_rows_and_completion():
     )
     upgraded = sitrep.upgrade_legacy(legacy)
     assert sitrep.read_events(upgraded)[0].summary == "Started"
+    long = "word " * 30
+    upgraded_long = sitrep.upgrade_legacy(legacy.replace("| Started |", f"| {long} |"))
+    event = sitrep.read_events(upgraded_long)[0]
+    assert len(event.summary) <= 80 and long.strip() in event.body
+    assert "#### Notes\n\ndetail" in event.body
     tasks = sitrep.read_tasks(upgraded, "TODO")
     assert [(task.identifier, task.complete) for task in tasks] == [
         ("T001", False),

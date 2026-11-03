@@ -33,7 +33,8 @@ the preview shows what the action does and its direct command.
 | ↶ Undo last change | `tm undo` |
 | ⓘ Status · History · SITREP · Context | `tm status` · `tm history` · `tm sitrep` · `tm sitrep context` |
 | ➕ Add target · 🔎 Discover hosts | `tm target add NAME IP` · `tm discover` |
-| 📸 Snapshot panes now | `tm snap [TARGET]` |
+| 🗂 Evidence & logs | `tm evidence [TARGET]` (`tm snap` refreshes without the view) |
+| 📁 Notes folder (SITREP root) | `tm notes [NAME\|PATH\|none]` · `tm notes move [ENG] [FOLDER]` |
 | ⏹ Close out | `tm close [TARGET\|--engagement] [--yes] [--no-stop]` |
 | ⇄ Session entries | `tm switch` (Prefix+`E`) |
 
@@ -312,7 +313,7 @@ tm target update WEB01 role "mail server"
 tm target update WEB01 principal --clear
 ```
 
-The field keys are `endpoint`, `network`, `status`, `hostnames`, `role`, `os`, `access`, `principal`, `method`, and `route`. Endpoint and Capture Route updates require the target session to be stopped because they define new-session and capture behavior. After a box revert gives a new IP, run `tm target update TARGET endpoint IP` from OPS: TACMUX offers to snapshot the running session, restart it with the new `TARGET`, and copy the `/etc/hosts` line for its hostnames to the clipboard. Direct Access updates may deliberately raise or lower the recorded level; credential confirmation only raises it. Use `tm sitrep TARGET` for Notes or unusual manual corrections.
+The field keys are `endpoint`, `network`, `status`, `hostnames`, `role`, `os`, `access`, `principal`, `method`, and `route`. Endpoint and Capture Route updates require the target session to be stopped because they define new-session and capture behavior. After a box revert gives a new IP, run `tm target update TARGET endpoint IP` from OPS: TACMUX offers to save its logs (readable copies and shell logs), restart it with the new `TARGET`, and copy the `/etc/hosts` line for its hostnames to the clipboard. Direct Access updates may deliberately raise or lower the recorded level; credential confirmation only raises it. Use `tm sitrep TARGET` for Notes or unusual manual corrections.
 
 `tm status` inside a target shows Details, ports, confirmed credentials without secrets, tasks, cleanup, and recent Operations Log events. In the operations session it shows OS and access across the engagement. Pass a target name for its detailed view.
 

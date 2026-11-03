@@ -120,6 +120,10 @@ def display_path(path: Path, env: Mapping[str, str] | None = None) -> str:
 def write_sitrep_root(config_file: Path, root: Path | None) -> None:
     """Set [paths] sitrep_root in place, keeping every other line and comment."""
     value = display_path(root) if root is not None else ""
+    if "$" in value:
+        raise ValidationError(
+            "notes folder paths cannot contain '$' (config paths expand variables)"
+        )
     line = f"sitrep_root = {_toml_string(value)}\n"
     if config_file.is_symlink():
         raise ValidationError(f"refusing linked config: {config_file}")
@@ -142,7 +146,11 @@ def write_sitrep_root(config_file: Path, root: Path | None) -> None:
         if existing is None:
             lines.insert(start + 1, line)
         else:
-            lines[existing] = line
+            comment = re.match(
+                r"""^\s*sitrep_root\s*=\s*(?:"(?:[^"\\]|\\.)*"|'[^']*')(\s*#.*?)\s*$""",
+                lines[existing],
+            )
+            lines[existing] = line[:-1] + (comment.group(1) if comment else "") + "\n"
     updated = "".join(lines)
     try:
         data = tomllib.loads(updated)

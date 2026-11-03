@@ -168,7 +168,7 @@ ACTIONS: tuple[Action, ...] = (
         "close",
         "⏹  Close out",
         "Checklist (access, TODO, cleanup gate, proof, credentials), status, final "
-        "note, snapshots and shell logs, then stop the session. In the operations "
+        "note, readable logs and shell logs, then stop the session. In the operations "
         "session it can close the whole engagement.",
         "tm close [TARGET|--engagement] [--yes] [--no-stop]",
         ("close",),

@@ -186,10 +186,11 @@ Easiest:  tm → ⏹ Close out
 Forms:    tm close [TARGET | --engagement] [--yes] [--no-stop]
 Target:   checklist (Access, open TODO, cleanup release gate, proof, confirmed
           credential — Enter fixes a line), Status, optional final summary,
-          snapshots + shell logs, then stop. Panes still running programs
+          readable logs + shell logs, then stop. Panes still running programs
           (penelope, nc, claude) need confirmation.
-Engagement: overview, cleanup gate, snapshot every live session, stop other
-          targets, then OPS, then the session running the command.
+Engagement: overview, cleanup gate, readable logs and shell logs for every
+          target, then stop other targets, OPS, and last the session running
+          the command.
 --yes:    no prompts (status complete, stops even busy sessions and says so)
 """,
         "history": f"""tm history — show Operations Log entries, newest first
@@ -229,7 +230,7 @@ Interactive add avoids putting the secret in shell history.
 Forms:    tm target add [NAME] [ENDPOINT]           (inside tmux: offers to open it)
           tm target update [TARGET] [FIELD] [VALUE|--clear]
           New IP after a box revert: tm target update TARGET endpoint IP from
-          OPS snapshots and restarts the session and copies the /etc/hosts line
+          OPS saves its logs, restarts the session, copies the /etc/hosts line
           tm target export [--all|--none|TARGET…]
           tm target rename [OLD] [NEW]          (session must be stopped)
           tm target delete [TARGET]             (mistakes only; exact name)

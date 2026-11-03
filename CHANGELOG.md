@@ -44,6 +44,8 @@
   (`User flag (local.txt)` with the value as code; `Access: user as app`).
 - Entries no longer carry empty placeholders (Image not attached, Draft
   findings, Notes).
+- `tm close --engagement` writes readable copies of every pane log and copies
+  shell logs for every target, including targets stopped earlier.
 
 ### Fixed
 

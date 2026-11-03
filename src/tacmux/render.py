@@ -4,28 +4,51 @@ Raw pane logs keep every byte, including progress bars, line-editor redraws
 and colour codes. render() replays them into the text a reader would have
 seen; refresh_readable() writes that text next to each raw log as `.txt`.
 Only bytes from the raw log are used, so output from periods when logging
-was off can never appear in the readable copy.
+was off can never appear in the readable copy. Rendering streams: memory
+stays bounded however large the raw log is.
 """
 
 from __future__ import annotations
 
+import codecs
+import io
 import os
 from pathlib import Path
 import re
 import sys
 import tempfile
+from typing import Callable, TextIO
 
-CSI = re.compile(r"\x1b\[([0-9;?<>=]*)([ -/]*)([@-~])")
+CSI = re.compile(r"\x1b\[([0-9:;?<>=]*)([ -/]*)([@-~])")
 ALTERNATE_SCREEN = {"1049", "47", "1047"}
 FULL_SCREEN_MARKER = "[full-screen program]"
-WINDOW = 200
-SCREEN = 50
+WINDOW = 200  # recent lines that cursor movement may still rewrite
+SCREEN = 50  # nominal screen height for absolute cursor positioning
+LINE_LIMIT = 20_000  # wrap absurdly long lines to keep memory bounded
+STRING_LIMIT = 8192  # an OSC/DCS string never runs past this or a newline
+CHUNK = 1 << 20
 SIZE_LIMIT = 512 * 1024 * 1024
+ANNOUNCE = 50 * 1024 * 1024
+
+
+class _Sink:
+    """Write finished lines, keeping at most two blank lines in a row."""
+
+    def __init__(self, stream: TextIO) -> None:
+        self.stream = stream
+        self.blanks = 0
+
+    def line(self, text: str) -> None:
+        if not text:
+            self.blanks = min(self.blanks + 1, 2)
+            return
+        self.stream.write("\n" * self.blanks + text + "\n")
+        self.blanks = 0
 
 
 class _Terminal:
-    def __init__(self) -> None:
-        self.out: list[str] = []
+    def __init__(self, emit: Callable[[str], None]) -> None:
+        self.emit = emit
         self.lines: list[list[str]] = [[]]
         self.row = 0
         self.col = 0
@@ -39,6 +62,9 @@ class _Terminal:
 
     def put(self, character: str) -> None:
         line = self.line()
+        if self.col >= LINE_LIMIT and self.col >= len(line):
+            self.newline()
+            line = self.line()
         if self.col > len(line):
             line.extend(" " * (self.col - len(line)))
         if self.col == len(line):
@@ -58,12 +84,21 @@ class _Terminal:
             self.row -= excess
 
     def flush(self, lines: list[list[str]]) -> None:
-        self.out.extend("".join(line).rstrip() for line in lines)
+        for line in lines:
+            self.emit("".join(line).rstrip())
 
     def clear_screen(self) -> None:
         self.flush(self.lines)
         self.lines = [[]]
         self.row = self.col = 0
+
+    def leave_alternate(self) -> None:
+        self.alternate = False
+        pending = self.lines[:-1] if not self.lines[-1] else self.lines
+        self.flush(pending)
+        self.lines = [[]]
+        self.row = self.col = 0
+        self.emit(FULL_SCREEN_MARKER)
 
     def csi(self, params: str, final: str) -> None:
         if params.startswith("?"):
@@ -71,12 +106,7 @@ class _Terminal:
                 if final == "h" and not self.alternate:
                     self.alternate = True
                 elif final == "l" and self.alternate:
-                    self.alternate = False
-                    pending = self.lines[:-1] if not self.lines[-1] else self.lines
-                    self.flush(pending)
-                    self.lines = [[]]
-                    self.row = self.col = 0
-                    self.out.append(FULL_SCREEN_MARKER)
+                    self.leave_alternate()
             return
         if self.alternate:
             return
@@ -103,24 +133,39 @@ class _Terminal:
         elif final == "B":
             self.row += count
         elif final == "C":
-            self.col += count
+            self.col = min(self.col + count, LINE_LIMIT)
         elif final == "D":
             self.col = max(0, self.col - count)
         elif final == "G":
-            self.col = count - 1
+            self.col = min(count, LINE_LIMIT) - 1
         elif final in "Hf":
             row = values[0] if params and values[0] else 1
             column = values[1] if len(values) > 1 and values[1] else 1
             top = max(0, len(self.lines) - SCREEN)
-            self.row = top + row - 1
-            self.col = column - 1
+            self.row = top + min(row, SCREEN) - 1
+            self.col = min(column, LINE_LIMIT) - 1
         elif final == "P":
             del line[self.col : self.col + count]
         elif final == "@":
-            line[self.col : self.col] = [" "] * count
+            line[self.col : self.col] = [" "] * min(count, LINE_LIMIT)
         elif final == "X":
             for index in range(self.col, min(len(line), self.col + count)):
                 line[index] = " "
+
+    def _string_end(self, data: str, start: int) -> int:
+        """End of an OSC/DCS/APC/PM string: BEL, ST, newline, or the limit."""
+        limit = min(len(data), start + STRING_LIMIT)
+        index = start
+        while index < limit:
+            character = data[index]
+            if character == "\x07":
+                return index + 1
+            if character == "\x1b" and data.startswith("\x1b\\", index):
+                return index + 2
+            if character == "\n":
+                return index  # leave the newline to be executed
+            index += 1
+        return index
 
     def feed(self, data: str) -> None:
         index = 0
@@ -134,20 +179,14 @@ class _Terminal:
                     index = match.end()
                     continue
                 following = data[index + 1 : index + 2]
-                if following in ("]", "P", "_", "^"):  # OSC, DCS, APC, PM strings
-                    end = index + 2
-                    while end < length:
-                        if data[end] == "\x07":
-                            end += 1
-                            break
-                        if data.startswith("\x1b\\", end):
-                            end += 2
-                            break
-                        end += 1
-                    index = end
+                if following in ("]", "P", "_", "^"):  # OSC, DCS, APC, PM
+                    index = self._string_end(data, index + 2)
                     continue
                 if following in ("(", ")", "*", "+", "#"):
                     index += 3
+                    continue
+                if not following or following < " ":
+                    index += 1  # a control after ESC is still executed
                     continue
                 if following == "7":
                     self.saved = (self.row, self.col)
@@ -170,29 +209,50 @@ class _Terminal:
             elif character >= " " and character != "\x7f":
                 self.put(character)
 
-    def text(self) -> str:
-        self.flush(self.lines)
+    def finish(self) -> None:
+        if self.alternate:
+            self.leave_alternate()
+        else:
+            self.flush(self.lines)
         self.lines = [[]]
-        collapsed: list[str] = []
-        for line in self.out:
-            if (
-                not line
-                and len(collapsed) >= 2
-                and not collapsed[-1]
-                and not collapsed[-2]
-            ):
-                continue
-            collapsed.append(line)
-        while collapsed and not collapsed[-1]:
-            collapsed.pop()
-        return "\n".join(collapsed) + "\n" if collapsed else ""
+
+
+def _split_point(text: str) -> int:
+    """Where a chunk can be cut without splitting an escape sequence."""
+    cut = text.rfind("\n")
+    if cut >= 0:
+        return cut + 1
+    if len(text) < 8 * CHUNK:
+        return 0
+    escape = text.rfind("\x1b", len(text) - 64)
+    return escape if escape > 0 else len(text)
+
+
+def render_stream(source: TextIO | io.BufferedIOBase, output: TextIO) -> None:
+    """Render a binary raw-log stream into readable text on `output`."""
+    sink = _Sink(output)
+    terminal = _Terminal(sink.line)
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    pending = ""
+    while True:
+        chunk = source.read(CHUNK)
+        if not chunk:
+            break
+        pending += decoder.decode(chunk)
+        cut = _split_point(pending)
+        if cut:
+            terminal.feed(pending[:cut])
+            pending = pending[cut:]
+    pending += decoder.decode(b"", final=True)
+    terminal.feed(pending)
+    terminal.finish()
 
 
 def render(data: bytes) -> str:
     """Replay a raw terminal stream into readable text."""
-    terminal = _Terminal()
-    terminal.feed(data.decode("utf-8", errors="replace"))
-    return terminal.text()
+    output = io.StringIO()
+    render_stream(io.BytesIO(data), output)
+    return output.getvalue()
 
 
 def log_target(path: Path) -> str:
@@ -228,7 +288,11 @@ def readable_path(raw: Path) -> Path:
 
 
 def refresh_readable(root: Path, target: str | None = None) -> list[Path]:
-    """Write `<raw>.txt` for raw logs that have none or a stale one."""
+    """Write `<raw>.txt` for raw logs that have none or a stale one.
+
+    The copy takes the raw log's mtime as read, so output appended while (or
+    after) it was rendered marks it stale for the next refresh.
+    """
     written: list[Path] = []
     for raw in raw_logs(root):
         if target is not None and log_target(raw) != (target or "ENGAGEMENT"):
@@ -243,16 +307,24 @@ def refresh_readable(root: Path, target: str | None = None) -> list[Path]:
         if info.st_size > SIZE_LIMIT:
             print(f"tacmux: skipped {raw.name} (larger than 512 MiB)", file=sys.stderr)
             continue
-        if destination.exists() and destination.stat().st_mtime_ns >= info.st_mtime_ns:
+        if destination.exists() and destination.stat().st_mtime_ns == info.st_mtime_ns:
             continue
-        text = render(raw.read_bytes())
+        if info.st_size > ANNOUNCE:
+            print(
+                f"tacmux: rendering {raw.name} ({info.st_size >> 20} MiB)…",
+                file=sys.stderr,
+            )
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{destination.name}.", dir=destination.parent
         )
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(text)
+            with (
+                raw.open("rb") as source,
+                os.fdopen(descriptor, "w", encoding="utf-8") as output,
+            ):
+                render_stream(source, output)
             os.chmod(temporary, 0o600)
+            os.utime(temporary, ns=(info.st_atime_ns, info.st_mtime_ns))
             os.replace(temporary, destination)
         except BaseException:
             Path(temporary).unlink(missing_ok=True)

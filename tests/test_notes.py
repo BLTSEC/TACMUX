@@ -66,13 +66,14 @@ def test_write_sitrep_root_keeps_comments_and_keys(tmp_path, monkeypatch):
     config = tmp_path / "config.toml"
     config.write_text(
         '# top comment\n[paths]\nworkspace = "~/ws"\n'
-        '# Optional notes\nsitrep_root = "~/old"\n\n[behavior]\nauto_log = true\n'
+        '# Optional notes\nsitrep_root = "~/old"   # course\n\n[behavior]\n'
+        "auto_log = true\n"
     )
     config.chmod(0o600)
     write_sitrep_root(config, tmp_path / "notes" / "PG")
     text = config.read_text()
     assert "# top comment" in text and "# Optional notes" in text
-    assert 'sitrep_root = "~/notes/PG"' in text and "~/old" not in text
+    assert 'sitrep_root = "~/notes/PG"   # course' in text and "~/old" not in text
     assert config.stat().st_mode & 0o777 == 0o600
     loaded = load_settings({"HOME": str(tmp_path), "TACMUX_CONFIG": str(config)})
     assert loaded.sitrep_root == (tmp_path / "notes" / "PG").resolve()
@@ -178,3 +179,38 @@ def test_switcher_tags_and_orders(settings, tmp_path, monkeypatch):
     choices = cli._session_choices(workspace, FakeTmux())
     assert choices[0][0].startswith("STOP  Bravo / OPS  [notes]")
     assert choices[-1][0].endswith("[notes]") and "Alpha" in choices[-1][0]
+
+
+def test_notes_names_labels_and_duplicates(settings, tmp_path, monkeypatch):
+    from tacmux.notes import _resolve_argument
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    base = tmp_path / "notes"
+    for course in ("PG", "HTB", "OSCP/PG"):
+        (base / course).mkdir(parents=True)
+    _external(settings, base).create_engagement("ACME")  # pinned to notes/
+    workspace = _external(settings, base / "OSCP")  # current: notes/OSCP
+    assert _resolve_argument(workspace, "htb") == (base / "HTB").resolve()
+    assert _resolve_argument(workspace, "OSCP/PG") == (base / "OSCP/PG").resolve()
+    assert _resolve_argument(workspace, "notes/PG") == (base / "PG").resolve()
+    with pytest.raises(TacmuxError, match="several notes folders are named PG"):
+        _resolve_argument(workspace, "PG")
+    assert _resolve_argument(workspace, "none") is None
+
+
+def test_notes_refuses_to_create_inside_workspace(settings, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    workspace = _external(settings, tmp_path / "notes")
+    target = settings.workspace / "notes-here"
+    with pytest.raises(TacmuxError, match="outside the workspace"):
+        notes_command(workspace.settings, workspace, [str(target)])
+    assert not target.exists()
+
+
+def test_notes_path_with_dollar_is_refused(settings, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "C$"
+    folder.mkdir()
+    workspace = _external(settings, tmp_path / "notes")
+    with pytest.raises(TacmuxError, match=r"\$"):
+        notes_command(workspace.settings, workspace, [str(folder)])

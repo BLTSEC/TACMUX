@@ -97,21 +97,43 @@ def folder_label(workspace: Workspace, root: Path) -> str:
 def _resolve_argument(workspace: Workspace, value: str) -> Path | None:
     if value.casefold() in NONE_WORDS:
         return None
-    if "/" in value or value.startswith("~"):
-        expanded = os.path.expanduser(value)
-        return Path(expanded).absolute()
     folders = candidate_folders(workspace)
-    names = {}
+    labels = {_label(folder, folders): folder for folder in reversed(folders)}
+    if value in labels:
+        return labels[value]
+    if "/" in value or value.startswith(("~", ".")):
+        return Path(os.path.expanduser(value)).absolute()
+    counts: dict[str, int] = {}
     for folder in folders:
-        names.setdefault(_label(folder, folders), folder)
-        names.setdefault(folder.name, folder)
-    chosen = match_word(value, list(names), label="notes folder")
+        counts[folder.name] = counts.get(folder.name, 0) + 1
+    names = {folder.name: folder for folder in folders if counts[folder.name] == 1}
+    try:
+        chosen = match_word(value, list(names), label="notes folder")
+    except ValidationError as exc:
+        if counts.get(value, 0) > 1:
+            raise ValidationError(
+                f"several notes folders are named {value}; use parent/{value} or a path"
+            ) from exc
+        raise
     return names[chosen]
 
 
-def _create_if_missing(folder: Path) -> None:
+def _new_folder_base(workspace: Workspace) -> Path | None:
+    """New course folders go beside the current one when it is a leaf."""
+    current = workspace.settings.sitrep_root
+    if current is None:
+        folders = candidate_folders(workspace)
+        return folders[0] if folders else None
+    return current if _subfolders(current) else current.parent
+
+
+def _create_if_missing(workspace: Workspace, folder: Path) -> None:
     if folder.exists() or folder.is_symlink():
         return
+    workspace_root = workspace.settings.workspace.resolve(strict=False)
+    resolved = folder.resolve(strict=False)
+    if resolved == workspace_root or resolved.is_relative_to(workspace_root):
+        raise ValidationError("notes folder must be outside the workspace")
     if not can_prompt() or not confirm(f"Create {display_path(folder)}?", default=True):
         raise ValidationError(f"notes folder does not exist: {display_path(folder)}")
     folder.mkdir(parents=True, mode=0o700)
@@ -127,7 +149,7 @@ def _pin_all(workspace: Workspace) -> list[str]:
 
 def switch_folder(settings: Settings, workspace: Workspace, folder: Path | None) -> int:
     if folder is not None:
-        _create_if_missing(folder)
+        _create_if_missing(workspace, folder)
         folder = workspace.validate_notes_folder(folder)
     pinned = _pin_all(workspace)
     if pinned:
@@ -177,7 +199,7 @@ def move_command(workspace: Workspace, arguments: Sequence[str]) -> int:
         folder = Path(_pick_folder(workspace, allow_special=False))
     if folder is None:
         raise ValidationError("moving notes into the workspace is not supported")
-    _create_if_missing(folder)
+    _create_if_missing(workspace, folder)
     destination = workspace.move_notes(root, folder)
     print(f"Moved {root.name} notes → {display_path(destination)}")
     return 0
@@ -198,7 +220,7 @@ def _pick_folder(workspace: Workspace, *, allow_special: bool = True) -> str:
         choices.append(
             (f"{_label(folder, folders):32} {count}{mark}", str(folder), preview)
         )
-    base = current or (folders[0] if folders else None)
+    base = _new_folder_base(workspace)
     if base is not None:
         choices.append(
             ("New folder…", NEW_FOLDER, f"Create a folder in {display_path(base)}")

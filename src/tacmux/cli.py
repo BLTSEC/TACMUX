@@ -328,7 +328,11 @@ def _tail(path: Path, count: int = 15) -> str:
             text = stream.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
-    return "\\n".join(text.splitlines()[-count:]).replace("\t", " ")
+    lines = [
+        "".join(character if character.isprintable() else " " for character in line)
+        for line in text.splitlines()[-count:]
+    ]
+    return "\\n".join(line.replace("\\", "\\\\") for line in lines)
 
 
 def _evidence_command(
@@ -361,7 +365,9 @@ def _evidence_command(
     ]
     readable.sort(key=lambda path: path.stat().st_mtime, reverse=True)
     journal = _journal_rows(root, target)
-    routes = [_route(workspace, root, name) for name in targets] or ["ops"]
+    routes = [_route(workspace, root, name) for name in targets]
+    if not target:
+        routes.append("ops")
     shells = sorted(
         path
         for route in routes
@@ -722,7 +728,7 @@ def _update_target(
         )
         if field == "Endpoint" and not inside and can_prompt():
             restart = confirm(
-                f"{target}'s session is running. Snapshot it and restart it with "
+                f"{target}'s session is running. Save its logs and restart it with "
                 f"{value}? (its shells and tunnels end)",
                 default=True,
             )
@@ -878,7 +884,8 @@ def _last_command(root: Path) -> str:
         command = row["command"].strip()
         if pane and row["pane"] and row["pane"] != pane:
             continue
-        if not command or command.split()[0] in {"tm", "tacmux"}:
+        words = [word for word in command.split() if "=" not in word.split("/")[0]]
+        if not words or words[0] in {"tm", "tacmux"} or words[:2] == ["cap", "grab"]:
             continue
         return command
     return ""
@@ -2298,7 +2305,7 @@ def _close_engagement(
                 t for t in sitrep.read_tasks(text, "CLEANUP") if not t.complete
             ]
     if not yes and not confirm(
-        "Snapshot and stop every session of this engagement?", default=True
+        "Save readable logs and stop every session of this engagement?", default=True
     ):
         raise ValidationError("engagement close cancelled")
     current_root, current_target = tmux.current_context()
@@ -2310,12 +2317,21 @@ def _close_engagement(
     live = [t for t in workspace.targets(root) if tmux.target_running(root, t)]
     # The session running this command is stopped last so the output survives.
     ordered = [t for t in live if t != inside] + [t for t in live if t == inside]
-    for target in ordered:
-        saved, copied = _snapshot(settings, workspace, tmux, root, target)
-        _report_snapshot(root, saved, copied)
-    if tmux.target_running(root, ""):
-        saved, _ = _snapshot(settings, workspace, tmux, root, "", shells=False)
-        _report_snapshot(root, saved, [])
+    from .render import refresh_readable
+
+    # Readable logs need no live session: render every pane log, and copy
+    # shell logs for every target, including ones stopped earlier.
+    try:
+        saved = refresh_readable(root)
+    except OSError as exc:
+        print(f"tacmux: readable logs failed: {exc}", file=sys.stderr)
+        saved = []
+    copied = [
+        path
+        for name in workspace.targets(root)
+        for path in _collect_shells(settings, workspace, root, name)
+    ]
+    _report_snapshot(root, saved, copied)
     if open_cleanup:
         print(f"Reminder: {len(open_cleanup)} cleanup item(s) still open.")
     if not no_stop:
@@ -2401,19 +2417,16 @@ def _dispatch(
         existed = (settings.workspace / name).exists()
         root = workspace.create_engagement(name)
         print(root)
-        if existed and (root / "SITREP.md").is_symlink():
-            print(
-                f"Opened existing {root.name}; notes: "
-                f"{display_path(workspace.sitrep_path(root).parent)}"
-            )
-        elif settings.sitrep_root:
-            print(f"Notes: {display_path(settings.sitrep_root)} (change: tm notes)")
-        if settings.sitrep_root and (root / "SITREP.md").is_symlink():
-            print(f"SITREP: {workspace.sitrep_path(root)}")
-            print(
-                "Warning: this external notes location receives raw credentials "
-                "stored in SITREP."
-            )
+        if (root / "SITREP.md").is_symlink():
+            where = display_path(workspace.sitrep_path(root))
+            if existed:
+                print(f"Opened existing {root.name}; SITREP: {where}")
+            else:
+                print(f"SITREP: {where} (notes folder: change with tm notes)")
+                print(
+                    "Warning: this external notes location receives raw "
+                    "credentials stored in SITREP."
+                )
         if not workspace.targets(root) and can_prompt():
             if confirm("Add the first target now?", default=True):
                 target = ask("Target name")

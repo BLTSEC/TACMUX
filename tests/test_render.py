@@ -64,3 +64,31 @@ def test_refresh_readable_refuses_linked_output(tmp_path, capsys):
     raw.with_suffix(".txt").symlink_to(tmp_path / "elsewhere")
     assert refresh_readable(tmp_path) == []
     assert "refusing linked" in capsys.readouterr().err
+
+
+def test_colon_parameters_unterminated_osc_and_esc_newline():
+    assert render(b"\x1b[38:5:196mred\x1b[0m\r\n") == "red\n"
+    assert render(b"\x1b]0;broken title\nafter\r\n") == "\nafter\n"
+    assert render(b"a\x1b\nb\r\n") == "a\nb\n"
+
+
+def test_streaming_matches_whole_render(monkeypatch):
+    import tacmux.render as module
+
+    data = (b"scan 1%\rscan 99%\r\n\x1b[31mred\x1b[0m\r\n" + "é".encode()) * 50
+    expected = render(data)
+    monkeypatch.setattr(module, "CHUNK", 7)
+    assert render(data) == expected
+
+
+def test_long_lines_wrap_to_bound_memory(monkeypatch):
+    import tacmux.render as module
+
+    monkeypatch.setattr(module, "LINE_LIMIT", 10)
+    assert render(b"x" * 25 + b"\r\n") == "xxxxxxxxxx\nxxxxxxxxxx\nxxxxx\n"
+
+
+def test_readable_copy_takes_the_raw_mtime(tmp_path):
+    raw = _raw(tmp_path, "A_p1.log", "WEB", b"one\r\n")
+    refresh_readable(tmp_path)
+    assert raw.with_suffix(".txt").stat().st_mtime_ns == raw.stat().st_mtime_ns

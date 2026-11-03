@@ -394,8 +394,28 @@ CALLOUT_OUTCOME = {
     "info": "info",
 }
 CALLOUT_HEADING = re.compile(r"^\[!([A-Za-z-]+)\][+-]?\s*(.*)$")
-CHIP = re.compile(r"`([^`]*)`")
+CHIP = re.compile(r"(`+)(.+?)(?<!`)\1(?!`)")
+ISO_DISPLAY = re.compile(r"^(\d{4}-\d{2}-\d{2})T(?=\d)")
+ISO_STORED = re.compile(r"^(\d{4}-\d{2}-\d{2}) (?=\d)")
 TITLE_LIMIT = 80
+
+
+def _chip(value: str) -> str:
+    """Inline code that survives backticks in the value (CommonMark rules)."""
+    if "`" not in value:
+        return f"`{value}`"
+    fence = "`" * (max(len(run) for run in re.findall(r"`+", value)) + 1)
+    return f"{fence} {value} {fence}"
+
+
+def _chips(line: str) -> list[str]:
+    values = []
+    for match in CHIP.finditer(line):
+        value = match.group(2)
+        if len(value) > 1 and value.startswith(" ") and value.endswith(" "):
+            value = value[1:-1]
+        values.append(value)
+    return values
 
 
 def _quoted(text: str) -> str:
@@ -404,12 +424,12 @@ def _quoted(text: str) -> str:
 
 def _event_block(event: Event) -> str:
     chips = [
-        f"`{event.identifier}`",
-        f"`{event.timestamp.replace('T', ' ')}`",
-        f"`{event.target}`",
+        _chip(event.identifier),
+        _chip(ISO_DISPLAY.sub(r"\1 ", event.timestamp)),
+        _chip(event.target),
     ]
     if event.capture_id:
-        chips.append(f"📎 `{event.capture_id}`")
+        chips.append(f"📎 {_chip(event.capture_id)}")
     lines = [
         f"[!{OUTCOME_CALLOUT.get(event.outcome, 'note')}] {event.summary}",
         " · ".join(chips),
@@ -481,7 +501,7 @@ def _callout_event(identifier: str, lines: list[str]) -> Event:
         raise ValidationError(f"operation {identifier} has no title")
     if len(lines) < 2:
         raise ValidationError(f"operation {identifier} is missing its metadata line")
-    chips = CHIP.findall(lines[1])
+    chips = _chips(lines[1])
     if len(chips) < 3:
         raise ValidationError(
             f"operation {identifier} metadata must be `ID` · `time` · `target`"
@@ -489,7 +509,7 @@ def _callout_event(identifier: str, lines: list[str]) -> Event:
     capture = chips[3].strip() if len(chips) > 3 else ""
     return Event(
         identifier,
-        chips[1].strip().replace(" ", "T"),
+        ISO_STORED.sub(r"\1T", chips[1].strip()),
         chips[2].strip(),
         CALLOUT_OUTCOME[kind],
         title,
@@ -825,17 +845,12 @@ def upgrade_legacy(text: str) -> str:
     todo_rows = _legacy_rows(text, "TODO")
     completed_rows = _legacy_rows(text, "COMPLETED")
     cleanup_rows = _legacy_rows(text, "CLEANUP")
-    events = [
-        Event(
-            f"E{index:03d}",
-            row[0],
-            row[1],
-            row[2],
-            row[3],
-            body=(f"#### Notes\n\n{row[4]}" if row[4] else ""),
-        )
-        for index, row in enumerate(narratives, start=1)
-    ]
+    events = []
+    for index, row in enumerate(narratives, start=1):
+        title, details = split_title(row[3])
+        notes = f"#### Notes\n\n{row[4]}" if row[4] else ""
+        body = "\n\n".join(part for part in (details, notes) if part)
+        events.append(Event(f"E{index:03d}", row[0], row[1], row[2], title, body=body))
     tasks = [Task(row[0], row[1], row[2], row[3], notes=row[4]) for row in todo_rows]
     tasks.extend(
         Task(

@@ -79,6 +79,17 @@ def validate_value(value: str, field: str, *, required: bool = True) -> str:
     return result
 
 
+def validate_code(value: str) -> str:
+    """A code block may span lines but holds no other control characters."""
+    result = value.strip("\n").rstrip()
+    if any(
+        (ord(character) < 32 and character not in "\n\t") or ord(character) == 127
+        for character in result
+    ):
+        raise ValidationError("code cannot contain control characters")
+    return result
+
+
 def validate_confirmation_component(value: str, field: str) -> str:
     result = validate_value(value, field)
     if ";" in result or "·" in result:
@@ -225,9 +236,7 @@ class Workspace:
 
     def pinned_notes_root(self, root: Path) -> Path | None:
         """The notes folder recorded when the engagement was created (3.4+)."""
-        pin = root / ".tacmux" / NOTES_PIN
-        if pin.is_symlink():
-            raise SafetyError(f"refusing linked notes pin: {pin}")
+        pin = self._contained(root, ".tacmux", NOTES_PIN)
         if not pin.is_file():
             return None
         value = pin.read_text(encoding="utf-8").strip()
@@ -451,10 +460,14 @@ class Workspace:
         return destination / "SITREP.md"
 
     def _relink(self, root: Path, destination: Path) -> None:
-        temporary = self._contained(root, ".tacmux", f".link.{os.getpid()}")
-        temporary.unlink(missing_ok=True)
+        directory = self._contained(root, ".tacmux")
+        temporary = directory / f".link.{os.getpid()}.{os.urandom(4).hex()}"
         os.symlink(destination, temporary)
-        os.replace(temporary, root / "SITREP.md")
+        try:
+            os.replace(temporary, root / "SITREP.md")
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
 
     def find_root(self, path: Path) -> Path | None:
         candidate = path.resolve(strict=False)
@@ -1058,6 +1071,7 @@ class Workspace:
             raise ValidationError("outcome must be info, success, partial, or failed")
         summary = validate_value(summary, "summary")
         notes = validate_value(notes, "notes", required=False)
+        code = validate_code(code)
         image_sources = [self._validate_image(path) for path in images]
         created_images: list[Path] = []
         identifier = ""

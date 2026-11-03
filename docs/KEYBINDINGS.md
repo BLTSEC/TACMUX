@@ -9,7 +9,7 @@ After pressing your tmux prefix:
 | `M` | Open the action palette in a popup for the current pane's target |
 | `E` | Open the engagement/target switcher in a popup |
 | `T` | Toggle logging for the current TACMUX pane |
-| `S` | Save current-pane scrollback into the engagement log directory |
+| `S` | Save an exact capture of the current pane (`scrollback_*.log`) into the engagement log directory; `tm snap`/`stop`/`close` write readable `.txt` copies of every pane log automatically |
 
 Vi copy-mode `y` and mouse-drag copy use TACMUX's explicit clipboard path. TACMUX does not set copy mode or mouse behavior itself.
 

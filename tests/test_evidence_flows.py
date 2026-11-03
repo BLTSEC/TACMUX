@@ -604,9 +604,18 @@ def test_engagement_close_stops_the_invoking_session_last(
     workspace.add_target(web01, "DC01", "192.0.2.20")
     fake_sessions["live"] = {"", "WEB01", "DC01"}
     fake_sessions["inside"] = (web01, "WEB01")
+    rendered = []
+    monkeypatch.setattr(
+        "tacmux.render.refresh_readable",
+        lambda root, target=None: rendered.append(
+            (target, list(fake_sessions["stopped"]))
+        )
+        or [],
+    )
     assert main(["close", "--engagement", "--yes"]) == 0
     assert fake_sessions["stopped"] == ["DC01", "", "WEB01"]
-    assert fake_sessions["snapped"] == ["DC01", "WEB01", ""]
+    # Every pane log of the engagement is rendered once, before any stop.
+    assert rendered == [(None, [])]
 
 
 def test_access_credential_level_can_be_stated(settings, workspace, web01, monkeypatch):
@@ -1007,3 +1016,23 @@ def test_evidence_map_refreshes_and_counts(
     assert "Pane logs       1 readable .txt under logs/ (1 refreshed)" in out
     assert "Shell logs      1 under captures/*/shells/ (1 new)" in out
     assert (day / "WEB01_p1.txt").read_text().endswith("ok\n")
+
+
+def test_last_command_skips_tacmux_and_cap_grab(web01, monkeypatch):
+    from tacmux.cli import _last_command
+    from tacmux.journal import append_command
+
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    append_command(web01, "1", "1", "0", "WEB01", "%1", "/x", "hashcat -m 0 hash.txt")
+    append_command(web01, "2", "1", "0", "WEB01", "%1", "/x", "cap grab")
+    append_command(web01, "3", "1", "0", "WEB01", "%1", "/x", "X=1 tacmux status")
+    assert _last_command(web01) == "hashcat -m 0 hash.txt"
+
+
+def test_code_blocks_refuse_control_characters(workspace, web01):
+    from tacmux.errors import ValidationError
+
+    with pytest.raises(ValidationError, match="control characters"):
+        workspace.add_event(web01, "WEB01", "info", "x", code="echo \x1b[31m")
+    identifier = workspace.add_event(web01, "WEB01", "info", "x", code="a\nb\tc")
+    assert identifier
