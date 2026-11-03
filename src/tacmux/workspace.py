@@ -256,22 +256,36 @@ class Workspace:
     def _write_pin(self, root: Path, notes_root: Path) -> None:
         _atomic_write(self._contained(root, ".tacmux", NOTES_PIN), f"{notes_root}\n")
 
-    def pin_legacy(self, root: Path) -> bool:
+    def needs_pin(self, root: Path) -> bool:
+        """A pre-3.4 linked engagement that has no notes pin yet."""
+        try:
+            return (root / "SITREP.md").is_symlink() and self.pinned_notes_root(
+                root
+            ) is None
+        except (TacmuxError, OSError):
+            return False
+
+    def pin_legacy(self, root: Path, *, strict: bool = False) -> bool:
         """Record the notes folder of a pre-3.4 linked engagement.
 
         Returns True when a pin was written. Only pins a link that validates
-        under the configured root, so a broken link is never blessed.
+        under the configured root, so a broken link is never blessed. With
+        strict, a valid engagement whose pin cannot be written raises, so a
+        caller about to change the configured root can stop first.
         """
+        if not self.needs_pin(root) or self.settings.sitrep_root is None:
+            return False
         try:
-            if (
-                not (root / "SITREP.md").is_symlink()
-                or self.pinned_notes_root(root) is not None
-                or self.settings.sitrep_root is None
-            ):
-                return False
             self._resolve_sitrep(root)
-            self._write_pin(root, self.settings.sitrep_root)
         except (TacmuxError, OSError):
+            return False  # already unreachable under this root; nothing to keep
+        try:
+            self._write_pin(root, self.settings.sitrep_root)
+        except (TacmuxError, OSError) as exc:
+            if strict:
+                raise SafetyError(
+                    f"cannot record the notes folder of {root.name}: {exc}"
+                ) from exc
             return False
         return True
 

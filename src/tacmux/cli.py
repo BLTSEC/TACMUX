@@ -312,6 +312,39 @@ def _journal_text(rows: Sequence[Mapping[str, str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _events_text(events: Sequence[sitrep.Event]) -> str:
+    blocks = []
+    for event in events:
+        header = (
+            f"{event.identifier}  {event.timestamp}  {event.target}  "
+            f"{event.outcome}  {event.summary}"
+        )
+        body = event.body.strip()
+        blocks.append(
+            header
+            + (
+                "\n" + "\n".join(f"    {line}" for line in body.splitlines())
+                if body
+                else ""
+            )
+        )
+    return "\n\n".join(blocks) + "\n"
+
+
+def _open_image(path: Path) -> None:
+    opener = shutil.which("xdg-open")
+    if opener and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        subprocess.Popen(
+            [opener, str(path)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return
+    print(f"Screenshot: {path}")
+
+
 def _page(path: Path | None = None, text: str = "") -> None:
     argv = shlex.split(os.environ.get("PAGER") or "less -R") or ["less", "-R"]
     if path is not None:
@@ -417,6 +450,14 @@ def _evidence_command(
     if not can_prompt():
         return 0
     choices: list[tuple[str, str, str]] = []
+    if events:
+        choices.append(
+            (
+                f"📋 SITREP entries ({len(events)})",
+                "\x1fevents",
+                "Operations Log entries for this scope, oldest first",
+            )
+        )
     if journal:
         choices.append(
             (f"⌨  Commands ({len(journal)})", "\x1fjournal", "Command journal")
@@ -429,6 +470,11 @@ def _evidence_command(
     for path in reversed(captures):
         label = str(path.relative_to(root / "captures"))
         choices.append((f"⇣  {when(path)}  {label}", str(path), _tail(path)))
+    for path in reversed(shots):
+        label = str(path.relative_to(root / "targets"))
+        choices.append(
+            (f"🖼  {when(path)}  {label}", str(path), "Opens in your image viewer")
+        )
     if not choices:
         return 0
     while True:
@@ -438,6 +484,10 @@ def _evidence_command(
             return 0
         if selected == "\x1fjournal":
             _page(text=_journal_text(journal))
+        elif selected == "\x1fevents":
+            _page(text=_events_text(events))
+        elif selected.endswith(".png"):
+            _open_image(Path(selected))
         else:
             _page(Path(selected))
 
@@ -1509,8 +1559,22 @@ def _health(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
         ),
     ]
     invalid: list[tuple[Path, str]] = []
+    unpinned = [
+        root.name
+        for root in workspace.engagement_candidates()
+        if workspace.needs_pin(root) and workspace.is_engagement(root)
+    ]
+    checks.append(
+        (
+            "notes pins",
+            not unpinned,
+            "every linked engagement records its notes folder"
+            if not unpinned
+            else f"{', '.join(unpinned)}: pinned by tm notes or the next change",
+            False,
+        )
+    )
     for root in workspace.engagement_candidates():
-        workspace.pin_legacy(root)
         try:
             problems = workspace.validate(root)
             problems.extend(
@@ -1522,7 +1586,8 @@ def _health(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
             if "linked SITREP" in message or "No such file" in message:
                 message += (
                     " — its notes are not under the configured notes folder; "
-                    "set it back with tm notes PATH, which pins it, then switch"
+                    "point tm notes back at that folder (which pins it), then "
+                    "switch again"
                 )
             invalid.append((root, message))
     print(f"TACMUX {__version__}\n")
@@ -2560,7 +2625,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments and arguments[0] == "_complete":
             return _completion_values(arguments[1:])
         settings, workspace, tmux = _settings_services()
-        workspace.initialize()
+        if arguments[:1] != ["health"]:  # health only reads
+            workspace.initialize()
         if not arguments:
             return _default_entry(settings, workspace, tmux)
         if arguments == ["switch"]:

@@ -1036,3 +1036,23 @@ def test_code_blocks_refuse_control_characters(workspace, web01):
         workspace.add_event(web01, "WEB01", "info", "x", code="echo \x1b[31m")
     identifier = workspace.add_event(web01, "WEB01", "info", "x", code="a\nb\tc")
     assert identifier
+
+
+def test_evidence_picker_lists_entries_and_screenshots(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    main(["done", "Shell as app"])
+    shots = web01 / "targets/WEB01/screenshots"
+    shots.mkdir(parents=True, exist_ok=True)
+    (shots / "E001-x.png").write_bytes(b"\x89PNG")
+    offered = []
+
+    def capture(choices, *_args, **_kwargs):
+        offered.extend(choice[0] for choice in choices)
+        raise ValidationError("selection cancelled")
+
+    monkeypatch.setattr("tacmux.cli.choose", capture)
+    assert main(["evidence"]) == 0
+    assert any(label.startswith("📋 SITREP entries (1)") for label in offered)
+    assert any("E001-x.png" in label for label in offered)

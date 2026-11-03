@@ -214,3 +214,43 @@ def test_notes_path_with_dollar_is_refused(settings, tmp_path, monkeypatch):
     workspace = _external(settings, tmp_path / "notes")
     with pytest.raises(TacmuxError, match=r"\$"):
         notes_command(workspace.settings, workspace, [str(folder)])
+
+
+def test_switch_refuses_when_a_pin_cannot_be_written(settings, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    base = tmp_path / "notes"
+    workspace = _external(settings, base)
+    root = workspace.create_engagement("ACME")
+    (root / ".tacmux" / NOTES_PIN).unlink()  # pre-3.4 engagement
+    (base / "PG").mkdir()
+    settings.config_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.config_file.write_text(f'[paths]\nsitrep_root = "{base}"\n')
+    before = settings.config_file.read_text()
+
+    def broken(*_args):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(workspace, "_write_pin", broken)
+    with pytest.raises(TacmuxError, match="not switching the notes folder.*ACME"):
+        notes_command(workspace.settings, workspace, ["PG"])
+    assert settings.config_file.read_text() == before
+    assert workspace.is_engagement(root)
+
+
+def test_health_reports_unpinned_engagements_without_writing(
+    settings, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    base = tmp_path / "notes"
+    workspace = _external(settings, base)
+    root = workspace.create_engagement("ACME")
+    pin = root / ".tacmux" / NOTES_PIN
+    pin.unlink()
+    settings.config_file.parent.mkdir(parents=True, exist_ok=True)
+    settings.config_file.write_text(
+        f'[paths]\nworkspace = "{settings.workspace}"\nsitrep_root = "{base}"\n'
+    )
+    monkeypatch.setenv("TACMUX_CONFIG", str(settings.config_file))
+    cli.main(["health"])
+    assert not pin.exists()
+    assert "ACME: pinned by tm notes or the next change" in capsys.readouterr().out

@@ -26,9 +26,17 @@ WINDOW = 200  # recent lines that cursor movement may still rewrite
 SCREEN = 50  # nominal screen height for absolute cursor positioning
 LINE_LIMIT = 20_000  # wrap absurdly long lines to keep memory bounded
 STRING_LIMIT = 8192  # an OSC/DCS string never runs past this or a newline
+PARAMETER_LIMIT = 10**6  # larger numeric parameters behave like this one
 CHUNK = 1 << 20
 SIZE_LIMIT = 512 * 1024 * 1024
 ANNOUNCE = 50 * 1024 * 1024
+
+
+def _number(part: str) -> int:
+    """A CSI numeric parameter; huge digit runs never reach int()."""
+    if not part.isdigit():
+        return 0
+    return PARAMETER_LIMIT if len(part) > 7 else min(int(part), PARAMETER_LIMIT)
 
 
 class _Sink:
@@ -110,7 +118,7 @@ class _Terminal:
             return
         if self.alternate:
             return
-        values = [int(part) if part.isdigit() else 0 for part in params.split(";")]
+        values = [_number(part) for part in params.split(";")]
         first = values[0] if params else 0
         count = max(first, 1)
         line = self.line()
@@ -118,8 +126,8 @@ class _Terminal:
             if first == 0:
                 del line[self.col :]
             elif first == 1:
-                for index in range(min(self.col + 1, len(line))):
-                    line[index] = " "
+                end = min(self.col + 1, len(line))
+                line[:end] = [" "] * end
             else:
                 line.clear()
         elif final == "J":
@@ -131,7 +139,9 @@ class _Terminal:
         elif final == "A":
             self.row = max(0, self.row - count)
         elif final == "B":
-            self.row += count
+            # Cursor down stops at the bottom of the (nominal) screen.
+            bottom = max(len(self.lines), SCREEN) - 1
+            self.row = min(self.row + count, max(bottom, self.row))
         elif final == "C":
             self.col = min(self.col + count, LINE_LIMIT)
         elif final == "D":
@@ -147,10 +157,13 @@ class _Terminal:
         elif final == "P":
             del line[self.col : self.col + count]
         elif final == "@":
+            # Characters shifted past the right margin are lost, as on a terminal.
             line[self.col : self.col] = [" "] * min(count, LINE_LIMIT)
+            del line[LINE_LIMIT:]
         elif final == "X":
-            for index in range(self.col, min(len(line), self.col + count)):
-                line[index] = " "
+            end = min(len(line), self.col + count)
+            if end > self.col:
+                line[self.col : end] = [" "] * (end - self.col)
 
     def _string_end(self, data: str, start: int) -> int:
         """End of an OSC/DCS/APC/PM string: BEL, ST, newline, or the limit."""
@@ -191,7 +204,9 @@ class _Terminal:
                 if following == "7":
                     self.saved = (self.row, self.col)
                 elif following == "8":
-                    self.row, self.col = self.saved
+                    row, column = self.saved
+                    self.row = min(row, max(len(self.lines), SCREEN) - 1)
+                    self.col = min(column, LINE_LIMIT)
                 index += 2
                 continue
             index += 1
@@ -326,6 +341,10 @@ def refresh_readable(root: Path, target: str | None = None) -> list[Path]:
             os.chmod(temporary, 0o600)
             os.utime(temporary, ns=(info.st_atime_ns, info.st_mtime_ns))
             os.replace(temporary, destination)
+        except Exception as exc:  # one bad log never blocks stop or close
+            Path(temporary).unlink(missing_ok=True)
+            print(f"tacmux: could not render {raw.name}: {exc!r}", file=sys.stderr)
+            continue
         except BaseException:
             Path(temporary).unlink(missing_ok=True)
             raise

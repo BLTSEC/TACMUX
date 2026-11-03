@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 3.4.1 — 2026-11-04
+
+### Fixed
+
+- Readable-log rendering keeps memory bounded on hostile or corrupt pane output:
+  cursor-down stops at the screen bottom, inserted blanks fall off the right
+  margin, huge numeric parameters are capped, and erase operations run in
+  constant Python time. A log that still fails to render is reported and
+  skipped, so `tm stop` and `tm close` always finish.
+- `tm notes` no longer switches the notes folder when it cannot record an
+  existing engagement's folder (which would have hidden that engagement); it
+  stops and names the engagement instead.
+- `tm health` is read-only again: it reports engagements whose notes folder is
+  not recorded yet instead of recording it, and it no longer creates or
+  re-permissions the workspace.
+- `tm evidence` lists SITREP entries and screenshots in its picker; entries open
+  in the pager and screenshots in your image viewer.
+
 ## 3.4.0 — 2026-11-04
 
 ### Upgrade notes

@@ -92,3 +92,35 @@ def test_readable_copy_takes_the_raw_mtime(tmp_path):
     raw = _raw(tmp_path, "A_p1.log", "WEB", b"one\r\n")
     refresh_readable(tmp_path)
     assert raw.with_suffix(".txt").stat().st_mtime_ns == raw.stat().st_mtime_ns
+
+
+def test_cursor_and_insert_escapes_stay_bounded():
+    import tacmux.render as module
+
+    # Cursor down stops at the nominal screen bottom; no rows are allocated.
+    assert render(b"\x1b[999999999Bx") == "\n\nx\n"
+    # Inserted blanks push characters past the right margin, as on a terminal.
+    inserted = render(b"ab\x1b[1G" + b"\x1b[20000@" * 50 + b"\r\n")
+    assert len(inserted) <= module.LINE_LIMIT + 1
+    # Parameters with thousands of digits never reach int().
+    assert render(b"\x1b[" + b"9" * 5000 + b"Ax\r\n") == "x\n"
+    assert render(b"\x1b7\x1b[2J\x1b[999999999B\x1b8y\r\n").endswith("y\n")
+
+
+def test_one_bad_log_does_not_block_the_others(tmp_path, monkeypatch, capsys):
+    import tacmux.render as module
+
+    bad = _raw(tmp_path, "A_p1.log", "WEB", b"one\r\n")
+    good = _raw(tmp_path, "B_p1.log", "WEB", b"two\r\n")
+    original = module.render_stream
+
+    def flaky(source, output):
+        if source.name == str(bad):
+            raise MemoryError
+        original(source, output)
+
+    monkeypatch.setattr(module, "render_stream", flaky)
+    assert refresh_readable(tmp_path) == [good.with_suffix(".txt")]
+    assert not bad.with_suffix(".txt").exists()
+    assert not list(tmp_path.glob("logs/*/.A_p1.txt.*"))
+    assert "could not render A_p1.log" in capsys.readouterr().err

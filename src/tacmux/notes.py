@@ -140,11 +140,26 @@ def _create_if_missing(workspace: Workspace, folder: Path) -> None:
 
 
 def _pin_all(workspace: Workspace) -> list[str]:
-    return [
-        root.name
-        for root in workspace.engagement_candidates()
-        if workspace.pin_legacy(root)
-    ]
+    """Pin every reachable pre-3.4 engagement; refuse to go on if one fails.
+
+    Switching the configured folder while a reachable engagement is unpinned
+    would hide it, so any failure stops the switch before config changes.
+    """
+    pinned: list[str] = []
+    failures: list[str] = []
+    for root in workspace.engagement_candidates():
+        try:
+            if workspace.pin_legacy(root, strict=True):
+                pinned.append(root.name)
+        except TacmuxError as exc:
+            failures.append(str(exc))
+    if failures:
+        raise ValidationError(
+            "not switching the notes folder: "
+            + "; ".join(failures)
+            + " (fix the permissions and rerun tm notes)"
+        )
+    return pinned
 
 
 def switch_folder(settings: Settings, workspace: Workspace, folder: Path | None) -> int:
