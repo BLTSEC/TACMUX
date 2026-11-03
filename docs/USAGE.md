@@ -96,8 +96,10 @@ entries also offer the latest unattached NOCAP capture (from `cap …` or
 
 ## Snapshots, shell logs, and closing out
 
-`tm snap` saves the rendered text of every pane (wrapped lines joined) to
-`logs/YYYYMMDD/scrollback_*` and copies matching shell-handler sessions into
+`tm snap` saves the rendered text of every logging pane (wrapped lines joined)
+to `logs/YYYYMMDD/scrollback_*`. Panes whose logging you turned off with
+prefix+`T` are skipped and reported, so output you kept off disk stays off disk;
+prefix+`S` still saves one explicitly. It also copies matching shell-handler sessions into
 `captures/<target>/shells/`. Penelope names sessions `host~IP-OS-arch` (or
 `IP-OS-arch`); sessions for the target's Endpoint are copied with their
 `downloads/`, skipping symlinks and files over 100 MiB, with a README noting the

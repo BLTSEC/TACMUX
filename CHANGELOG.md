@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 3.2.2 — 2026-11-03
+
+### Fixed
+
+- Automatic snapshots (`tm snap`, `tm stop`, `tm close`) skip panes whose
+  logging was turned off with prefix+`T` and report how many were skipped.
+  Output an operator deliberately kept out of the logs, such as raw breach-data
+  queries, is no longer written to disk at stop or close. prefix+`S` still
+  saves a pane explicitly.
+- The tmux integration test's shell starts with an empty `.zshrc`, so zsh's
+  new-user menu no longer swallows the first keystroke sent to a pane.
+
 ## 3.2.1 — 2026-11-03
 
 ### Fixed
