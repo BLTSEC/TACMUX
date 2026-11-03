@@ -168,18 +168,25 @@ def _session_choices(workspace: Workspace, tmux: TmuxService) -> list[tuple[str,
         (str(session.root.resolve()), session.target): session
         for session in tmux.sessions()
     }
-    choices: list[tuple[str, str]] = []
+    from .notes import folder_label
+
+    groups: list[tuple[tuple[int, str], list[tuple[str, str]]]] = []
     separator = SESSION_SEPARATOR
     for root in workspace.engagement_candidates():
         if not workspace.is_engagement(root):
             print(
-                f"tacmux: {root.name} unavailable; check its SITREP location",
+                f"tacmux: {root.name} unavailable; check its SITREP location "
+                "(tm health)",
                 file=sys.stderr,
             )
             continue
+        choices: list[tuple[str, str]] = []
+        tag = f"[{folder_label(workspace, root)}]"
         ops_key = (str(root.resolve()), "")
         state = "LIVE" if ops_key in live else "STOP"
-        choices.append((f"{state:4}  {root.name} / OPS", f"{root}{separator}"))
+        any_live = state == "LIVE"
+        open_targets = False
+        choices.append((f"{state:4}  {root.name} / OPS  {tag}", f"{root}{separator}"))
         for target in workspace.targets(root):
             try:
                 details = workspace.target_details(root, target)
@@ -191,14 +198,19 @@ def _session_choices(workspace: Workspace, tmux: TmuxService) -> list[tuple[str,
                 continue
             key = (str(root.resolve()), target)
             state = "LIVE" if key in live else "STOP"
+            any_live = any_live or state == "LIVE"
+            open_targets = open_targets or details["Status"][0] != "complete"
             endpoint = details["Endpoint"][0]
             choices.append(
                 (
-                    f"{state:4}  {root.name} / {target}  {endpoint}",
+                    f"{state:4}  {root.name} / {target}  {endpoint}  {tag}",
                     f"{root}{separator}{target}",
                 )
             )
-    return choices
+        rank = 0 if any_live else 1 if open_targets or len(choices) == 1 else 2
+        groups.append(((rank, root.name.casefold()), choices))
+    groups.sort(key=lambda group: group[0])
+    return [choice for _, choices in groups for choice in choices]
 
 
 def _attach_selection(tmux: TmuxService, selected: str) -> int:
@@ -1266,7 +1278,7 @@ def _health(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
             True,
         ),
         (
-            "SITREP root",
+            "notes folder",
             settings.sitrep_root is None
             or (
                 settings.sitrep_root.is_dir()
@@ -1293,6 +1305,7 @@ def _health(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
     ]
     invalid: list[tuple[Path, str]] = []
     for root in workspace.engagement_candidates():
+        workspace.pin_legacy(root)
         try:
             problems = workspace.validate(root)
             problems.extend(
@@ -1300,7 +1313,13 @@ def _health(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
             )
             invalid.extend((root, problem) for problem in problems)
         except (TacmuxError, OSError, ValueError) as exc:
-            invalid.append((root, str(exc)))
+            message = str(exc)
+            if "linked SITREP" in message or "No such file" in message:
+                message += (
+                    " — its notes are not under the configured notes folder; "
+                    "set it back with tm notes PATH, which pins it, then switch"
+                )
+            invalid.append((root, message))
     print(f"TACMUX {__version__}\n")
     for label, ok, detail, _required in checks:
         print(f"[{'ok' if ok else '--'}] {label:12} {detail}")
@@ -2162,10 +2181,22 @@ def _dispatch(
         return _close_command(settings, workspace, tmux, rest)
     if command == "switch":
         return _switch(settings, workspace, tmux)
+    if command == "notes":
+        from .notes import notes_command
+
+        return notes_command(settings, workspace, rest)
     if command == "init":
+        from .config import display_path
+
         name = rest[0] if rest else ask("Engagement name")
+        existed = (settings.workspace / name).exists()
         root = workspace.create_engagement(name)
         print(root)
+        if existed and (root / "SITREP.md").is_symlink():
+            print(f"Opened existing {root.name}; notes: "
+                  f"{display_path(workspace.sitrep_path(root).parent)}")
+        elif settings.sitrep_root:
+            print(f"Notes: {display_path(settings.sitrep_root)} (change: tm notes)")
         if settings.sitrep_root and (root / "SITREP.md").is_symlink():
             print(f"SITREP: {workspace.sitrep_path(root)}")
             print(

@@ -187,6 +187,8 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
+NOTES_PIN = "notes_root"
+
 PLACEHOLDER_IMAGE = re.compile(
     r"\*\*Image:\*\* _Not attached\._\n\n\*\*Caption:\*\* _[^\n]*_"
 )
@@ -221,10 +223,51 @@ class Workspace:
     def initialize(self) -> None:
         _private_directory(self.settings.workspace)
 
-    def _configured_sitrep(self, root: Path) -> Path:
+    def pinned_notes_root(self, root: Path) -> Path | None:
+        """The notes folder recorded when the engagement was created (3.4+)."""
+        pin = root / ".tacmux" / NOTES_PIN
+        if pin.is_symlink():
+            raise SafetyError(f"refusing linked notes pin: {pin}")
+        if not pin.is_file():
+            return None
+        value = pin.read_text(encoding="utf-8").strip()
+        if not value or "\n" in value or not Path(value).is_absolute():
+            raise SafetyError(f"invalid notes pin: {pin}")
+        return Path(value)
+
+    def notes_root(self, root: Path) -> Path:
+        """Where this engagement's external SITREP lives (pin, else config)."""
+        pinned = self.pinned_notes_root(root)
+        if pinned is not None:
+            return pinned
         if self.settings.sitrep_root is None:
             raise SafetyError("external SITREP requires paths.sitrep_root")
-        notes_root = self.settings.sitrep_root
+        return self.settings.sitrep_root
+
+    def _write_pin(self, root: Path, notes_root: Path) -> None:
+        _atomic_write(self._contained(root, ".tacmux", NOTES_PIN), f"{notes_root}\n")
+
+    def pin_legacy(self, root: Path) -> bool:
+        """Record the notes folder of a pre-3.4 linked engagement.
+
+        Returns True when a pin was written. Only pins a link that validates
+        under the configured root, so a broken link is never blessed.
+        """
+        try:
+            if (
+                not (root / "SITREP.md").is_symlink()
+                or self.pinned_notes_root(root) is not None
+                or self.settings.sitrep_root is None
+            ):
+                return False
+            self._resolve_sitrep(root)
+            self._write_pin(root, self.settings.sitrep_root)
+        except (TacmuxError, OSError):
+            return False
+        return True
+
+    def _configured_sitrep(self, root: Path) -> Path:
+        notes_root = self.notes_root(root)
         if not notes_root.is_dir() or notes_root.is_symlink():
             raise SafetyError(
                 f"configured SITREP root is missing or linked: {notes_root}"
@@ -347,6 +390,7 @@ class Workspace:
                 external_created = True
                 _atomic_write(destination, document)
                 os.symlink(destination, root / "SITREP.md")
+                self._write_pin(root, self.settings.sitrep_root)
             self._sync_credentials(root, document)
         except BaseException:
             shutil.rmtree(root, ignore_errors=True)
@@ -354,6 +398,63 @@ class Workspace:
                 shutil.rmtree(external_directory, ignore_errors=True)
             raise
         return root
+
+    def validate_notes_folder(self, folder: Path) -> Path:
+        """A real, writable directory outside the workspace and not a note."""
+        if folder.is_symlink():
+            raise SafetyError(f"refusing linked notes folder: {folder}")
+        resolved = folder.resolve(strict=False)
+        if not resolved.is_dir():
+            raise ValidationError(f"notes folder does not exist: {folder}")
+        if not os.access(resolved, os.W_OK):
+            raise ValidationError(f"notes folder is not writable: {folder}")
+        workspace = self.settings.workspace.resolve(strict=False)
+        if resolved == workspace or resolved.is_relative_to(workspace):
+            raise ValidationError("notes folder must be outside the workspace")
+        if (resolved / "SITREP.md").exists():
+            raise ValidationError(
+                f"{folder} is an engagement's note folder; pick its parent"
+            )
+        return resolved
+
+    def move_notes(self, root: Path, folder: Path) -> Path:
+        """Move an engagement's note folder (SITREP + images) to another root."""
+        destination_root = self.validate_notes_folder(folder)
+        with self.locked(root):
+            link = root / "SITREP.md"
+            if not link.is_symlink():
+                raise ValidationError(
+                    f"{root.name} keeps its SITREP in the workspace; nothing to move"
+                )
+            source = self._resolve_sitrep(root).parent
+            old_root = source.parent
+            if old_root == destination_root:
+                raise ValidationError(f"{root.name} is already in {folder}")
+            destination = destination_root / root.name
+            if destination.exists() or destination.is_symlink():
+                raise ConflictError(f"notes already exist: {destination}")
+            if os.stat(source).st_dev != os.stat(destination_root).st_dev:
+                raise ValidationError(
+                    "notes folders are on different filesystems; move the folder "
+                    f"manually to {destination}, then relink {link}"
+                )
+            os.rename(source, destination)
+            try:
+                self._relink(root, destination / "SITREP.md")
+                self._write_pin(root, destination_root)
+                self._resolve_sitrep(root)
+            except BaseException:
+                os.rename(destination, source)
+                self._relink(root, source / "SITREP.md")
+                self._write_pin(root, old_root)
+                raise
+        return destination / "SITREP.md"
+
+    def _relink(self, root: Path, destination: Path) -> None:
+        temporary = self._contained(root, ".tacmux", f".link.{os.getpid()}")
+        temporary.unlink(missing_ok=True)
+        os.symlink(destination, temporary)
+        os.replace(temporary, root / "SITREP.md")
 
     def find_root(self, path: Path) -> Path | None:
         candidate = path.resolve(strict=False)
@@ -397,6 +498,7 @@ class Workspace:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
             _private_directory(self._contained(root, "credentials", "keys"))
+            self.pin_legacy(root)
             yield
         finally:
             fcntl.flock(descriptor, fcntl.LOCK_UN)

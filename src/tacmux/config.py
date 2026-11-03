@@ -99,3 +99,65 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         snapshot_on_stop=snapshot_on_stop,
         shell_log_dirs=tuple(_expand(value, env) for value in shell_dirs),
     )
+
+
+def _toml_string(value: str) -> str:
+    if any(ord(character) < 32 for character in value):
+        raise ValidationError("path contains control characters")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def display_path(path: Path, env: Mapping[str, str] | None = None) -> str:
+    """Show a path under HOME as ~/…, for config files and messages."""
+    home = Path((os.environ if env is None else env).get("HOME", str(Path.home())))
+    try:
+        relative = path.relative_to(home.resolve(strict=False))
+    except ValueError:
+        return str(path)
+    return "~" if not relative.parts else f"~/{relative}"
+
+
+def write_sitrep_root(config_file: Path, root: Path | None) -> None:
+    """Set [paths] sitrep_root in place, keeping every other line and comment."""
+    value = display_path(root) if root is not None else ""
+    line = f"sitrep_root = {_toml_string(value)}\n"
+    if config_file.is_symlink():
+        raise ValidationError(f"refusing linked config: {config_file}")
+    text = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
+    lines = text.splitlines(keepends=True)
+    header = re.compile(r"^\s*\[paths\]\s*(#.*)?$")
+    table = re.compile(r"^\s*\[")
+    key = re.compile(r"^\s*sitrep_root\s*=")
+    start = next((i for i, item in enumerate(lines) if header.match(item)), None)
+    if start is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines += (["\n"] if lines else []) + ["[paths]\n", line]
+    else:
+        end = next(
+            (i for i in range(start + 1, len(lines)) if table.match(lines[i])),
+            len(lines),
+        )
+        existing = next((i for i in range(start + 1, end) if key.match(lines[i])), None)
+        if existing is None:
+            lines.insert(start + 1, line)
+        else:
+            lines[existing] = line
+    updated = "".join(lines)
+    try:
+        data = tomllib.loads(updated)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValidationError(f"config rewrite would be invalid: {exc}") from exc
+    if data.get("paths", {}).get("sitrep_root") != value:
+        raise ValidationError("config rewrite did not set sitrep_root")
+    config_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    mode = config_file.stat().st_mode & 0o777 if config_file.exists() else 0o600
+    temporary = config_file.with_name(f".{config_file.name}.{os.getpid()}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(updated)
+        os.replace(temporary, config_file)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
