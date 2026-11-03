@@ -9,46 +9,50 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2ea44f"></a>
 </p>
 
-TACMUX is a lean tmux-native workspace helper for authorized penetration tests and red-team operations. It keeps you in your shells while handling target sessions, pane logs, credentials, ports, tasks, cleanup, and a single editable situation report.
+TACMUX is a lean tmux workspace for authorized penetration tests and red-team
+operations. Each engagement gets one tmux session per target, central pane logs,
+and a single editable `SITREP.md` that holds targets, ports, credentials, tasks,
+cleanup, and a chronological Operations Log. You stay in your shells; TACMUX
+records what happened.
 
-Target directories are inventory, `SITREP.md` holds the working notes and current state, `fzf` switches sessions, and `$EDITOR` handles longer edits.
-
-> Use TACMUX only with explicit authorization. You remain responsible for scope, rules of engagement, testing windows, evidence handling, and retention.
+> Use TACMUX only with explicit authorization. You remain responsible for scope,
+> rules of engagement, testing windows, evidence handling, and retention.
 
 ## Requirements
 
-- Linux and Python 3.11+
-- tmux and [fzf](https://github.com/junegunn/fzf)
-- [uv](https://docs.astral.sh/uv/) for installation
+- Linux, Python 3.11+, tmux, [fzf](https://github.com/junegunn/fzf), and
+  [uv](https://docs.astral.sh/uv/) (installer)
 - `$VISUAL`, `$EDITOR`, or `vi`
-- Optional: Zsh; the installer enables completion for `tacmux` and `tm`
-- Optional: Nmap for foreground host identification
-- Optional: [NOCAP](https://github.com/BLTSEC/NOCAP) 2.3+ for engagement-wide captures
+- Optional: Zsh (completion), Nmap (`tm discover nmap`), and
+  [NOCAP](https://github.com/BLTSEC/NOCAP) 2.3+ (command captures as evidence)
 
 ## Install
 
 ```bash
 git clone --branch v3.1.0 --depth 1 https://github.com/BLTSEC/TACMUX.git
 cd TACMUX
-./install.sh --workspace ~/workspace
+./install.sh --workspace ~/workspace   # omit --workspace on reinstall
 exec "$SHELL" -l
 tacmux health
+alias tm='tacmux'                      # add to your shell rc; docs use tm
 ```
 
-The installer places TACMUX under `~/.local/share/tacmux`, links the command into `~/.local/bin`, enables Zsh completion, and adds only the TACMUX integration fragment to an existing `~/.tmux.conf`. General tmux preferences belong to the operator or system loadout. Start a new shell after installation so completion is active.
+The installer puts TACMUX under `~/.local/share/tacmux`, links `tacmux` into
+`~/.local/bin`, enables Zsh completion for `tacmux` and `tm`, and adds only its
+integration fragment to `~/.tmux.conf`. Reload tmux (`tmux source ~/.tmux.conf`)
+to pick up the key bindings.
 
-On reinstall, omit `--workspace` to preserve the existing configuration. For the shorthand used below, add `alias tm='tacmux'` to your shell configuration and reload it.
-
-## Start working
+## Quick start
 
 ```bash
-tacmux init ACME
+tm init ACME                          # create the engagement
 cd ~/workspace/ACME
-tacmux target add WEB01 192.0.2.10
-tacmux switch
+tm target add WEB01 192.0.2.10        # target folder + SITREP section
+tm switch                             # pick a session (Prefix+E)
 ```
 
-Inside the target session, press Prefix+`M` (or type `tm`) and pick what happened:
+Inside a target session, press **Prefix+`M`** (or type `tm`) and pick what
+happened. Each entry previews the direct command it runs:
 
 ```text
 ╭ TACMUX> ─ ACME / WEB01 · 192.0.2.10 · Access: none · Status: active ─────────╮
@@ -62,135 +66,121 @@ Inside the target session, press Prefix+`M` (or type `tm`) and pick what happene
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-Every entry shows its direct command, so the CLI is learned by using the menu:
+The same flow from the shell:
 
 ```bash
-nmap -sV "$TARGET" | tm ports add
-tm fail "Default credentials rejected"
-tm creds add password 'admin:admin' && tm creds confirm C001 auth 8000
-tm target update access          # missing value → picker
-tm done "Shell as svc_web via file upload"
-tm undo                          # revert the last TACMUX change
+nmap -sV "$TARGET" | tm ports add          # merge ports into SITREP
+tm fail "Default credentials rejected"     # dead end
+tm creds add password 'admin:admin'        # store a credential (C001)
+tm creds confirm C001 auth 8000            # works on WEB01, service from Ports
+tm target update access                    # missing value → picker
+tm done "Shell as svc_web via file upload" # success
+tm undo                                    # revert the last TACMUX change
 tm status
 ```
 
-Undo applies to SITREP-only changes. Target add/rename/delete start a new
-undo history; directory changes are not undone.
+## How input works
 
-Any argument may be omitted and is asked for. `tm COMMAND --help` lists exact
-forms and accepted words. Scripts and agents set `TACMUX_NONINTERACTIVE=1` so a
-missing argument fails instead of prompting.
+- **Any bracketed argument can be omitted**; TACMUX asks for only what is
+  missing. Inside a target session the target is implied.
+- **Words accept prefixes and aliases.** Fields: `acc`, `st`, `as` (principal),
+  `via` (method), `host`. Access: `auth`, `shell`, `root` (admin), `dom`.
+  Status: `done` (complete). `tm log f|p|s TEXT` sets the outcome. An ambiguous
+  word such as `a` opens a filtered picker.
+- **`tm COMMAND --help`** shows exact forms, accepted words, and examples. It
+  never writes to SITREP. Unknown options are refused; put `--` before text that
+  starts with `-`.
+- **Scripts and agents** set `TACMUX_NONINTERACTIVE=1` (or run without a
+  terminal): a missing argument then fails with its name instead of prompting.
+- **`tm undo`** reverts the last TACMUX change to SITREP. It refuses after
+  SITREP was edited outside TACMUX, and target add/rename/delete start a new
+  undo history. `tm undo --yes` skips the confirmation.
 
-Run scans only against authorized endpoints. `ports add` accepts a matching single-host Nmap report; host identification through `tm discover` is a separate, reviewed import. TACMUX installs the `tacmux` executable, not a separate `tm` command.
-
-After a real validation run captured with NOCAP, record the demonstrated result with `tm done -c "Completed step"`. A local `cap id` proves the identity of the local process, not access to the target.
-
-## Core commands
+## Commands
 
 ```text
-tacmux                         action palette in a session; switcher elsewhere
-tacmux menu                    action palette (Prefix+M popup)
-tacmux undo [--yes]            revert the last TACMUX change to SITREP
-tacmux fail TEXT               record a dead end (log failed)
-tacmux init [NAME]             create or open an engagement
-tacmux target add|update|export|rename|delete
-tacmux stop [TARGET]           stop a target or ops session
-tacmux status [TARGET]         concise operational status
-tacmux sitrep [SECTION]        edit SITREP at an optional heading
-tacmux sitrep sync             upgrade, validate, and repair scaffolding
-tacmux log [OUTCOME] [-c] [-i IMAGE] TEXT
-tacmux done [-c] [-i IMAGE] TEXT
-tacmux history [TARGET] [--outcome O]  show Operations Log history
-tacmux log edit [EVENT_ID]     jump to a recorded step for editing
-tacmux creds [view|add|confirm] credentials and confirmed access
-tacmux ports [TARGET]          normalized port inventory
-tacmux ports add [TARGET]      ingest Nmap normal output
-tacmux todo [add|done|reopen]  planned and completed work
-tacmux cleanup [add|done|reopen]
-tacmux discover               reviewed host identification
+Record      tm log [OUTCOME] [-c] [-i IMAGE] TEXT   outcomes: info success partial failed
+            tm fail TEXT · tm done TEXT              shorthands for failed / success
+            tm creds [view [ID] | add | confirm]     credentials and where they work
+            tm ports add [TARGET] [FILE]             Nmap normal output (or stdin)
+            tm todo | tm cleanup [add|done|reopen]   checklists in SITREP
+            tm undo [--yes]
+Inspect     tm status [TARGET] · tm history [TARGET] [--outcome O] · tm ports [TARGET]
+            tm sitrep [SECTION|TARGET] · tm log edit [EVENT_ID]
+Targets     tm init [NAME] · tm target add|update|export|rename|delete
+            tm discover [nmap|hosts|netexec]         reviewed host import
+Sessions    tm (palette in a session, switcher elsewhere) · tm menu · tm switch · tm stop [TARGET]
+Maintain    tm sitrep sync · tm health · tm help [COMMAND] · tm version
 ```
 
-Missing values open short prompts or an `fzf` picker. Inline commands infer the engagement and target from the current directory or tmux session.
+**Keys** (after your tmux prefix): `M` palette · `E` switcher · `T` toggle pane
+logging · `S` save pane scrollback. The status line shows `[WEB01 · user · LOG]`
+so an unrecorded `none` stands out.
 
-## Workspace
+## Workspace and SITREP
 
 ```text
 ~/workspace/ACME/
-├── .tacmux/
-├── SITREP.md                 # file or validated external-notes link
-├── targets.txt               # generated endpoint list when requested
-├── credentials/
-│   ├── keys/
-│   ├── creds.txt
-│   ├── users.txt
-│   ├── passwords.txt
-│   └── hashes.txt
-├── captures/
-│   ├── .nocap/
-│   ├── ops/
-│   └── WEB01/
-├── logs/YYYYMMDD/
-└── targets/
-    └── WEB01/
-        ├── scans/
-        ├── payloads/
-        ├── loot/
-        ├── screenshots/
-        └── working/
+├── SITREP.md            # the record (file, or link to sitrep_root)
+├── targets.txt          # tm target export: one endpoint per line
+├── credentials/         # creds/users/passwords/hashes.txt generated from SITREP; keys/
+├── captures/            # NOCAP evidence, one folder per target
+├── logs/YYYYMMDD/       # automatic pane logs and scrollback snapshots
+├── targets/WEB01/       # scans/ payloads/ loot/ screenshots/ working/
+└── .tacmux/             # engagement marker, lock, undo journal
 ```
 
-`SITREP.md` keeps current state first—Targets, Credentials, TODO, and Cleanup—then a chronological Operations Log. TODO and Cleanup use native Markdown checkboxes, so an item checked in Obsidian or `$EDITOR` is immediately understood by TACMUX. Log entry prose remains operator-editable between its markers.
+`SITREP.md` keeps current state first (Targets, Credentials, TODO, Cleanup),
+then the Operations Log. It is plain Markdown: edit it in Obsidian or
+`$EDITOR`; checked boxes and prose between markers are understood. Rename
+targets with `tm target rename`, not by editing headings alone.
 
-Target headings are inventory identities rather than display-only labels. Use `tm target rename OLD NEW`; if a heading was changed manually first, the same command safely completes an unambiguous rename while `tm sitrep sync` refuses to create duplicate target sections.
+**Evidence:**
+- `tm done -c "…"` attaches the latest NOCAP capture on this target's route.
+  Use `--capture-id ID` for an earlier one (`cap timeline` lists them).
+- `-i proof.png` attaches screenshots.
+- `tm creds view C001` shows a full credential. Displaying secrets puts them
+  in pane logs.
 
-The Operations Log replaces separate note, activity, and attack-path systems:
-
-```bash
-tm log "SMB signing is disabled"                    # info
-tm log failed "Recovered password was rejected"
-tm log partial "Relay reached LDAP but no write"
-tm done "Obtained shell as svc_web"                 # success
-tm done -c "Established the approved internal pivot" # attach latest NOCAP capture
-tm done -c -i proof.png "Obtained domain access"      # capture plus screenshot
-tm log                                                 # interactive
-tm log edit                                            # jump to Operations Log
-```
-
-Capture-assisted entries include evidence and command details, an editable screenshot caption, Draft findings, and Notes. When `-i` is omitted, the entry explicitly says that no screenshot is attached instead of implying that evidence exists.
-
-Use `tm done --capture-id ID "Completed step"` to attach an earlier capture from
-the same target route, `tm log edit E001` to update that event, and
-`tm creds view C001` to display a full credential without table truncation.
-NOCAP's latest capture is engagement-wide in TACMUX sessions; check `cap timeline`
-after switching hosts and use the intended ID. Displaying credentials can put
-secrets into pane logs even when their original entry used a hidden prompt.
-
-To keep the canonical SITREP in any external Markdown notes directory, set one optional path:
+**External notes:** to keep each SITREP in Obsidian or another notes tree, set
+it before creating an engagement:
 
 ```toml
+# ~/.config/tacmux/config.toml
 [paths]
 workspace = "~/workspace"
 sitrep_root = "~/notes/engagements"
 ```
 
-New engagements then store the physical note at `<sitrep_root>/<engagement>/SITREP.md` and expose it through the usual workspace path. There is no Obsidian API or synchronization process; TACMUX, Obsidian, and `$EDITOR` operate on the same file. Because the SITREP can contain raw secrets, use only an approved protected notes location.
+TACMUX, Obsidian, and `$EDITOR` then edit the same file. There is no sync
+process or API.
 
-See the [operator guide](docs/USAGE.md), [keybindings](docs/KEYBINDINGS.md), and [security policy](SECURITY.md).
+## Boundaries and safety
 
-## Deliberate boundaries
+TACMUX does not do any of the following:
+- enforce scope or testing windows
+- exploit targets
+- call AI
+- generate reports
+- keep a formal findings registry
 
-TACMUX does not enforce scope or authorization windows, maintain a formal findings or attack-path registry, generate reports, create engagement archives, exploit targets, or call AI. Draft findings and the demonstrated sequence belong in the Operations Log; use the client RoE and reporting platform for formal assessment management.
+Draft findings belong in Operations Log entries; formal assessment management
+belongs to your RoE and reporting platform.
 
-TACMUX stores raw credential material when you ask it to. Treat the entire engagement directory as sensitive evidence. Shared folders and cloud-synced paths may not enforce Unix permissions.
-Back up the workspace and, when using `sitrep_root`, the physical note and its sibling `images/` directory. A backup containing only the workspace symlink is incomplete.
+The engagement directory holds raw secrets: SITREP, `credentials/`, pane logs,
+and the undo journal in `.tacmux/undo/`. Treat all of it as sensitive evidence.
+Shared and cloud-synced folders may not enforce Unix permissions. With
+`sitrep_root`, back up the physical note and its sibling `images/` directory as
+well as the workspace.
+
+More: [operator guide](docs/USAGE.md) · [keybindings](docs/KEYBINDINGS.md) ·
+[changelog](CHANGELOG.md) · [security policy](SECURITY.md)
 
 ## Remove
 
 ```bash
-./uninstall.sh
+./uninstall.sh   # configuration and engagement workspaces are preserved
 ```
-
-Configuration and engagement workspaces are preserved.
 
 ## License
 
