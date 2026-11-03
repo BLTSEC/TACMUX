@@ -4,6 +4,39 @@
 
 ## 3.1.0 — 2026-11-03
 
+### Upgrade notes
+
+Behavior that differs from 3.0. No command was removed; every 3.0 command and
+direct form still works.
+
+- Bare `tm` inside a TACMUX session opens the action palette instead of the
+  switcher. Sessions are listed in the palette, and `tm switch` and Prefix+`E`
+  still open the switcher directly. Outside TACMUX sessions bare `tm` is
+  unchanged.
+- Prefix+`M` now opens the palette, replacing tmux's default "clear marked
+  pane" binding.
+- Interactive `tm log` in a target session records to that target without the
+  "Record for>" prompt; the operations session still asks.
+- Arguments starting with `-` that are not options of that command are refused
+  (for example `tm todo add --x`); put `--` before such text.
+- `tm log s|p|f TEXT` treats the first word as the outcome success, partial,
+  or failed; 3.0 recorded it as text.
+- Without a terminal (pipes, scripts, agents) or with
+  `TACMUX_NONINTERACTIVE=1`, TACMUX no longer reads prompt answers from stdin,
+  opens fzf, or launches an editor; it fails and names the missing argument.
+  Target deletion requires an interactive exact-name confirmation.
+- An interactive `tm creds add` ends with "Works somewhere now? [Y/n]"; answer
+  `n` to keep the 3.0 behavior.
+- `tm creds confirm` from the operations session without a target opens a
+  multi-select target picker instead of a single choice.
+- Starting a session for a `new` target sets its Status to `active` (written
+  to SITREP, folded into the latest undo step).
+- SITREP changes also write an undo journal under `.tacmux/undo/` (25 entries,
+  owner-only; it holds earlier SITREP copies, including credentials).
+- The status-line segment shows Access: `[WEB01 · user · LOG]` instead of
+  `[WEB01 LOG]`.
+- `tacmux clip` is no longer listed in usage or completion; it still works.
+
 ### Added
 
 - Action palette: bare `tm` inside a TACMUX session, `tm menu` anywhere, and
