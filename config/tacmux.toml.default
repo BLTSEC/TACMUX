@@ -8,3 +8,10 @@ workspace = "~/workspace"
 [behavior]
 auto_log = true
 session_prefix = "tacmux-"
+# Save rendered scrollback of every pane before `tm stop` / `tm close` kill it.
+snapshot_on_stop = true
+
+[integrations]
+# Shell-handler session logs copied into captures/<target>/shells/ by
+# `tm snap`, `tm stop`, and `tm close` (penelope names: host~IP-OS…). [] = off.
+shell_log_dirs = ["~/.penelope/sessions"]

@@ -207,6 +207,65 @@ def _switch(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
     return _attach_selection(tmux, selected)
 
 
+SHELL_COMMANDS = frozenset({"zsh", "bash", "sh", "dash", "fish", "tmux", "-zsh", "-bash"})
+
+
+def _snapshot(
+    settings: Settings,
+    workspace: Workspace,
+    tmux: TmuxService,
+    root: Path,
+    target: str,
+    *,
+    shells: bool = True,
+) -> tuple[list[Path], list[Path]]:
+    """Save rendered scrollback of every live pane, then copy shell-handler logs."""
+    name = tmux.session_name(root, target)
+    saved: list[Path] = []
+    if tmux.has_session(name):
+        controller = LogController(settings, tmux)
+        for pane, _command in tmux.panes(name):
+            try:
+                saved.append(controller.capture(pane))
+            except TacmuxError as exc:
+                print(f"tacmux: snapshot of {pane} failed: {exc}", file=sys.stderr)
+    copied: list[Path] = []
+    if shells and target and settings.shell_log_dirs:
+        from .integrations import collect_shell_logs
+
+        details = workspace.target_details(root, target)
+        try:
+            copied = collect_shell_logs(
+                root,
+                details["Capture Route"][0] or target,
+                details["Endpoint"][0],
+                settings.shell_log_dirs,
+            )
+        except (OSError, TacmuxError) as exc:
+            print(f"tacmux: shell-log copy failed: {exc}", file=sys.stderr)
+    return saved, copied
+
+
+def _report_snapshot(root: Path, saved: Sequence[Path], copied: Sequence[Path]) -> None:
+    if saved:
+        print(f"Snapshot  {len(saved)} pane(s) → {saved[0].parent.relative_to(root)}/")
+    if copied:
+        print(f"Shell logs  {len(copied)} new file(s) → captures/…/shells/")
+
+
+def _snap_command(
+    settings: Settings, workspace: Workspace, tmux: TmuxService, arguments: Sequence[str]
+) -> int:
+    context = resolve(settings, tmux)
+    target = arguments[0] if arguments else context.target
+    target = workspace.canonical_target(context.root, target) if target else ""
+    saved, copied = _snapshot(settings, workspace, tmux, context.root, target)
+    if not saved and not copied:
+        print("Nothing to snapshot (no live panes or matching shell logs).")
+    _report_snapshot(context.root, saved, copied)
+    return 0
+
+
 def _stop(workspace: Workspace, tmux: TmuxService, arguments: Sequence[str]) -> int:
     context = resolve(tmux.settings, tmux)
     target = arguments[0] if arguments else context.target
@@ -232,6 +291,13 @@ def _stop(workspace: Workspace, tmux: TmuxService, arguments: Sequence[str]) -> 
                 "Stop> ",
             )
             target = selected
+    if tmux.settings.snapshot_on_stop and tmux.has_session(
+        tmux.session_name(context.root, target)
+    ):
+        saved, copied = _snapshot(
+            tmux.settings, workspace, tmux, context.root, target
+        )
+        _report_snapshot(context.root, saved, copied)
     tmux.stop(context.root, target)
     print(f"Stopped {target or 'OPS'}")
     return 0
@@ -1347,6 +1413,8 @@ def _dispatch(
         return _palette(settings, workspace, tmux)
     if command == "undo":
         return _undo(workspace, resolve(settings, tmux), rest)
+    if command == "snap":
+        return _snap_command(settings, workspace, tmux, rest)
     if command == "switch":
         return _switch(settings, workspace, tmux)
     if command == "init":

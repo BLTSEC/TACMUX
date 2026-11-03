@@ -103,3 +103,137 @@ def test_attach_refuses_unknown_and_duplicate_captures(workspace, web01):
         workspace.attach_to_event(web01, first, capture=_capture(web01, "cap-2"))
     with pytest.raises(ValidationError, match="nothing to attach"):
         workspace.attach_to_event(web01, second)
+
+
+# --- 2.4 snapshots and shell-handler logs -----------------------------------
+
+
+def _penelope(base: Path, name: str, files: dict[str, bytes]) -> Path:
+    session = base / name
+    for relative, data in files.items():
+        path = session / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return session
+
+
+def test_shell_logs_match_endpoint_with_or_without_hostname(tmp_path, engagement):
+    from tacmux.integrations import collect_shell_logs
+
+    base = tmp_path / ".penelope/sessions"
+    _penelope(base, "ubuntu~192.0.2.10-Linux-x86_64", {"a.log": b"one\n"})
+    _penelope(base, "192.0.2.10-Linux-x86_64", {"b.log": b"two\n"})
+    _penelope(base, "ubuntu~192.0.2.100-Linux-x86_64", {"other.log": b"no\n"})
+    _penelope(
+        base,
+        "dc01~192.0.2.10-Windows",
+        {"c.log": b"three\n", "downloads/loot/db.sqlite3": b"db", "notes.txt": b"skip"},
+    )
+    copied = collect_shell_logs(engagement, "WEB01", "192.0.2.10", [base])
+    shells = engagement / "captures/WEB01/shells/penelope"
+    names = sorted(path.relative_to(shells).as_posix() for path in copied)
+    assert names == [
+        "192.0.2.10-Linux-x86_64/b.log",
+        "dc01~192.0.2.10-Windows/c.log",
+        "dc01~192.0.2.10-Windows/downloads/loot/db.sqlite3",
+        "ubuntu~192.0.2.10-Linux-x86_64/a.log",
+    ]
+    assert not (shells / "ubuntu~192.0.2.100-Linux-x86_64").exists()
+    readme = (shells / "ubuntu~192.0.2.10-Linux-x86_64/README.txt").read_text()
+    assert "local time (UTC offset" in readme
+    assert (
+        shells / "ubuntu~192.0.2.10-Linux-x86_64/a.log"
+    ).stat().st_mode & 0o777 == 0o600
+    # Idempotent: an unchanged rerun copies nothing; a grown log is refreshed.
+    assert collect_shell_logs(engagement, "WEB01", "192.0.2.10", [base]) == []
+    (base / "ubuntu~192.0.2.10-Linux-x86_64/a.log").write_bytes(b"one\nmore\n")
+    again = collect_shell_logs(engagement, "WEB01", "192.0.2.10", [base])
+    assert [path.name for path in again] == ["a.log"]
+
+
+def test_shell_logs_skip_symlinks_and_oversized_files(
+    tmp_path, engagement, monkeypatch
+):
+    from tacmux import integrations
+
+    base = tmp_path / "sessions"
+    session = _penelope(base, "h~192.0.2.10-Linux", {"big.log": b"x" * 10})
+    (session / "link.log").symlink_to(tmp_path / "secret")
+    (tmp_path / "secret").write_text("not copied")
+    (base / "h~192.0.2.10-Linked").symlink_to(session)
+    monkeypatch.setattr(integrations, "SIZE_LIMIT", 5)
+    assert (
+        integrations.collect_shell_logs(engagement, "WEB01", "192.0.2.10", [base]) == []
+    )
+
+
+def test_snapshot_captures_rendered_text(settings, engagement, monkeypatch):
+    from tacmux.hooks import LogController
+
+    calls = []
+
+    class FakeTmux:
+        def run(self, args, **_kwargs):
+            import subprocess
+
+            calls.append(args)
+            out = b"" if args[0] == "capture-pane" else "WEB01\twin\ttitle\t0"
+            if args[0] == "show-option":
+                out = (
+                    str(engagement / "logs")
+                    if "@tacmux_log_dir" in args
+                    else str(engagement)
+                )
+            return subprocess.CompletedProcess(args, 0, out, "")
+
+    controller = LogController(settings, FakeTmux())
+    controller.capture("%1")
+    capture = next(args for args in calls if args[0] == "capture-pane")
+    assert "-J" in capture
+
+
+def test_settings_parse_snapshot_and_shell_log_dirs(tmp_path):
+    from tacmux.config import load_settings
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[behavior]\nsnapshot_on_stop = false\n"
+        '[integrations]\nshell_log_dirs = ["~/a", "/srv/b"]\n'
+    )
+    settings = load_settings({"TACMUX_CONFIG": str(config), "HOME": str(tmp_path)})
+    assert settings.snapshot_on_stop is False
+    assert settings.shell_log_dirs == (tmp_path / "a", Path("/srv/b"))
+    default = load_settings(
+        {"TACMUX_CONFIG": str(tmp_path / "none.toml"), "HOME": str(tmp_path)}
+    )
+    assert default.snapshot_on_stop is True
+    assert default.shell_log_dirs == (tmp_path / ".penelope/sessions",)
+
+
+def test_stop_snapshots_before_killing(
+    settings, workspace, engagement, monkeypatch, capsys
+):
+    from tacmux.cli import main
+
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    monkeypatch.setenv("TACMUX_WORKSPACE", str(settings.workspace))
+    monkeypatch.setenv("TACMUX_CONFIG", str(settings.config_file))
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.chdir(engagement / "targets/WEB01")
+    order = []
+    monkeypatch.setattr("tacmux.tmux.TmuxService.has_session", lambda self, name: True)
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.panes",
+        lambda self, name: [("%1", "zsh"), ("%2", "penelope")],
+    )
+    monkeypatch.setattr(
+        "tacmux.hooks.LogController.capture",
+        lambda self, pane: order.append(("capture", pane)) or engagement / "logs/x.log",
+    )
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.stop",
+        lambda self, root, target="": order.append(("stop", target)),
+    )
+    assert main(["stop"]) == 0
+    assert order == [("capture", "%1"), ("capture", "%2"), ("stop", "WEB01")]
+    assert "Snapshot  2 pane(s)" in capsys.readouterr().out

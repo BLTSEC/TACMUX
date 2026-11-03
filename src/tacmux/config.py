@@ -37,6 +37,8 @@ class Settings:
     sitrep_root: Path | None = None
     auto_log: bool = True
     session_prefix: str = "tacmux-"
+    snapshot_on_stop: bool = True
+    shell_log_dirs: tuple[Path, ...] = ()
 
     @property
     def editor_argv(self) -> list[str]:
@@ -65,8 +67,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
             raise ValidationError(f"cannot read config {config_file}: {exc}") from exc
     paths = data.get("paths", {})
     behavior = data.get("behavior", {})
-    if not isinstance(paths, dict) or not isinstance(behavior, dict):
-        raise ValidationError("paths and behavior must be TOML tables")
+    integrations = data.get("integrations", {})
+    if not all(isinstance(table, dict) for table in (paths, behavior, integrations)):
+        raise ValidationError("paths, behavior, and integrations must be TOML tables")
     workspace_value = env.get("TACMUX_WORKSPACE", paths.get("workspace", "~/workspace"))
     if not isinstance(workspace_value, str):
         raise ValidationError("paths.workspace must be a string")
@@ -79,10 +82,20 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     prefix = env.get("TACMUX_SESSION_PREFIX", behavior.get("session_prefix", "tacmux-"))
     if not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", prefix):
         raise ValidationError("session_prefix contains unsupported characters")
+    snapshot_on_stop = behavior.get("snapshot_on_stop", True)
+    if not isinstance(snapshot_on_stop, bool):
+        raise ValidationError("behavior.snapshot_on_stop must be true or false")
+    shell_dirs = integrations.get("shell_log_dirs", ["~/.penelope/sessions"])
+    if not isinstance(shell_dirs, list) or not all(
+        isinstance(value, str) and value.strip() for value in shell_dirs
+    ):
+        raise ValidationError("integrations.shell_log_dirs must be a list of paths")
     return Settings(
         workspace=_expand(workspace_value, env),
         config_file=config_file,
         sitrep_root=_expand(sitrep_value, env) if sitrep_value.strip() else None,
         auto_log=auto_log,
         session_prefix=prefix,
+        snapshot_on_stop=snapshot_on_stop,
+        shell_log_dirs=tuple(_expand(value, env) for value in shell_dirs),
     )

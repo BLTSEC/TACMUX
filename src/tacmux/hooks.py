@@ -150,7 +150,7 @@ class LogController:
             raise ValidationError("no tmux pane was supplied")
         path = self._allocate_log(pane, kind="scrollback")
         result = self.tmux.run(
-            ["capture-pane", "-p", "-S", "-", "-t", pane], text=False
+            ["capture-pane", "-p", "-J", "-S", "-", "-t", pane], text=False
         )
         with path.open("ab") as stream:
             stream.write(result.stdout)

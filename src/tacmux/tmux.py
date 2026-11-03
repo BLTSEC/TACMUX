@@ -88,6 +88,28 @@ class TmuxService:
             f"{digest}-{suffix}"
         )
 
+    def panes(self, name: str) -> list[tuple[str, str]]:
+        """(pane_id, foreground command) for every pane in a session."""
+        result = self.run(
+            [
+                "list-panes",
+                "-s",
+                "-t",
+                f"={name}:",
+                "-F",
+                "#{pane_id}\t#{pane_current_command}",
+            ],
+            check=False,
+        )
+        if result.returncode:
+            return []
+        panes = []
+        for line in result.stdout.splitlines():
+            pane, _, command = line.partition("\t")
+            if pane:
+                panes.append((pane, command))
+        return panes
+
     def has_session(self, name: str) -> bool:
         if not self.available():
             return False
