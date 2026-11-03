@@ -30,7 +30,9 @@ Start here:
 Record:
   tm log [OUTCOME] TEXT          Operations Log entry (default outcome: info)
   tm fail TEXT                   Dead end or failed attempt (log failed)
-  tm done TEXT                   Completed step (log success)
+  tm done TEXT                   Completed step (log success; -s screenshot)
+  tm access [LEVEL] [AS] [HOW]   Access gained: entry + Access + credential used
+  tm proof [user|root] [VALUE]   Flag/proof with screenshot (alias: tm flag)
   tm creds [add|confirm|view]    Credentials and where they work
   tm todo [add|done|reopen]      Planned work
   tm cleanup [add|done|reopen]   End-of-engagement obligations
@@ -47,7 +49,9 @@ Targets and sessions:
   tm target add|update|export|rename|delete
   tm discover [nmap|hosts|netexec]
   tm switch                      Session switcher (Prefix+E)
-  tm stop [TARGET]               Stop a target or operations session
+  tm snap [TARGET]               Save pane text and shell-handler logs now
+  tm close [TARGET|--engagement] Guided close-out, then stop
+  tm stop [TARGET]               Stop a session (saves pane text first)
 
 Maintenance:
   tm health · tm version · tm help COMMAND
@@ -85,6 +89,7 @@ Examples: tm log "SMB signing disabled"
 
 Easiest:  tm → ✓ Step worked
 Forms:    tm done TEXT…   ·   tm done -c TEXT…   ·   tm done -i IMAGE TEXT…
+          tm done -s TEXT…   (flameshot region capture, attached to the entry)
 Example:  tm done "Shell as app via CVE-2021-43857"
 """,
         "fail": """tm fail — record a dead end or failed attempt (outcome failed)
@@ -93,6 +98,49 @@ Easiest:  tm → ✗ Failed
 Forms:    tm fail TEXT…   ·   tm fail -c TEXT…
 Why:      AARs and reports are mostly about the detours; log them as you go.
 Example:  tm fail "feroxbuster on Vue SPA: only static chunks"
+""",
+        "access": f"""tm access — record access you gained, in one undoable step
+
+Easiest:  tm → ★ Got access
+Forms:    tm access [LEVEL] [PRINCIPAL] [HOW…] [--via SERVICE] [--cred CID[:LEVEL]] [-c] [-s]
+Levels:   {_words([value for value in ACCESS_LEVELS if value != "none"])}
+          (shortcuts: auth, shell → user, root → admin, sys, dom)
+Effect:   success entry "Access: LEVEL as PRINCIPAL via SERVICE (HOW)"; raises
+          Access/Principal/Method (never lowers); --cred records the credential
+          used (its own access defaults to authenticated, e.g. C001:user for an
+          SSH login); -c attaches the latest capture; -s screenshot.
+Examples: tm access user app "CVE-2021-43857 RCE" --via "http :8000" --cred C001
+          tm access root root "python3.10 cap_setuid"
+""",
+        "proof": """tm proof — record a flag / proof file (alias: tm flag)
+
+Easiest:  tm → ⚑ Proof / flag
+Forms:    tm proof [user|root] [VALUE] [PATH] [--show] [-s | --no-screenshot]
+Path:     suggested from OS and Principal (local.txt / proof.txt, Windows Desktop)
+Access:   never raised automatically — reading a flag is not a shell; the
+          interactive flow asks, scripts get a hint (tm access …)
+--show:   types hostname/whoami/ip/cat into the invoking pane before the shot
+Examples: tm proof user 9a1d4ff1… /home/<user>/local.txt
+          tm flag root 49d89584…            (path defaults to /root/proof.txt)
+""",
+        "snap": """tm snap — save rendered pane text and shell-handler logs now
+
+Forms:    tm snap [TARGET]
+Saves:    logs/YYYYMMDD/scrollback_* for every pane (wrapped lines joined) and
+          copies matching penelope sessions into captures/<target>/shells/
+          ([integrations] shell_log_dirs). tm stop and tm close do this too.
+""",
+        "close": """tm close — guided close-out, then stop
+
+Easiest:  tm → ⏹ Close out
+Forms:    tm close [TARGET | --engagement] [--yes] [--no-stop]
+Target:   checklist (Access, open TODO, cleanup release gate, proof, confirmed
+          credential — Enter fixes a line), Status, optional final summary,
+          snapshots + shell logs, then stop. Panes still running programs
+          (penelope, nc, claude) need confirmation.
+Engagement: overview, cleanup gate, snapshot every live session, stop other
+          targets, then OPS, then the session running the command.
+--yes:    no prompts (status complete, stops even busy sessions and says so)
 """,
         "history": f"""tm history — show Operations Log entries, newest first
 
@@ -200,11 +248,12 @@ Candidates open in $EDITOR for review before any target is created.
 
 def command_help(command: str) -> str:
     sections = _sections()
+    sections["flag"] = sections["proof"]
     return sections.get(command, USAGE)
 
 
 def known_help_topics() -> tuple[str, ...]:
-    return tuple(_sections())
+    return (*_sections(), "flag")
 
 
 def wants_help(arguments: list[str] | tuple[str, ...]) -> bool:

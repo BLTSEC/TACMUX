@@ -16,7 +16,11 @@ the preview shows what the action does and its direct command.
 | Palette entry | Direct command |
 |---|---|
 | ✗ Failed / dead end | `tm fail "summary"` |
-| ✓ Step worked | `tm done "summary"` |
+| ✓ Step worked | `tm done "summary"` · `tm done -s "summary"` (screenshot) |
+| ★ Got access | `tm access [LEVEL] [PRINCIPAL] [HOW…] [--via S] [--cred CID]` |
+| ⚑ Proof / flag | `tm proof [user\|root] [VALUE] [PATH]` (alias `tm flag`) |
+| 📎 Attach latest capture | `tm done -c "…"` · `tm done --capture-id ID "…"` |
+| 📷 Screenshot → entry | `tm done -s "…"` · `tm done -i proof.png "…"` |
 | • Note (choose outcome) | `tm log [info\|partial\|success\|failed] "summary"` |
 | 🔑 Found credential | `tm creds add [password\|hash] [USER:SECRET]` |
 | 🔑 Credential works | `tm creds confirm [ID] [TARGET…] [ACCESS] [SERVICE]` |
@@ -29,6 +33,8 @@ the preview shows what the action does and its direct command.
 | ↶ Undo last change | `tm undo` |
 | ⓘ Status · History · SITREP · Context | `tm status` · `tm history` · `tm sitrep` · `tm sitrep context` |
 | ➕ Add target · 🔎 Discover hosts | `tm target add NAME IP` · `tm discover` |
+| 📸 Snapshot panes now | `tm snap [TARGET]` |
+| ⏹ Close out | `tm close [TARGET\|--engagement] [--yes] [--no-stop]` |
 | ⇄ Session entries | `tm switch` (Prefix+`E`) |
 
 Outside TACMUX sessions, bare `tm` still opens the switcher.
@@ -56,6 +62,63 @@ Outside TACMUX sessions, bare `tm` still opens the switcher.
   add/rename/delete start a new undo history because document-only undo
   cannot safely reverse directory changes. Subsequent SITREP-only changes
   remain undoable; undo never deletes evidence or recreates deleted targets.
+
+## Access, proof, and evidence
+
+`tm access` records the access you gained as one undoable step: a success
+entry, the target's Access/Principal/Method raised (never lowered), and
+optionally the credential that was used. The credential's own access defaults
+to `authenticated` (a web login that enabled an exploit); write `--cred C001:user`
+when the credential itself gave the shell, such as an SSH login.
+
+```bash
+tm access user app "CVE-2021-43857 RCE" --via "http :8000" --cred C001
+tm access root root "python3.10 cap_setuid"
+tm access                      # pickers: level, principal, via (Ports), credential
+```
+
+`tm proof` (alias `tm flag`) records a flag or proof file. The path is
+suggested from the target OS and Principal. Reading a flag is not a shell, so
+proof never raises Access on its own: the interactive flow asks, and scripts
+get a hint. `--show` types `hostname; whoami; ip a; cat <path>` into the
+invoking pane first, so the screenshot carries the proof the way OSCP expects.
+
+```bash
+tm proof user 9a1d4ff1… /home/<user>/local.txt
+tm flag root 49d89584…         # path defaults to /root/proof.txt
+```
+
+Screenshots use flameshot. `tm done -s`, the proof flow, and the palette's
+📷 entry start a region capture after any popup has closed; the PNG is saved
+under `targets/<T>/screenshots/` and attached to the entry. Interactive success
+entries also offer the latest unattached NOCAP capture (from `cap …` or
+`cap grab`), and 📎 attaches one to any earlier entry.
+
+## Snapshots, shell logs, and closing out
+
+`tm snap` saves the rendered text of every pane (wrapped lines joined) to
+`logs/YYYYMMDD/scrollback_*` and copies matching shell-handler sessions into
+`captures/<target>/shells/`. Penelope names sessions `host~IP-OS-arch` (or
+`IP-OS-arch`); sessions for the target's Endpoint are copied with their
+`downloads/`, skipping symlinks and files over 100 MiB, with a README noting the
+local-time UTC offset. `tm stop` snapshots first.
+
+```toml
+[behavior]
+snapshot_on_stop = true
+
+[integrations]
+shell_log_dirs = ["~/.penelope/sessions"]   # [] disables the copy
+```
+
+`tm close` walks a checklist: Access, open TODO, the cleanup release gate,
+proof, and a confirmed credential. Enter on a line fixes it inline. It then
+sets Status (default `complete`), takes an optional final summary, snapshots,
+and stops the session. Sessions whose panes still run programs (penelope,
+`nc`, an agent) need confirmation. In the operations session, `tm close`
+(or `--engagement`) shows every target, the engagement-wide cleanup gate, and
+snapshots and stops all sessions: other targets, then OPS, then the session
+running the command. `--yes` skips every prompt; `--no-stop` keeps sessions.
 
 ## Engagement and target workflow
 
@@ -289,4 +352,5 @@ This keeps one NOCAP metadata root at `captures/.nocap` while routing files bene
 
 This route-prefix behavior requires NOCAP 2.3 or newer. `tacmux health` rejects an installed older version while continuing to treat an absent NOCAP installation as optional.
 
-Pane logs are centralized under `logs/YYYYMMDD/`. TACMUX installs logging hooks only on TACMUX-owned sessions, so new windows and splits start logging automatically. Reopening an existing session repairs missing hooks without re-enabling panes you deliberately toggled off. Prefix+`T` toggles current-pane logging and Prefix+`S` captures scrollback.
+Pane logs are centralized under `logs/YYYYMMDD/`. TACMUX installs logging hooks only on TACMUX-owned sessions, so new windows and splits start logging automatically. Reopening an existing session repairs missing hooks without re-enabling panes you deliberately toggled off. Prefix+`T` toggles current-pane logging and Prefix+`S` captures rendered
+scrollback (wrapped lines joined).

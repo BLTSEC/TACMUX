@@ -23,13 +23,14 @@ records what happened.
 - Linux, Python 3.11+, tmux, [fzf](https://github.com/junegunn/fzf), and
   [uv](https://docs.astral.sh/uv/) (installer)
 - `$VISUAL`, `$EDITOR`, or `vi`
-- Optional: Zsh (completion), Nmap (`tm discover nmap`), and
-  [NOCAP](https://github.com/BLTSEC/NOCAP) 2.3+ (command captures as evidence)
+- Optional: Zsh (completion), Nmap (`tm discover nmap`),
+  [NOCAP](https://github.com/BLTSEC/NOCAP) 2.3+ (command captures as evidence),
+  flameshot (screenshots), and penelope (shell logs copied into captures)
 
 ## Install
 
 ```bash
-git clone --branch v3.1.2 --depth 1 https://github.com/BLTSEC/TACMUX.git
+git clone --branch v3.2.0 --depth 1 https://github.com/BLTSEC/TACMUX.git
 cd TACMUX
 ./install.sh --workspace ~/workspace   # omit --workspace on reinstall
 exec "$SHELL" -l
@@ -74,9 +75,10 @@ tm fail "Default credentials rejected"     # dead end
 tm creds add password 'admin:admin'        # store a credential (C001)
 tm creds confirm C001 auth 8000            # works on WEB01, service from Ports
 tm target update access                    # missing value → picker
-tm done "Shell as svc_web via file upload" # success
+tm access user svc_web "file upload" --via "http :80"   # Access raised, one step
+tm proof root 49d8… /root/proof.txt        # flag + screenshot (alias tm flag)
 tm undo                                    # revert the last TACMUX change
-tm status
+tm close                                   # checklist, snapshots, stop
 ```
 
 ## How input works
@@ -100,7 +102,9 @@ tm status
 
 ```text
 Record      tm log [OUTCOME] [-c] [-i IMAGE] TEXT   outcomes: info success partial failed
-            tm fail TEXT · tm done TEXT              shorthands for failed / success
+            tm fail TEXT · tm done [-s] TEXT         shorthands for failed / success
+            tm access [LEVEL] [AS] [HOW…]            access gained, one undoable step
+            tm proof|flag [user|root] [VALUE] [PATH] flag/proof with a screenshot
             tm creds [view [ID] | add | confirm]     credentials and where they work
             tm ports add [TARGET] [FILE]             Nmap normal output (or stdin)
             tm todo | tm cleanup [add|done|reopen]   checklists in SITREP
@@ -109,7 +113,8 @@ Inspect     tm status [TARGET] · tm history [TARGET] [--outcome O] · tm ports 
             tm sitrep [SECTION|TARGET] · tm log edit [EVENT_ID]
 Targets     tm init [NAME] · tm target add|update|export|rename|delete
             tm discover [nmap|hosts|netexec]         reviewed host import
-Sessions    tm (palette in a session, switcher elsewhere) · tm menu · tm switch · tm stop [TARGET]
+Sessions    tm (palette in a session, switcher elsewhere) · tm menu · tm switch
+            tm snap [TARGET] · tm close [TARGET|--engagement] · tm stop [TARGET]
 Maintain    tm sitrep sync · tm health · tm help [COMMAND] · tm version
 ```
 
@@ -141,6 +146,9 @@ targets with `tm target rename`, not by editing headings alone.
 - `-i proof.png` attaches screenshots.
 - `tm creds view C001` shows a full credential. Displaying secrets puts them
   in pane logs.
+- `tm done -s`, `tm proof`, and the palette take flameshot region screenshots
+  and attach them; `tm snap`, `tm stop`, and `tm close` save rendered pane text
+  and copy penelope session logs into `captures/<target>/shells/`.
 
 **External notes:** to keep each SITREP in Obsidian or another notes tree, set
 it before creating an engagement:

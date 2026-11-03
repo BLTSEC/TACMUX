@@ -53,13 +53,18 @@ def _sequence(monkeypatch, name, values):
         ["stop", "--help"],
         ["creds", "confirm", "--help"],
         ["history", "WEB01", "--help"],
+        ["access", "--help"],
+        ["proof", "-h"],
+        ["flag", "help"],
+        ["snap", "--help"],
+        ["close", "--help"],
     ],
 )
 def test_help_never_mutates_sitrep(web01, workspace, capsys, argv):
     before = workspace.read(web01)
     assert main(argv) == 0
     output = capsys.readouterr().out
-    assert f"tm {argv[0]}" in output
+    assert f"tm {'proof' if argv[0] == 'flag' else argv[0]}" in output
     assert workspace.read(web01) == before
 
 

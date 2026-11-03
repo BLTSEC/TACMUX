@@ -15,6 +15,11 @@ _tacmux() {
   commands=(
     'menu:action palette (bare tm inside a session)'
     'fail:record a dead end or failed attempt'
+    'access:record access gained (entry + Access + credential)'
+    'proof:record a flag or proof file with a screenshot'
+    'flag:alias of proof'
+    'snap:save pane text and shell-handler logs now'
+    'close:guided close-out of a target or the engagement'
     'undo:revert the last TACMUX change to SITREP'
     'init:create or open an engagement'
     'switch:switch engagement or target session'
@@ -45,8 +50,27 @@ _tacmux() {
     init)
       (( CURRENT == 3 )) && _tacmux_dynamic engagement
       ;;
-    stop|status)
+    stop|status|snap)
       (( CURRENT == 3 )) && _tacmux_dynamic target
+      ;;
+    close)
+      _tacmux_dynamic target --engagement --yes --no-stop
+      ;;
+    access)
+      if (( CURRENT == 3 )); then
+        _values 'access level' authenticated user admin system domain auth shell root
+      elif [[ "${words[CURRENT-1]}" == --cred ]]; then
+        _tacmux_dynamic credential
+      else
+        _values 'option' --via --cred -c -s
+      fi
+      ;;
+    proof|flag)
+      if (( CURRENT == 3 )); then
+        _values 'proof kind' user root
+      else
+        _values 'option' --show -s --no-screenshot
+      fi
       ;;
     history)
       if [[ "${words[CURRENT-1]}" == --outcome ]]; then
@@ -91,7 +115,7 @@ _tacmux() {
       ;;
     log)
       if (( CURRENT == 3 )); then
-        _values 'outcome, option, or action' info success partial failed f p s edit -c --capture --capture-id -i --image
+        _values 'outcome, option, or action' info success partial failed f p s edit -c --capture --capture-id -i --image -s --screenshot
       elif [[ "${words[3]}" == edit && CURRENT == 4 ]]; then
         _tacmux_dynamic event
       elif [[ "${words[CURRENT-1]}" == -i || "${words[CURRENT-1]}" == --image ]]; then

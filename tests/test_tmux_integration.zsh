@@ -104,6 +104,23 @@ wait_for '[[ "$(tmux display-message -t "$session:1.1" -p "#{pane_pipe}")" == 1 
 
 print -- '[PASS] v3 central logging, context, and NOCAP environment'
 
+# tm snap: rendered scrollback joins wrapped lines; penelope logs are copied.
+mkdir -p "$HOME/.penelope/sessions/box~192.0.2.10-Linux-x86_64"
+print -r -- "penelope session line" > "$HOME/.penelope/sessions/box~192.0.2.10-Linux-x86_64/a.log"
+tmux send-keys -t "$session:0.0" 'printf "JOIN%.0s" {1..60}; echo' Enter
+wait_for 'rg -q "(JOIN){60}" "$PWD/logs"' || fail "long line was not logged" || exit 1
+tacmux snap WEB01 >/dev/null || fail "tm snap failed" || exit 1
+rg -q '^(JOIN){60}$' "$PWD"/logs/*/scrollback_* || \
+    fail "snapshot did not join the wrapped long line" || exit 1
+[[ -f "$PWD/captures/WEB01/shells/penelope/box~192.0.2.10-Linux-x86_64/a.log" ]] || \
+    fail "penelope session log was not copied" || exit 1
+before=$(ls "$PWD"/logs/*/scrollback_* | wc -l)
+tacmux stop WEB01 >/dev/null || fail "tm stop failed" || exit 1
+tmux has-session -t "=$session:" 2>/dev/null && fail "session still running after stop" && exit 1
+after=$(ls "$PWD"/logs/*/scrollback_* | wc -l)
+(( after > before )) || fail "tm stop did not snapshot panes first" || exit 1
+print -- '[PASS] snapshots, shell-log copy, and snapshot on stop'
+
 # Exercise the actual binding's shell formats, not just the Python popup argv.
 # The stub records arguments without opening a popup or touching user sessions.
 python3 - "$ROOT" <<'PY' || exit 1

@@ -2,6 +2,62 @@
 
 ## Unreleased
 
+## 3.2.0 — 2026-11-03
+
+### Upgrade notes
+
+- `tm stop` now saves the rendered text of every pane and copies matching
+  penelope session logs before stopping. Set `[behavior] snapshot_on_stop =
+  false` or `[integrations] shell_log_dirs = []` to opt out.
+- Prefix+`S` (and every TACMUX scrollback snapshot) joins wrapped lines.
+- Interactive success entries (`tm done` with no text, the palette's
+  ✓ Step worked) now offer the latest unattached NOCAP capture and an optional
+  screenshot. Direct `tm done TEXT` is unchanged unless `-c`, `-i`, or `-s` is
+  given.
+- `tm flag` is an alias of the new `tm proof`.
+
+### Added
+
+- `tm access [LEVEL] [PRINCIPAL] [HOW…] [--via S] [--cred CID[:LEVEL]] [-c] [-s]`:
+  records the access you gained as one undoable step: a success entry,
+  Access/Principal/Method raised (never lowered), and the credential that was
+  used. The credential's own confirmed access defaults to `authenticated`
+  (`C001:user` states more), so a login that enabled an exploit is not
+  overstated. The palette's ★ Got access offers the level, the via service from
+  Ports, and the credential as pickers.
+- `tm proof|flag [user|root] [VALUE] [PATH]`: the flag path is suggested from
+  the target's OS and Principal. Access is never raised automatically (reading
+  a flag is not a shell): the interactive flow asks first and scripts get a
+  hint. `--show` types the proof commands into the invoking pane, and a
+  screenshot is taken by default in interactive use.
+- Screenshots: `tm done|log|fail -s`, the proof flow, and the palette's
+  📷 entry run a flameshot region capture after any popup closes. The PNG is
+  stored under `targets/<T>/screenshots/` and attached to the entry.
+- 📎 Attach latest capture: attach the newest unattached NOCAP capture
+  (`cap …` or `cap grab`) to any earlier entry. Screenshots can be added to
+  earlier entries too.
+- `tm snap [TARGET]`: rendered pane snapshots, plus a copy of shell-handler
+  logs into `captures/<target>/shells/`. Penelope sessions are matched by
+  endpoint with or without a hostname, including `downloads/`. The copy is
+  idempotent and owner-only, skips symlinks and files over 100 MiB, and writes
+  a README with the local UTC offset.
+- `tm close [TARGET|--engagement] [--yes] [--no-stop]`:
+  - a checklist with inline fixes: Access, open TODO, the cleanup release gate,
+    proof, and a confirmed credential
+  - then Status, an optional final summary, snapshots and shell logs, and stop
+  - panes still running programs need confirmation
+  - engagement close stops other targets, then OPS, then the session running
+    the command
+- Palette: ★ Got access, ⚑ Proof / flag, 📎 Attach latest capture,
+  📷 Screenshot → entry, 📸 Snapshot panes now, ⏹ Close out.
+- Configuration: `[behavior] snapshot_on_stop` and
+  `[integrations] shell_log_dirs`.
+
+### Changed
+
+- `tm creds confirm` and the new access recording share one pure helper, so a
+  credential confirmation and an access record raise Access identically.
+
 ## 3.1.2 — 2026-11-03
 
 ### Fixed
