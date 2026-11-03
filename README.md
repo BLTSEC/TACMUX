@@ -28,7 +28,7 @@ Target directories are inventory, `SITREP.md` holds the working notes and curren
 ## Install
 
 ```bash
-git clone --branch v3.0.0 --depth 1 https://github.com/BLTSEC/TACMUX.git
+git clone --branch v3.1.0 --depth 1 https://github.com/BLTSEC/TACMUX.git
 cd TACMUX
 ./install.sh --workspace ~/workspace
 exec "$SHELL" -l
@@ -48,16 +48,35 @@ tacmux target add WEB01 192.0.2.10
 tacmux switch
 ```
 
-Inside the target session:
+Inside the target session, press Prefix+`M` (or type `tm`) and pick what happened:
+
+```text
+╭ TACMUX> ─ ACME / WEB01 · 192.0.2.10 · Access: none · Status: active ─────────╮
+│ ✗  Failed / dead end          │ Record what did not work. AARs and reports   │
+│ ✓  Step worked                │ are mostly about the detours.                │
+│ 🔑 Found credential            │                                              │
+│ 🔑 Credential works            │ Direct command:                              │
+│ 🧹 Add cleanup item            │   tm fail "EDB 50640 broken"                 │
+│ ↶  Undo last change           │                                              │
+│ ⇄  LIVE  ACME / DC01 …        │                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+Every entry shows its direct command, so the CLI is learned by using the menu:
 
 ```bash
-tm log "Nginx and SSH identified"
-tm todo add "Enumerate the web application"
-tm creds add
 nmap -sV "$TARGET" | tm ports add
-tm log "Service enumeration complete; web testing still pending"
+tm fail "Default credentials rejected"
+tm creds add password 'admin:admin' && tm creds confirm C001 auth 8000
+tm target update access          # missing value → picker
+tm done "Shell as svc_web via file upload"
+tm undo                          # revert the last TACMUX change
 tm status
 ```
+
+Any argument may be omitted and is asked for. `tm COMMAND --help` lists exact
+forms and accepted words. Scripts and agents set `TACMUX_NONINTERACTIVE=1` so a
+missing argument fails instead of prompting.
 
 Run scans only against authorized endpoints. `ports add` accepts a matching single-host Nmap report; host identification through `tm discover` is a separate, reviewed import. TACMUX installs the `tacmux` executable, not a separate `tm` command.
 
@@ -66,7 +85,10 @@ After a real validation run captured with NOCAP, record the demonstrated result 
 ## Core commands
 
 ```text
-tacmux                         fzf session/target switcher
+tacmux                         action palette in a session; switcher elsewhere
+tacmux menu                    action palette (Prefix+M popup)
+tacmux undo [--yes]            revert the last TACMUX change to SITREP
+tacmux fail TEXT               record a dead end (log failed)
 tacmux init [NAME]             create or open an engagement
 tacmux target add|update|export|rename|delete
 tacmux stop [TARGET]           stop a target or ops session
@@ -75,7 +97,7 @@ tacmux sitrep [SECTION]        edit SITREP at an optional heading
 tacmux sitrep sync             upgrade, validate, and repair scaffolding
 tacmux log [OUTCOME] [-c] [-i IMAGE] TEXT
 tacmux done [-c] [-i IMAGE] TEXT
-tacmux history [TARGET]        show Operations Log history
+tacmux history [TARGET] [--outcome O]  show Operations Log history
 tacmux log edit [EVENT_ID]     jump to a recorded step for editing
 tacmux creds [view|add|confirm] credentials and confirmed access
 tacmux ports [TARGET]          normalized port inventory

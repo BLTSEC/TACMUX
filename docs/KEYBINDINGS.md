@@ -6,13 +6,18 @@ After pressing your tmux prefix:
 
 | Key | Action |
 |---|---|
+| `M` | Open the action palette in a popup for the current pane's target |
 | `E` | Open the engagement/target switcher in a popup |
 | `T` | Toggle logging for the current TACMUX pane |
 | `S` | Save current-pane scrollback into the engagement log directory |
 
 Vi copy-mode `y` and mouse-drag copy use TACMUX's explicit clipboard path. TACMUX does not set copy mode or mouse behavior itself.
 
-The `fzf` switcher uses standard fzf controls:
+Prefix+`M` replaces tmux's default "clear marked pane" binding. The popup
+receives the invoking pane and client explicitly, so actions apply to that
+pane's engagement and target.
+
+The `fzf` palette and switcher use standard fzf controls:
 
 | Key | Action |
 |---|---|

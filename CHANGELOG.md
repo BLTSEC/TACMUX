@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+## 3.1.0 — 2026-11-03
+
+### Added
+
+- Action palette: bare `tm` inside a TACMUX session, `tm menu` anywhere, and
+  Prefix+`M` as a popup. One fuzzy list holds plain-English actions (failed,
+  step worked, found credential, credential works, TODO, cleanup, Nmap import,
+  hostname, field edits, log edits, undo, status) and every session, with a
+  preview showing the equivalent direct command.
+- `tm undo` reverts the most recent TACMUX change to SITREP from a 25-entry
+  journal. It refuses when SITREP changed outside TACMUX afterwards and masks
+  credential rows in its preview; `--yes` serves scripts and agents.
+- `tm fail TEXT` for dead ends and `tm history --outcome OUTCOME` filtering.
+- Per-command help: `tm COMMAND --help`, `tm COMMAND help`, and
+  `tm help COMMAND` print forms, accepted words, and examples without touching
+  SITREP.
+- Non-interactive mode: with no terminal, or `TACMUX_NONINTERACTIVE=1`,
+  TACMUX never prompts or opens fzf and names the missing argument instead.
+- Credential confirmation across several targets at once, with the service
+  chosen from the targets' Ports table (`445`, `tcp:8000`, or a picker), and an
+  optional "Works somewhere now?" step after an interactive `creds add`.
+- The status-line segment shows the target's Access (`[WEB01 · user · LOG]`,
+  `none` highlighted) using an mtime-keyed cache rather than parsing SITREP on
+  every refresh.
+
+### Changed
+
+- Every positional argument may be omitted and is asked for, e.g.
+  `tm target update access` opens the Access picker for the current target.
+- Vocabulary words accept unique prefixes and aliases (`acc`, `st`, `as`,
+  `via`; `root`→admin, `shell`→user, `auth`→authenticated; outcomes `f`/`p`/`s`
+  as the first word of `tm log`). Ambiguous words open a pre-filtered picker.
+- Inside a target session, log entries belong to that target without asking;
+  the operations session still asks, defaulting to the most recently used
+  target.
+- Text prompts support line editing; editable values are prefilled in place.
+- Starting a session for a `new` target marks it `active`.
+- Usage text leads with the palette and groups commands by purpose.
+
+### Fixed
+
+- `tm log --help` and other help requests no longer become Operations Log
+  entries; unknown options such as a mistyped `-x` are refused, and `--`
+  records literal text that starts with a dash.
+- Installer tests no longer read the host's XDG or TACMUX configuration.
+
 ## 3.0.0 — 2026-09-05
 
 ### Added

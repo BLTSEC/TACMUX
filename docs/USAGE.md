@@ -6,6 +6,51 @@ An engagement is an ordinary parent directory marked by `.tacmux/version`. Its t
 
 Use one engagement for one authorized body of work. Keep unrelated client, lab, and training activity in separate parents.
 
+## Action palette
+
+Inside any TACMUX session, bare `tm` (or Prefix+`M` as a popup, or `tm menu`
+anywhere) opens one fuzzy list of actions and sessions. Type a few letters and
+press Enter. The header shows the current target, endpoint, Access, and Status;
+the preview shows what the action does and its direct command.
+
+| Palette entry | Direct command |
+|---|---|
+| ✗ Failed / dead end | `tm fail "summary"` |
+| ✓ Step worked | `tm done "summary"` |
+| • Note (choose outcome) | `tm log [info\|partial\|success\|failed] "summary"` |
+| 🔑 Found credential | `tm creds add [password\|hash] [USER:SECRET]` |
+| 🔑 Credential works | `tm creds confirm [ID] [TARGET…] [ACCESS] [SERVICE]` |
+| ☐ / ☑ TODO | `tm todo add "task"` · `tm todo done [ID]` |
+| 🧹 Cleanup | `tm cleanup add "item"` · `tm cleanup done [ID]` |
+| ⇣ Import Nmap output | `tm ports add [TARGET] FILE` (picker of files in the target folder) |
+| 🏷 Add hostname / vhost | `tm target update hostnames "a.example b.example"` (copies the `/etc/hosts` line) |
+| ✎ Edit a target field | `tm target update [TARGET] [FIELD] [VALUE]` |
+| ✎ Edit a log entry | `tm log edit [EVENT_ID]` |
+| ↶ Undo last change | `tm undo` |
+| ⓘ Status · History · SITREP · Context | `tm status` · `tm history` · `tm sitrep` · `tm sitrep context` |
+| ➕ Add target · 🔎 Discover hosts | `tm target add NAME IP` · `tm discover` |
+| ⇄ Session entries | `tm switch` (Prefix+`E`) |
+
+Outside TACMUX sessions, bare `tm` still opens the switcher.
+
+### Prompts, shortcuts, and help
+
+- Every argument shown in brackets may be omitted; TACMUX asks only for what is
+  missing. Inside a target session the target is implied.
+- Fixed words accept unique prefixes and aliases: fields `acc`, `st`, `as`
+  (principal), `via` (method), `host`; access `auth`, `shell`, `root` (admin),
+  `dom`; status `done` (complete); outcomes `f`, `p`, `s` as the first word of
+  `tm log`. An ambiguous word such as `a` opens a picker filtered by it.
+- `tm COMMAND --help`, `tm COMMAND help`, and `tm help COMMAND` print forms,
+  accepted words, and examples. Help never writes to SITREP; unknown options
+  are refused, and `--` logs text that begins with a dash.
+- With no terminal (pipes, scripts, agents) or `TACMUX_NONINTERACTIVE=1`,
+  TACMUX never prompts or opens fzf. It fails and names the missing argument.
+- `tm undo` reverts the most recent TACMUX change to SITREP (25 are kept under
+  `.tacmux/undo/`). It refuses after SITREP was edited elsewhere, so manual
+  Obsidian or `$EDITOR` work is never overwritten. `tm undo --yes` skips the
+  confirmation for scripts.
+
 ## Engagement and target workflow
 
 Create an engagement and targets:
@@ -89,7 +134,7 @@ tm log success "Validated command execution as svc_web"
 tm done "Established the approved internal pivot"
 ```
 
-Inline logging uses the current target, or `ENGAGEMENT` from the operations session. `tm log` with no arguments prompts for an optional target override, outcome, summary, and Notes. `tm history` shows the newest engagement events first; pass a target to filter it. The Markdown reads oldest-to-newest as a walkthrough.
+Inline logging uses the current target, or `ENGAGEMENT` from the operations session. `tm log` with no arguments prompts for the outcome, summary, and Notes; inside a target session the entry belongs to that target, while the operations session asks which target (or ENGAGEMENT) it is for, defaulting to the most recently used target. `tm fail TEXT` records a dead end, and `tm history --outcome failed` lists them. `tm history` shows the newest engagement events first; pass a target to filter it. The Markdown reads oldest-to-newest as a walkthrough.
 
 Attach the most recent NOCAP record and optional screenshots to the same event:
 
@@ -178,9 +223,16 @@ complete principal, password or hash, confirmations, and notes without clipping.
 Once a credential works, record its target, service, and access on the same row:
 
 ```bash
-tm creds confirm
+tm creds confirm                                  # pickers for every part
 tm creds confirm C001 WEB01 user SSH "interactive shell"
+tm creds confirm C001 WEB01 DC01 auth 445         # several targets at once
 ```
+
+Inside a target session the target is implied. Without a service, TACMUX offers
+the open services from the selected targets' Ports table (`http :8000`,
+`microsoft-ds :445`); a port number, `tcp:8000`, or service name typed directly
+maps to the same label. An interactive `tm creds add` ends by offering to record
+where the credential works.
 
 Confirmed Access uses `TARGET · SERVICE · ACCESS`; confirming the same target/service updates that entry, while another target or service is appended to the same credential. Only confirmed successes belong here. Put useful failures in the Operations Log. Confirmation can raise a target's Access, Principal, and Method/Path but never silently lower stronger access already recorded. Access means the capability actually demonstrated: authentication alone is `authenticated`, not code execution.
 
