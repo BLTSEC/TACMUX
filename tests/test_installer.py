@@ -8,6 +8,15 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _host_env() -> dict[str, str]:
+    """Host environment without XDG or TACMUX paths that would leak real config."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("XDG_", "TACMUX_"))
+    }
+
+
 def test_shell_scripts_parse_and_v3_has_no_full_tmux_preset():
     for script in (ROOT / "install.sh", ROOT / "uninstall.sh", ROOT / "bin/tacmux"):
         subprocess.run(["bash", "-n", str(script)], check=True)
@@ -29,7 +38,7 @@ def test_uninstaller_refuses_unmarked_install(tmp_path):
     install.mkdir(parents=True)
     sentinel = install / "operator-data"
     sentinel.write_text("keep")
-    env = os.environ | {"HOME": str(home)}
+    env = _host_env() | {"HOME": str(home)}
     result = subprocess.run(
         [str(ROOT / "uninstall.sh")], env=env, text=True, capture_output=True
     )
@@ -43,7 +52,7 @@ def test_installer_refuses_unrelated_command(tmp_path):
     binary = home / ".local/bin/tacmux"
     binary.parent.mkdir(parents=True)
     binary.write_text("operator command")
-    env = os.environ | {"HOME": str(home)}
+    env = _host_env() | {"HOME": str(home)}
     result = subprocess.run(
         [str(ROOT / "install.sh"), "--skip-tmux"],
         env=env,
@@ -73,7 +82,7 @@ def test_installer_refuses_linked_tmux_config_without_skip(tmp_path):
     managed = tmp_path / "managed-tmux.conf"
     managed.write_text("set -g mouse on\n")
     os.symlink(managed, home / ".tmux.conf")
-    env = os.environ | {
+    env = _host_env() | {
         "HOME": str(home),
         "XDG_CONFIG_HOME": str(home / ".config"),
     }
@@ -97,7 +106,7 @@ def test_uninstaller_preserves_linked_tmux_config(tmp_path):
     managed_zsh = tmp_path / "managed-zshrc"
     managed_zsh.write_text("alias keep=true\n")
     os.symlink(managed_zsh, home / ".zshrc")
-    env = os.environ | {
+    env = _host_env() | {
         "HOME": str(home),
         "XDG_CONFIG_HOME": str(home / ".config"),
     }
@@ -127,7 +136,7 @@ def test_install_reinstall_and_uninstall_preserve_operator_data(tmp_path):
         capture_output=True,
         text=True,
     ).stdout.strip()
-    env = os.environ | {
+    env = _host_env() | {
         "FPATH": f"{unsafe_completion}:{default_fpath}",
         "HOME": str(home),
         "UV_OFFLINE": "1",
