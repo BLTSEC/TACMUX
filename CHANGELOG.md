@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 3.2.1 — 2026-11-03
+
+### Fixed
+
+- `tm close`, including `--yes`, ends with a reminder listing the target's
+  open cleanup items (the release gate) before the session stops. Engagement
+  close already did this.
+- Renaming or deleting a target, or changing its endpoint, from inside that
+  target's own session now says to stop it from OPS or another shell, because
+  `tm stop` there would end the current shell.
+
 ## 3.2.0 — 2026-11-03
 
 ### Upgrade notes
