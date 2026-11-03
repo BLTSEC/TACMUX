@@ -1907,6 +1907,16 @@ def _close_target(
         print(f"Logged {identifier} success: {target} — {summary}")
     saved, copied = _snapshot(settings, workspace, tmux, root, target)
     _report_snapshot(root, saved, copied)
+    # Cleanup is the release gate: say so last, before the session goes away.
+    still_open = [
+        task
+        for task in sitrep.read_tasks(workspace.read(root), "CLEANUP")
+        if task.target == target and not task.complete
+    ]
+    if still_open:
+        print(f"Reminder: {len(still_open)} cleanup item(s) still open on {target}:")
+        for task in still_open:
+            print(f"  {task.identifier}  {task.item}")
     if not no_stop:
         _stop_after_close(tmux, root, target, yes=yes)
     return 0

@@ -333,4 +333,17 @@ class TmuxService:
 
     def require_stopped(self, root: Path, target: str) -> None:
         if self.target_running(root, target):
-            raise ConflictError(f"stop {target} first with: tacmux stop {target}")
+            current_root, current_target = self.current_context()
+            inside = (
+                current_root is not None
+                and current_root.resolve() == root.resolve()
+                and current_target == target
+            )
+            where = (
+                " from OPS or another shell (stopping it ends this one)"
+                if inside
+                else ""
+            )
+            raise ConflictError(
+                f"stop {target} first{where} with: tacmux stop {target}"
+            )

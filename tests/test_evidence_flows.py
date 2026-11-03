@@ -615,3 +615,33 @@ def test_access_credential_level_can_be_stated(settings, workspace, web01, monke
         in sitrep.read_global(workspace.read(web01), "CREDENTIALS")[0][5]
     )
     assert main(["access", "user", "app", "x", "--cred", "WEB01"]) == 1
+
+
+def test_close_yes_reminds_about_open_cleanup(
+    settings, workspace, web01, monkeypatch, fake_sessions, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    workspace.add_cleanup(web01, "WEB01", "Remove larkspur-assessment-check.txt")
+    assert main(["close", "--yes"]) == 0
+    out = capsys.readouterr().out
+    reminder = out.index("Reminder: 1 cleanup item(s) still open on WEB01")
+    assert "X001  Remove larkspur-assessment-check.txt" in out[reminder:]
+    assert reminder < out.index("Stopping WEB01")
+
+
+def test_rename_inside_its_own_session_says_where_to_stop_it(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setattr("tacmux.tmux.TmuxService.target_running", lambda *_a: True)
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.current_context", lambda self: (web01, "WEB01")
+    )
+    assert main(["target", "rename", "WEB01", "WEB02"]) == 1
+    err = capsys.readouterr().err
+    assert "stop WEB01 first from OPS or another shell" in err
+    monkeypatch.setattr(
+        "tacmux.tmux.TmuxService.current_context", lambda self: (web01, "")
+    )
+    assert main(["target", "rename", "WEB01", "WEB02"]) == 1
+    assert "stop WEB01 first with: tacmux stop WEB01" in capsys.readouterr().err
