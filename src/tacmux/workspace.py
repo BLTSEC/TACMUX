@@ -50,6 +50,7 @@ class CaptureRecord:
 
 
 def utc_now() -> str:
+    """UTC to the second: SITREP stays readable (see evidence._passed_over)."""
     return (
         datetime.now(timezone.utc)
         .replace(microsecond=0)
@@ -116,7 +117,9 @@ def raise_access(
     """Raise a target's Access (never lower it); set Principal/Method with it.
 
     With `refine`, the same level also updates Principal/Method: an explicit
-    access record says how the current level was actually reached.
+    access record says how the current level was actually reached. A raise
+    without a method clears Method/Path, because the old value described how
+    the lower level was reached.
     """
     current = sitrep.details_map(text, target)["Access"][0] or "none"
     rank, now = ACCESS_LEVELS.index(access), ACCESS_LEVELS.index(current)
@@ -126,7 +129,7 @@ def raise_access(
         text = sitrep.set_detail(text, target, "Access", access)
     if principal:
         text = sitrep.set_detail(text, target, "Principal", principal)
-    if method:
+    if method or rank > now:
         text = sitrep.set_detail(text, target, "Method/Path", method)
     return text
 

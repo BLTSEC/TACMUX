@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 3.4.5 — 2026-11-04
+
+### Fixed
+
+- `tm access` without HOW or a non-local `--via` no longer writes its generic
+  summary ("Access: system as SYSTEM") into Method/Path. At the same level it
+  keeps the recorded method. When Access rises it clears Method/Path, because
+  the old value described how the lower level was reached, and it prints a hint
+  to add HOW. A proof's implied shell clears it the same way.
+- A capture that finished within the same second as a later entry counts as
+  passed over and is not offered again. Timestamps stay whole seconds, so
+  SITREP stays readable; a capture that finished after the entry in that same
+  second can still be attached with `-c`.
+- Unit and tmux integration tests drop any inherited engagement context
+  (`TACMUX_*`, `NOCAP_*`, `TMUX*`, `TARGET`) and use fixture-local config and
+  workspace defaults, so running the tests inside TACMUX cannot modify the
+  operator's active engagement.
+
 ## 3.4.4 — 2026-11-04
 
 ### Fixed

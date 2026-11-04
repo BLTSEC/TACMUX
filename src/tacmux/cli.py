@@ -2129,7 +2129,7 @@ def _access_command(
         level,
         summary,
         principal=principal,
-        method=method or summary,
+        method=method,
         notes=details_text,
         credential=credential,
         credential_access=credential_access,
@@ -2140,8 +2140,14 @@ def _access_command(
     print(f"Logged {identifier} success: {target} — {summary}")
     if after != current:
         print(f"Access {current} → {after}")
+        if not method:
+            print('Method/Path is empty: add how, e.g. tm access LEVEL AS "HOW"')
     elif level == after:
-        print(f"Access stays {after}; Principal and Method/Path updated")
+        print(
+            f"Access stays {after}; Principal and Method/Path updated"
+            if method
+            else f"Access stays {after}; Principal updated; Method/Path unchanged"
+        )
     else:
         print(f"Access stays {after} (already above {level})")
     copied = _collect_shells(settings, workspace, context.root, target)

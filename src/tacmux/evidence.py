@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import shlex
@@ -53,11 +53,23 @@ def latest_unattached_capture(
     if finished is not None and any(
         event.target == target
         and (logged := _moment(event.timestamp)) is not None
-        and logged >= finished
+        and _passed_over(finished, logged)
         for event in events
     ):
         return None
     return record
+
+
+def _passed_over(finished: datetime, logged: datetime) -> bool:
+    """True when an entry was logged after (or alongside) the capture finished.
+
+    Entries are stored to the second, so an entry covers its whole second: a
+    capture that finished anywhere in that second counts as passed over. Older
+    entries with fractional seconds compare exactly.
+    """
+    if logged.microsecond:
+        return finished <= logged
+    return finished < logged + timedelta(seconds=1)
 
 
 def _moment(value: str) -> datetime | None:

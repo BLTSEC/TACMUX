@@ -9,6 +9,9 @@ if [[ ! -x "$ROOT/tests/bin/tmux" ]]; then
     exit 1
 fi
 
+# A run from an active engagement must never resolve or modify that engagement.
+unset -m 'TACMUX_*' 'NOCAP_*' TMUX TMUX_PANE TMUX_TMPDIR TARGET ZDOTDIR
+
 export TEST_ROOT=$(mktemp -d /tmp/tacmux-v3-integration.XXXXXX) || exit 1
 export TACMUX_REAL_TMUX=$(command -v tmux)
 export TACMUX_TEST_SOCKET="$TEST_ROOT/tmux.sock"

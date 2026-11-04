@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -1268,6 +1269,43 @@ def test_capture_is_not_offered_again_after_a_later_entry(
     assert latest_unattached_capture(workspace, web01, "WEB01") == newer
 
 
+@pytest.mark.parametrize(
+    ("finished", "should_offer"),
+    [
+        ("2026-11-04T12:00:00.100000Z", False),
+        ("2026-11-04T12:00:00.900000Z", False),
+        ("2026-11-04T12:00:00.950000Z", False),  # same second: passed over
+        ("2026-11-04T12:00:01.000000Z", True),  # the next second is new output
+    ],
+)
+def test_capture_offer_treats_the_entry_second_as_passed_over(
+    workspace, web01, monkeypatch, finished, should_offer
+):
+    from tacmux.evidence import latest_unattached_capture
+
+    class FrozenClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 4, 12, 0, 0, 900000, tzinfo=timezone.utc)
+
+    monkeypatch.setattr("tacmux.workspace.datetime", FrozenClock)
+    monkeypatch.setattr("tacmux.evidence.shutil.which", lambda _name: "/mock/cap")
+    record = CaptureRecord(
+        "cap-1", "done", "nmap", "WEB01/nmap.txt", "nmap x", finished
+    )
+    monkeypatch.setattr(Workspace, "inspect_capture", lambda *_a, **_k: record)
+    workspace.add_event(web01, "WEB01", "info", "Observation")
+    document = workspace.read(web01)
+    # Stored to the second so SITREP stays readable.
+    assert sitrep.read_events(document)[-1].timestamp == "2026-11-04T12:00:00Z"
+    assert sitrep.read_events(sitrep.normalize_document(document))[-1].timestamp == (
+        "2026-11-04T12:00:00Z"
+    )
+    assert (
+        latest_unattached_capture(workspace, web01, "WEB01") is not None
+    ) == should_offer
+
+
 def test_creds_add_then_confirm_asks_notes_once(
     settings, workspace, web01, monkeypatch
 ):
@@ -1340,7 +1378,8 @@ def test_access_after_proof_records_the_real_method(
     assert main(["proof"]) == 0  # guided; "also record a system shell?" → yes
     details = workspace.target_details(web01, "WEB01")
     assert details["Access"][0] == "system"
-    assert details["Method/Path"][0] == "ftp anonymous access"  # not "Root flag (…)"
+    # Neither the flag title nor the stale authenticated-level method.
+    assert details["Method/Path"][0] == ""
     monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
     assert (
         main(
@@ -1364,3 +1403,74 @@ def test_access_after_proof_records_the_real_method(
     details = workspace.target_details(web01, "WEB01")
     assert details["Access"][0] == "system"
     assert details["Method/Path"][0] == "SmarterMail CVE-2019-7214 via remoting :17001"
+
+
+@pytest.mark.parametrize("extra", [[], ["--via", "local"]])
+def test_same_level_access_without_a_method_preserves_provenance(
+    settings, workspace, web01, monkeypatch, capsys, extra
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    workspace.record_access(
+        web01,
+        "WEB01",
+        "system",
+        "Initial shell",
+        principal="SYSTEM",
+        method="Verified exploit via remoting :17001",
+    )
+    before = workspace.read(web01)
+    assert main(["access", "system", "SYSTEM", *extra]) == 0
+    details = workspace.target_details(web01, "WEB01")
+    assert details["Access"][0] == "system"
+    assert details["Principal"][0] == "SYSTEM"
+    assert details["Method/Path"][0] == "Verified exploit via remoting :17001"
+    assert (
+        sitrep.read_events(workspace.read(web01))[-1].summary
+        == "Access: system as SYSTEM"
+    )
+    assert "Method/Path unchanged" in capsys.readouterr().out
+    workspace.undo_last_change(web01, expected=workspace.last_change(web01))
+    assert workspace.read(web01) == before
+
+
+def test_access_without_a_method_leaves_an_empty_method_empty(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    assert main(["access", "user", "app"]) == 0
+    details = workspace.target_details(web01, "WEB01")
+    assert details["Access"][0] == "user"
+    assert details["Principal"][0] == "app"
+    assert details["Method/Path"][0] == ""
+
+
+def test_raising_access_without_how_clears_the_lower_level_method(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    assert (
+        main(["access", "auth", "anonymous", "ftp anonymous", "--via", "ftp :21"]) == 0
+    )
+    assert workspace.target_details(web01, "WEB01")["Method/Path"][0] == (
+        "ftp anonymous via ftp :21"
+    )
+    capsys.readouterr()
+    assert main(["access", "system", "SYSTEM"]) == 0  # no HOW
+    details = workspace.target_details(web01, "WEB01")
+    assert details["Access"][0] == "system"
+    assert details["Principal"][0] == "SYSTEM"
+    assert details["Method/Path"][0] == ""  # not "SYSTEM via anonymous FTP"
+    assert "Method/Path is empty" in capsys.readouterr().out
+
+
+def test_exact_comparison_for_entries_with_fractional_seconds():
+    from datetime import datetime, timezone
+
+    from tacmux.evidence import _passed_over
+
+    logged = datetime(2026, 11, 4, 12, 0, 0, 500000, tzinfo=timezone.utc)
+    assert _passed_over(logged.replace(microsecond=400000), logged)
+    assert not _passed_over(logged.replace(microsecond=600000), logged)

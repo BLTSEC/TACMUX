@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -9,12 +10,23 @@ from tacmux.workspace import Workspace
 
 
 @pytest.fixture(autouse=True)
+def isolated_environment(monkeypatch, settings):
+    """Never let tests resolve an inherited engagement or read host config."""
+    for name in tuple(os.environ):
+        if name.startswith(("TACMUX_", "NOCAP_")) or name in {
+            "TMUX",
+            "TMUX_PANE",
+            "TMUX_TMPDIR",
+            "TARGET",
+        }:
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TACMUX_WORKSPACE", str(settings.workspace))
+    monkeypatch.setenv("TACMUX_CONFIG", str(settings.config_file))
+
+
+@pytest.fixture(autouse=True)
 def interactive_terminal(monkeypatch):
     """Tests drive prompts through patched input/fzf; pretend a terminal exists."""
-    monkeypatch.delenv("TACMUX_NONINTERACTIVE", raising=False)
-    # Tests run hermetically even when started from inside tmux.
-    monkeypatch.delenv("TMUX", raising=False)
-    monkeypatch.delenv("TMUX_PANE", raising=False)
     monkeypatch.setattr("tacmux.interaction.text_input_available", lambda: True)
     monkeypatch.setattr("tacmux.interaction.picker_available", lambda: True)
 
