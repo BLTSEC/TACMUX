@@ -1313,6 +1313,53 @@ def _choose_service(workspace: Workspace, root: Path, targets: Sequence[str]) ->
     return selected or ask("Service")
 
 
+# What each confirmed access level means, shown in the picker.
+ACCESS_MEANINGS = {
+    "authenticated": "logged in to an app or service (web, FTP, SMB, DB); no shell",
+    "user": "OS shell or login as a normal user",
+    "admin": "OS administrator or root",
+    "system": "SYSTEM / root service context",
+    "domain": "domain administrator",
+}
+SHELL_SERVICES = re.compile(
+    r"^(ssh|telnet|ms-wbt-server|rdp|winrm|wsman|vnc|rlogin|rsh)\b|:(22|23|3389|5985|5986)\b",
+    re.IGNORECASE,
+)
+APP_SERVICES = re.compile(r"^(https?|ssl/http|http-\w+|ftp|www)\b", re.IGNORECASE)
+
+
+def _choose_credential_access(service: str) -> str:
+    """Pick what a credential gives, defaulting from the service."""
+    default = "user" if SHELL_SERVICES.search(service) else "authenticated"
+    return choose(
+        [
+            (f"{level:14} {meaning}", level)
+            for level, meaning in ACCESS_MEANINGS.items()
+        ],
+        f"{service or 'It'} gives> ",
+        default=default,
+    )
+
+
+def _checked_app_access(access: str, service: str, targets: Sequence[str]) -> str:
+    """A web or FTP login is `authenticated`; ask before it raises OS-level Access."""
+    if (
+        ACCESS_LEVELS.index(access) <= ACCESS_LEVELS.index("authenticated")
+        or not APP_SERVICES.search(service)
+        or not can_prompt()
+    ):
+        return access
+    names = ", ".join(targets)
+    if confirm(
+        f"{access} means an OS-level {ACCESS_MEANINGS[access]} on {names}; an "
+        f"app's own admin account is 'authenticated'. Record {access} anyway?",
+        default=False,
+    ):
+        return access
+    print("Recorded as authenticated.")
+    return "authenticated"
+
+
 def _confirm_credential(
     workspace: Workspace, context: Context, arguments: Sequence[str]
 ) -> int:
@@ -1354,21 +1401,20 @@ def _confirm_credential(
                 "Works on (Tab selects several)> ",
             )
             prompted = True
+    access = ""
     if rest and is_word(rest[0], confirmable, ACCESS_ALIASES):
         access = match_word(rest.pop(0), confirmable, ACCESS_ALIASES, "access")
-    else:
-        access = choose(
-            [(value, value) for value in confirmable],
-            "Confirmed access> ",
-            default="authenticated",
-        )
-        prompted = True
+    # The service comes first: what a credential gives depends on where it works.
     if rest:
         services = _port_services(workspace, context.root, targets)
         service = _service_from_token(rest.pop(0), services)
     else:
         service = _choose_service(workspace, context.root, targets)
         prompted = True
+    if not access:
+        access = _choose_credential_access(service)
+        prompted = True
+    access = _checked_app_access(access, service, targets)
     if rest:
         notes = " ".join(rest)
     else:
@@ -2188,6 +2234,15 @@ def _proof_command(
     interactive = not words
     target = target or _flow_target(workspace, context)
     details = workspace.target_details(context.root, target)
+    if not details["OS"][0].strip() and (interactive or show) and can_prompt():
+        # Paths and the proof command differ by OS; never guess Linux.
+        os_name = choose(
+            [("Windows", "Windows"), ("Linux", "Linux")],
+            f"{target} OS is not recorded> ",
+        )
+        workspace.set_target_detail(context.root, target, "OS", os_name)
+        print(f"Updated {target} OS: {os_name}")
+        details = workspace.target_details(context.root, target)
     if words and is_word(words[0], PROOF_KINDS, PROOF_ALIASES):
         kind = match_word(words.pop(0), PROOF_KINDS, PROOF_ALIASES, "proof kind")
     else:

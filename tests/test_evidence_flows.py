@@ -470,6 +470,7 @@ def test_proof_interactive_asks_before_raising_and_can_show_in_pane(
     settings, workspace, web01, monkeypatch
 ):
     main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "OS", "Linux")
     sent, scheduled = [], []
     monkeypatch.setattr(
         "tacmux.tmux.TmuxService.run",
@@ -823,6 +824,7 @@ def test_show_without_a_remote_shell_pane_sends_nothing(
     settings, workspace, web01, monkeypatch, capsys
 ):
     main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "OS", "Linux")
     sent = []
     monkeypatch.setattr(
         "tacmux.tmux.TmuxService.run", lambda self, args, **_k: sent.append(args)
@@ -1202,3 +1204,41 @@ def test_init_prefills_the_target_name(settings, workspace, monkeypatch, tmp_pat
     assert main(["init", "Box"]) == 0
     assert asked["Target name"] == ("BOX", True)
     assert workspace.targets(settings.workspace / "Box") == ["BOX"]
+
+
+def test_guided_proof_asks_for_an_unrecorded_os(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    asked = []
+
+    def fake_choose(choices, prompt, **_kwargs):
+        asked.append(prompt)
+        if "OS is not recorded" in prompt:
+            return "Windows"
+        if prompt == "Proof> ":
+            return "root"
+        return choices[0][1]  # first suggested path
+
+    monkeypatch.setattr("tacmux.cli.choose", fake_choose)
+    monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: "abc123")
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)
+    assert main(["proof"]) == 0
+    assert asked[0] == "WEB01 OS is not recorded> "
+    assert workspace.target_details(web01, "WEB01")["OS"][0] == "Windows"
+    event = sitrep.read_events(workspace.read(web01))[-1]
+    assert event.body.splitlines()[-1].startswith("C:\\")  # Windows path suggested
+
+
+def test_web_login_cannot_silently_raise_os_access(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    credential = workspace.add_credential(web01, "admin", "admin", "password")
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)  # not OS admin
+    assert main(["creds", "confirm", credential, "admin", "http :80"]) == 0
+    assert "Recorded as authenticated." in capsys.readouterr().out
+    assert workspace.target_details(web01, "WEB01")["Access"][0] == "authenticated"
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")  # scripts keep explicit words
+    assert main(["creds", "confirm", credential, "user", "ssh :22"]) == 0
+    assert workspace.target_details(web01, "WEB01")["Access"][0] == "user"

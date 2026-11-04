@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 3.4.3 — 2026-11-04
+
+### Fixed
+
+- `tm creds confirm` no longer lets a web or FTP login raise a target to an
+  OS-level Access by accident. It asks for the service first, explains each
+  access level in the picker, and defaults to `authenticated` for app logins
+  (`user` for SSH, RDP, WinRM, telnet, and VNC). Choosing `user` or higher for a
+  web or FTP login asks first; the default answer records `authenticated`.
+  Explicit words in scripts are kept as given.
+- Guided `tm proof` (and `--show`) asks for the target's OS when it is not
+  recorded instead of assuming Linux, so Windows boxes get Windows proof paths
+  and the Windows command line in the shell pane. The answer is saved to the
+  target's OS field.
+
 ## 3.4.2 — 2026-11-04
 
 ### Fixed

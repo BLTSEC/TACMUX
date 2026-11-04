@@ -225,10 +225,11 @@ def test_credential_confirm_service_picker_uses_ports(
     report.write_text("8000/tcp open http WSGIServer 0.2\n")
     assert main(["ports", "add", "WEB01", str(report)]) == 0
     credential = workspace.add_credential(web01, "admin", "admin", "password")
-    seen = _sequence(monkeypatch, "choose", ["authenticated", "http :8000"])
+    seen = _sequence(monkeypatch, "choose", ["http :8000", "authenticated"])
     _sequence(monkeypatch, "ask", [""])
     assert main(["creds", "confirm", credential]) == 0
-    services = [entry[0] for entry in seen[1][0][0]]
+    services = [entry[0] for entry in seen[0][0][0]]
+    assert seen[1][1].get("default") == "authenticated"  # a web login
     assert any(display.startswith("http :8000") for display in services)
     row = sitrep.read_global(workspace.read(web01), "CREDENTIALS")[0]
     assert "WEB01 · http :8000 · authenticated" in row[5]
