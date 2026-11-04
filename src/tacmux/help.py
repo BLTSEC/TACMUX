@@ -49,9 +49,10 @@ Inspect:
                                  shell logs, captures (opens any in less)
 
 Targets and sessions:
-  tm init [NAME]                 Create or open an engagement
+  tm init [NAME] [ENDPOINT]      Create or open an engagement (one box:
+                                 tm init Fractal 192.168.1.5)
   tm notes [FOLDER|move]         Notes folder (SITREP root) for new engagements
-  tm target add|update|export|rename|delete
+  tm target [add|update|export|rename|delete|list]
   tm discover [nmap|hosts|netexec]
   tm switch                      Session switcher (Prefix+E)
   tm snap [TARGET]               Write readable pane logs and copy shell logs now
@@ -143,7 +144,7 @@ Examples: tm proof user 9a1d4ff1… /home/<user>/local.txt
 """,
         "snap": """tm snap — write readable pane logs and copy shell logs now
 
-Forms:    tm snap [TARGET]
+Forms:    tm snap [TARGET|ops]
 Writes:   logs/YYYYMMDD/<pane log>.txt next to each raw pane log, rendered
           from the raw log (progress bars and redraws resolved), including
           panes already closed. Copies matching penelope sessions into
@@ -157,8 +158,9 @@ Easiest:  tm → 🗂 Evidence & logs
 Forms:    tm evidence [TARGET]   (in the operations session: all targets)
 Shows:    SITREP events, the command journal (logs/commands.tsv), readable
           pane logs, penelope logs, NOCAP captures, and screenshots, after
-          refreshing readable logs and shell logs. At a terminal, pick any
-          item to open it in $PAGER (less -R).
+          refreshing readable logs and shell logs, plus prefix+S exact
+          captures. At a terminal, pick any item to open it in $PAGER
+          (less -R).
 """,
         "notes": """tm notes — choose the notes folder (SITREP root) for new engagements
 
@@ -227,7 +229,9 @@ Interactive add avoids putting the secret in shell history.
 """,
         "target": f"""tm target — manage targets
 
-Forms:    tm target add [NAME] [ENDPOINT]           (inside tmux: offers to open it)
+Forms:    tm target                             targets, then pick an action
+          tm target list                        targets only (also: status, ls)
+          tm target add [NAME] [ENDPOINT]           (offers to open its session)
           tm target update [TARGET] [FIELD] [VALUE|--clear]
           New IP after a box revert: tm target update TARGET endpoint IP from
           OPS saves its logs, restarts the session, copies the /etc/hosts line
@@ -257,11 +261,13 @@ Mark items done only after verification.
 
 Forms:    tm ports [TARGET]
           tm ports add [TARGET] [FILE]          or pipe Nmap normal output
+At a terminal without FILE it lists the target folder's Nmap output
+(*.nmap, scans/*), with "Paste output…" last.
 Example:  nmap -sCV -p- "$TARGET" | tm ports add
 """,
         "status": """tm status — target details, ports, credentials, tasks, recent log
 
-Forms:    tm status [TARGET]   (engagement overview from the ops session)
+Forms:    tm status [TARGET|ops]   (ops: engagement overview from anywhere)
 """,
         "sitrep": """tm sitrep — open SITREP in $EDITOR, optionally at a section
 
@@ -270,9 +276,11 @@ Forms:    tm sitrep [context|targets|credentials|todo|cleanup|log|TARGET]
 """,
         "init": """tm init — create or open an engagement
 
-Forms:    tm init [NAME]
-At a terminal it offers to add the first target and, inside tmux, to open
-that target's session, so a new box is one command.
+Forms:    tm init [NAME] [ENDPOINT]
+One box:  tm init Fractal 192.168.120.5   creates Fractal with target FRACTAL
+          and offers to open its session (switch inside tmux, attach outside).
+Without ENDPOINT, at a terminal it offers to add the first target (name
+prefilled from the engagement name).
 """,
         "switch": """tm switch — pick an engagement operations session or target session
 
@@ -286,7 +294,7 @@ Bare `tm` opens it inside TACMUX sessions; Prefix+M opens it as a popup.
 """,
         "stop": """tm stop — stop a target or operations session
 
-Forms:    tm stop [TARGET]
+Forms:    tm stop [TARGET|ops]   (ops: the operations session)
 """,
         "discover": """tm discover — reviewed host identification
 

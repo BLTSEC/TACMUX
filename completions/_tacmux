@@ -53,7 +53,10 @@ _tacmux() {
     init)
       (( CURRENT == 3 )) && _tacmux_dynamic engagement
       ;;
-    stop|status|snap|evidence)
+    stop|status|snap)
+      (( CURRENT == 3 )) && _tacmux_dynamic target ops
+      ;;
+    evidence)
       (( CURRENT == 3 )) && _tacmux_dynamic target
       ;;
     close)
@@ -96,7 +99,7 @@ _tacmux() {
       ;;
     target)
       if (( CURRENT == 3 )); then
-        _values 'target action' add update export rename delete
+        _values 'target action' add update export rename delete list
         return
       fi
       action="${words[3]}"

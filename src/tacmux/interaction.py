@@ -11,7 +11,12 @@ import tempfile
 from typing import Iterable, Sequence
 
 from .config import Settings
-from .errors import ExternalToolError, NonInteractiveError, ValidationError
+from .errors import (
+    Cancelled,
+    ExternalToolError,
+    NonInteractiveError,
+    ValidationError,
+)
 
 NONINTERACTIVE_ENV = "TACMUX_NONINTERACTIVE"
 
@@ -171,7 +176,7 @@ def choose(
         check=False,
     )
     if result.returncode == 130:
-        raise ValidationError("selection cancelled")
+        raise Cancelled("selection cancelled")
     if result.returncode != 0:
         raise ExternalToolError((result.stderr or "fzf selection failed").strip())
     line = result.stdout.rstrip("\n")
@@ -210,7 +215,7 @@ def choose_many(choices: Sequence[tuple[str, str]], prompt: str) -> list[str]:
         check=False,
     )
     if result.returncode == 130:
-        raise ValidationError("selection cancelled")
+        raise Cancelled("selection cancelled")
     if result.returncode != 0:
         raise ExternalToolError((result.stderr or "fzf selection failed").strip())
     values: list[str] = []

@@ -23,3 +23,7 @@ class SafetyError(TacmuxError):
 
 class NonInteractiveError(ValidationError):
     """A prompt was required but no interactive terminal is available."""
+
+
+class Cancelled(ValidationError):
+    """The operator dismissed a picker (Esc); nothing was recorded."""

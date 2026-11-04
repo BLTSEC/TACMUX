@@ -56,3 +56,18 @@ def test_choose_many_uses_fzf_multi_and_returns_hidden_values(monkeypatch):
         [("WEB01  192.0.2.10", "WEB01"), ("DB01  192.0.2.20", "DB01")],
         "Targets> ",
     ) == ["WEB01", "DB01"]
+
+
+def test_escape_in_a_picker_raises_cancelled(monkeypatch):
+    from tacmux.errors import Cancelled
+    from tacmux.interaction import choose
+
+    monkeypatch.setattr("tacmux.interaction.shutil.which", lambda _name: "/usr/bin/fzf")
+    monkeypatch.setattr(
+        "tacmux.interaction.subprocess.run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 130, "", ""),
+    )
+    with pytest.raises(Cancelled):
+        choose([("a", "a")], "Pick> ")
+    with pytest.raises(Cancelled):
+        choose_many([("a", "a")], "Pick> ")

@@ -16,7 +16,7 @@ from . import __version__, sitrep
 from .config import Settings, load_settings
 from .context import Context, resolve
 from .discovery import create_reviewed_targets, review_candidates, run_host_discovery
-from .errors import NonInteractiveError, TacmuxError, ValidationError
+from .errors import Cancelled, NonInteractiveError, TacmuxError, ValidationError
 from .help import USAGE, command_help, known_help_topics, wants_help
 from .hooks import LogController, clipboard_copy, status_segment
 from .interaction import (
@@ -377,7 +377,13 @@ def _evidence_command(
     """One view of everything recorded for a target (or the engagement)."""
     from datetime import datetime, timezone
 
-    from .render import log_target, raw_logs, readable_path, refresh_readable
+    from .render import (
+        exact_captures,
+        log_target,
+        raw_logs,
+        readable_path,
+        refresh_readable,
+    )
 
     context = resolve(settings, tmux)
     root = context.root
@@ -397,6 +403,12 @@ def _evidence_command(
         if (scope is None or log_target(raw) == target) and readable_path(raw).is_file()
     ]
     readable.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    exact = [
+        path
+        for path in exact_captures(root)
+        if scope is None or log_target(path) == target
+    ]
+    exact.sort(key=lambda path: path.stat().st_mtime, reverse=True)
     journal = _journal_rows(root, target)
     routes = [_route(workspace, root, name) for name in targets]
     if not target:
@@ -441,6 +453,7 @@ def _evidence_command(
         f"  Pane logs       {len(readable)} readable .txt under logs/"
         + (f" ({len(refreshed)} refreshed)" if refreshed else "")
     )
+    print(f"  Exact captures  {len(exact)} scrollback_*.log (Prefix+S)")
     print(
         f"  Shell logs      {len(shells)} under captures/*/shells/"
         + (f" ({len(copied)} new)" if copied else "")
@@ -464,6 +477,8 @@ def _evidence_command(
         )
     for path in readable:
         choices.append((f"▤  {when(path)}  {path.name}", str(path), _tail(path)))
+    for path in exact:
+        choices.append((f"📌 {when(path)}  {path.name}", str(path), _tail(path)))
     for path in reversed(shells):
         label = f"{path.parent.name}/{path.name}"
         choices.append((f"⌁  {when(path)}  {label}", str(path), _tail(path)))
@@ -499,6 +514,16 @@ def _report_snapshot(root: Path, saved: Sequence[Path], copied: Sequence[Path]) 
         print(f"Shell logs  {len(copied)} new file(s) → captures/…/shells/")
 
 
+OPS_WORDS = frozenset({"ops", "engagement"})
+
+
+def _session_target(workspace: Workspace, root: Path, word: str) -> str:
+    """A target name, or "" for the operations session (OPS / ENGAGEMENT)."""
+    if word.casefold() in OPS_WORDS:
+        return ""
+    return workspace.canonical_target(root, word)
+
+
 def _snap_command(
     settings: Settings,
     workspace: Workspace,
@@ -506,8 +531,10 @@ def _snap_command(
     arguments: Sequence[str],
 ) -> int:
     context = resolve(settings, tmux)
-    target = arguments[0] if arguments else context.target
-    target = workspace.canonical_target(context.root, target) if target else ""
+    if arguments:
+        target = _session_target(workspace, context.root, arguments[0])
+    else:
+        target = context.target
     saved, copied = _snapshot(settings, workspace, tmux, context.root, target)
     if not saved and not copied:
         print("Readable logs and shell logs are up to date.")
@@ -517,10 +544,11 @@ def _snap_command(
 
 def _stop(workspace: Workspace, tmux: TmuxService, arguments: Sequence[str]) -> int:
     context = resolve(tmux.settings, tmux)
-    target = arguments[0] if arguments else context.target
-    if target:
-        target = workspace.canonical_target(context.root, target)
-    elif not arguments and tmux.current_context()[0] is None:
+    if arguments:
+        target = _session_target(workspace, context.root, arguments[0])
+    else:
+        target = context.target
+    if not target and not arguments and tmux.current_context()[0] is None:
         live = [
             session
             for session in tmux.sessions()
@@ -551,14 +579,16 @@ def _stop(workspace: Workspace, tmux: TmuxService, arguments: Sequence[str]) -> 
 
 
 def _offer_session(tmux: TmuxService, root: Path, target: str) -> int:
-    """Inside tmux, offer to open a new target's session straight away."""
+    """Offer to open a new target's session now (switch inside tmux, attach outside)."""
     canonical = Workspace(tmux.settings).canonical_target(root, target)
-    if os.environ.get("TMUX") and can_prompt():
-        if confirm(f"Open {canonical}'s session now?", default=True):
-            return tmux.attach(tmux.start(root, canonical))
-    else:
-        print(f"Open it with: tm switch ({canonical})")
+    if can_prompt() and confirm(f"Open {canonical}'s session now?", default=True):
+        return tmux.attach(tmux.start(root, canonical))
+    print(f"Open it with: tm switch ({canonical})")
     return 0
+
+
+TARGET_ACTIONS = ("add", "update", "export", "rename", "delete", "list")
+TARGET_ACTION_ALIASES = {"status": "list", "ls": "list", "show": "list"}
 
 
 def _target_command(
@@ -567,16 +597,36 @@ def _target_command(
     tmux: TmuxService,
     arguments: Sequence[str],
 ) -> int:
-    if not arguments or arguments[0] not in {
-        "add",
-        "update",
-        "export",
-        "rename",
-        "delete",
-    }:
-        raise ValidationError("target requires add, update, export, rename, or delete")
-    action, *rest = arguments
     context = resolve(settings, tmux)
+    if arguments:
+        if not is_word(arguments[0], TARGET_ACTIONS, TARGET_ACTION_ALIASES):
+            raise ValidationError(
+                "target requires add, update, export, rename, delete, or list"
+            )
+        action = match_word(
+            arguments[0], TARGET_ACTIONS, TARGET_ACTION_ALIASES, "target action"
+        )
+        rest = list(arguments[1:])
+    else:
+        # Bare `tm target`: show the targets, then offer the actions.
+        _print_status(workspace, tmux, Context(context.root, ""))
+        if not can_prompt():
+            return 0
+        print()
+        action = choose(
+            [
+                ("➕ Add a target", "add"),
+                ("✎  Update a field", "update"),
+                ("✏  Rename (stopped targets)", "rename"),
+                ("🗑  Delete (stopped targets)", "delete"),
+                ("⇪  Export (scope file / hosts lines)", "export"),
+            ],
+            "Target> ",
+        )
+        rest = []
+    if action == "list":
+        _print_status(workspace, tmux, Context(context.root, ""))
+        return 0
     if action == "add":
         name = rest[0] if rest else ask("Target name")
         endpoint = rest[1] if len(rest) > 1 else ask("Endpoint")
@@ -1355,7 +1405,13 @@ def _ports_command(
         if rest and workspace.target_exists(context.root, rest[0]):
             target = workspace.canonical_target(context.root, rest.pop(0))
         target = target or context.target or _target_choice(workspace, context.root)
-        content = _input_text(settings, rest[0] if rest else "")
+        source = rest[0] if rest else ""
+        if not source and can_prompt():  # a terminal, not piped Nmap output
+            # Same as the palette: pick a file from the target folder, or paste.
+            source = _pick_nmap_file(context.root, target)
+            if source:
+                workspace.change_label = f"tm ports add {target} {Path(source).name}"
+        content = _input_text(settings, source)
         details = workspace.target_details(context.root, target)
         endpoints = [details["Endpoint"][0]]
         endpoints.extend(re.split(r"[\s,]+", details["Hostnames"][0].strip()))
@@ -1684,11 +1740,9 @@ def _palette_target(workspace: Workspace, context: Context) -> str:
     )
 
 
-def _import_nmap_file(
-    settings: Settings, workspace: Workspace, tmux: TmuxService, context: Context
-) -> int:
-    target = _palette_target(workspace, context)
-    folder = context.root / "targets" / target
+def _pick_nmap_file(root: Path, target: str) -> str:
+    """An Nmap output file from the target folder, or "" to paste output instead."""
+    folder = root / "targets" / target
     candidates = {
         path
         for pattern in ("*.nmap", "scans/*.nmap", "scans/*.txt")
@@ -1696,16 +1750,23 @@ def _import_nmap_file(
         if path.is_file() and not path.is_symlink()
     }
     if not candidates:
-        raise ValidationError(
-            f"no Nmap output under {folder}; run nmap -oA or pipe into tm ports add"
-        )
+        return ""
     ordered = sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)
-    selected = choose(
-        [(str(path.relative_to(folder)), str(path)) for path in ordered],
+    return choose(
+        [
+            *((str(path.relative_to(folder)), str(path)) for path in ordered),
+            ("Paste output…", ""),
+        ],
         "Nmap output> ",
     )
-    workspace.change_label = f"tm ports add {target} {Path(selected).name}"
-    return _ports_command(settings, workspace, tmux, ["add", target, selected])
+
+
+def _import_nmap_file(
+    settings: Settings, workspace: Workspace, tmux: TmuxService, context: Context
+) -> int:
+    target = _palette_target(workspace, context)
+    workspace.change_label = f"tm ports add {target}"
+    return _ports_command(settings, workspace, tmux, ["add", target])
 
 
 def _add_hostname(workspace: Workspace, tmux: TmuxService, context: Context) -> int:
@@ -1781,11 +1842,14 @@ def _palette(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int
         )
         for display, value in _session_choices(workspace, tmux)
     )
-    selected = choose(
-        choices,
-        "TACMUX> ",
-        header=_palette_header(workspace, context),
-    )
+    try:
+        selected = choose(
+            choices,
+            "TACMUX> ",
+            header=_palette_header(workspace, context),
+        )
+    except Cancelled:
+        return 0
     if selected.startswith(SESSION_PREFIX):
         return _attach_selection(tmux, selected.removeprefix(SESSION_PREFIX))
     action = ACTION_KEYS[selected]
@@ -1803,6 +1867,8 @@ def _palette(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int
         else:
             command, *rest = action.argv
             result = _dispatch(settings, workspace, tmux, command, rest)
+    except Cancelled:
+        return 0  # Esc: close the popup without waiting
     except TacmuxError as exc:
         print(f"tacmux: {exc}", file=sys.stderr)
         result = 1
@@ -2058,6 +2124,8 @@ def _choose_shell_pane(tmux: TmuxService, root: Path, target: str) -> str:
             [*((f"{pane}  {command}", pane) for pane, command in panes), ("Skip", "")],
             "Show proof in pane> ",
         )
+    except Cancelled:
+        return ""
     except NonInteractiveError:
         print("Pick the target-shell pane from a terminal to show proof; skipped.")
         return ""
@@ -2197,7 +2265,7 @@ def _proof_command(
     return 0
 
 
-PROOF_SUMMARY = re.compile(r"^(user|root) flag ")
+PROOF_SUMMARY = re.compile(r"^(user|root) flag\b", re.IGNORECASE)
 
 
 def _close_items(
@@ -2478,7 +2546,10 @@ def _dispatch(
     if command == "init":
         from .config import display_path
 
+        if len(rest) > 2:
+            raise ValidationError("usage: tm init [NAME] [ENDPOINT]")
         name = rest[0] if rest else ask("Engagement name")
+        endpoint = rest[1] if len(rest) > 1 else ""
         existed = (settings.workspace / name).exists()
         root = workspace.create_engagement(name)
         print(root)
@@ -2492,14 +2563,23 @@ def _dispatch(
                     "Warning: this external notes location receives raw "
                     "credentials stored in SITREP."
                 )
-        if not workspace.targets(root) and can_prompt():
-            if confirm("Add the first target now?", default=True):
-                target = ask("Target name")
-                endpoint = ask("Endpoint")
-                workspace.add_target(root, target, endpoint)
-                print(f"Created {target}: {root / 'targets' / target}")
-                return _offer_session(tmux, root, target)
-        print("Run tacmux switch to enter the operations session.")
+        target = ""
+        if workspace.targets(root):
+            if endpoint:
+                raise ValidationError(
+                    f"{root.name} already has targets; use tm target add NAME ENDPOINT"
+                )
+        elif endpoint:
+            # One box, one target: `tm init Fractal 192.168.1.5` → FRACTAL.
+            target = name.upper()
+        elif can_prompt() and confirm("Add the first target now?", default=True):
+            target = ask("Target name", default=name.upper(), prefill=True)
+            endpoint = ask("Endpoint")
+        if target:
+            target = workspace.add_target(root, target, endpoint)
+            print(f"Created {target} ({endpoint}): {root / 'targets' / target}")
+            return _offer_session(tmux, root, target)
+        print("Run tm switch to enter the operations session.")
         return 0
     if command == "health":
         return _health(settings, workspace, tmux)
@@ -2509,6 +2589,8 @@ def _dispatch(
         return _target_command(settings, workspace, tmux, rest)
     if command == "status":
         context = resolve(settings, tmux)
+        if rest and rest[0].casefold() in OPS_WORDS:
+            context, rest = Context(context.root, ""), []
         _print_status(workspace, tmux, context, rest[0] if rest else "")
         return 0
     if command == "sitrep":
@@ -2634,8 +2716,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         command, *rest = arguments
         rest = _checked_arguments(command, rest)
         return _dispatch(settings, workspace, tmux, command, rest)
+    except Cancelled:
+        return 0  # Esc in a picker: nothing was recorded
     except (KeyboardInterrupt, EOFError):
-        print("tacmux: cancelled", file=sys.stderr)
+        # A prompt leaves the cursor after its label; finish that line first.
+        print("\ntacmux: cancelled", file=sys.stderr)
         return 130
     except (TacmuxError, OSError, ValueError) as exc:
         print(f"tacmux: {exc}", file=sys.stderr)

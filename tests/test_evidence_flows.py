@@ -1056,3 +1056,149 @@ def test_evidence_picker_lists_entries_and_screenshots(
     assert main(["evidence"]) == 0
     assert any(label.startswith("📋 SITREP entries (1)") for label in offered)
     assert any("E001-x.png" in label for label in offered)
+
+
+# --- 3.4.2 review fixes -------------------------------------------------------
+
+
+def _cancel(*_args, **_kwargs):
+    from tacmux.errors import Cancelled
+
+    raise Cancelled("selection cancelled")
+
+
+def test_close_checklist_recognizes_a_3_4_proof(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    assert main(["proof", "user", "abc123", "/root/local.txt"]) == 0
+    from tacmux.cli import _close_items
+
+    labels = [label for label, _key in _close_items(workspace, web01, "WEB01")]
+    assert any(label.startswith("✓  Proof: E") for label in labels)
+    assert not any("No proof recorded" in label for label in labels)
+
+
+def test_ops_names_the_operations_session(
+    settings, workspace, web01, monkeypatch, fake_sessions, capsys
+):
+    main = _cli(monkeypatch, settings, web01)  # inside WEB01's folder
+    monkeypatch.setattr("tacmux.tmux.TmuxService.has_session", lambda *_: False)
+    assert main(["stop", "ops"]) == 0
+    assert fake_sessions["stopped"] == [""]
+    assert "Stopped OPS" in capsys.readouterr().out
+    assert main(["snap", "OPS"]) == 0
+    assert fake_sessions["snapped"] == [""]
+    assert main(["status", "ops"]) == 0
+    output = capsys.readouterr().out
+    assert "Endpoint" in output and "Session:" not in output  # engagement view
+
+
+def test_escape_in_a_picker_exits_quietly(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setattr("tacmux.cli.choose", _cancel)
+    assert main(["target"]) == 0  # target table, then Esc at the action picker
+    captured = capsys.readouterr()
+    assert "WEB01" in captured.out and captured.err == ""
+
+
+def test_escape_inside_a_palette_action_closes_the_popup(
+    settings, workspace, web01, monkeypatch
+):
+    from tacmux.errors import Cancelled
+
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setenv("TACMUX_POPUP", "1")
+    monkeypatch.setattr("tacmux.cli._session_choices", lambda *_: [])
+
+    def palette_choose(_choices, prompt, **_kwargs):
+        if prompt == "TACMUX> ":
+            return "note"
+        raise Cancelled("selection cancelled")  # Esc at Outcome>
+
+    monkeypatch.setattr("tacmux.cli.choose", palette_choose)
+    monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("popup waited"))
+    assert main(["menu"]) == 0
+    assert sitrep.read_events(workspace.read(web01)) == []
+
+
+def test_evidence_lists_prefix_s_captures(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    day = web01 / "logs/20260101"
+    day.mkdir(parents=True, exist_ok=True)
+    for target in ("WEB01", "ENGAGEMENT"):
+        (day / f"scrollback_{target}_main_x_p1_000000_1.log").write_text(
+            f"=== TACMUX scrollback log ===\nSession: s\nTarget: {target}\n"
+            "Pane: %1\n\nhello\n"
+        )
+    offered: list[str] = []
+
+    def fake_choose(choices, _prompt, **_kwargs):
+        offered.extend(choice[0] for choice in choices)
+        _cancel()
+
+    monkeypatch.setattr("tacmux.cli.choose", fake_choose)
+    assert main(["evidence"]) == 0
+    assert "Exact captures  1 scrollback_*.log (Prefix+S)" in capsys.readouterr().out
+    assert any(
+        label.startswith("📌") and "scrollback_WEB01" in label for label in offered
+    )
+    assert not any("scrollback_ENGAGEMENT" in label for label in offered)
+
+
+def test_target_list_aliases_and_prefixes(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    for words in (["target"], ["target", "list"], ["target", "status"]):
+        assert main(words) == 0
+        assert "192.0.2.10" in capsys.readouterr().out
+    assert main(["target", "up", "os", "Linux"]) == 0
+    assert workspace.target_details(web01, "WEB01")["OS"][0] == "Linux"
+    assert main(["target", "bogus"]) == 1
+    assert "target requires add" in capsys.readouterr().err
+
+
+def test_init_with_an_endpoint_creates_the_box_target(
+    settings, workspace, monkeypatch, tmp_path, capsys
+):
+    from tacmux.cli import main
+
+    monkeypatch.setenv("TACMUX_WORKSPACE", str(settings.workspace))
+    monkeypatch.setenv("TACMUX_CONFIG", str(settings.config_file))
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    monkeypatch.chdir(tmp_path)
+    assert main(["init", "Fractal", "192.0.2.50"]) == 0
+    root = settings.workspace / "Fractal"
+    assert workspace.targets(root) == ["FRACTAL"]
+    assert workspace.target_details(root, "FRACTAL")["Endpoint"][0] == "192.0.2.50"
+    assert "Open it with: tm switch (FRACTAL)" in capsys.readouterr().out
+    assert main(["init", "Fractal", "192.0.2.51"]) == 1
+    assert "already has targets" in capsys.readouterr().err
+
+
+def test_init_prefills_the_target_name(settings, workspace, monkeypatch, tmp_path):
+    from tacmux.cli import main
+
+    monkeypatch.setenv("TACMUX_WORKSPACE", str(settings.workspace))
+    monkeypatch.setenv("TACMUX_CONFIG", str(settings.config_file))
+    monkeypatch.chdir(tmp_path)
+    asked = {}
+
+    def fake_ask(label, default="", **kwargs):
+        asked[label] = (default, kwargs.get("prefill", False))
+        return default if label == "Target name" else "192.0.2.60"
+
+    monkeypatch.setattr("tacmux.cli.ask", fake_ask)
+    monkeypatch.setattr(
+        "tacmux.cli.confirm", lambda prompt, default=False: "first target" in prompt
+    )
+    assert main(["init", "Box"]) == 0
+    assert asked["Target name"] == ("BOX", True)
+    assert workspace.targets(settings.workspace / "Box") == ["BOX"]

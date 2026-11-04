@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 3.4.2 — 2026-11-04
+
+### Fixed
+
+- `tm close` recognizes proofs recorded by `tm proof` (and `/flag`) in 3.4. The
+  checklist matched only lowercase `user flag …` titles, so it reported "No
+  proof recorded" and its fix-up step would have recorded a duplicate.
+- Esc in a picker cancels quietly with exit status 0: no `selection cancelled`
+  message, no failed row in the command journal or `tm evidence`, and the
+  Prefix+M popup closes without waiting for Enter. Esc at "Show proof in pane"
+  skips that step and still offers the screenshot. Ctrl-C at a prompt prints
+  `cancelled` on its own line.
+- `tm stop ops`, `tm snap ops`, and `tm status ops` name the operations session,
+  as the switcher and messages already call it (`engagement` works too).
+- `tm evidence` lists Prefix+S exact captures (`scrollback_*.log`) with a count
+  in the summary.
+
+### Changed
+
+- `tm init NAME ENDPOINT` starts a box in one line: the engagement plus a
+  target named after it in capitals (`tm init Fractal 192.168.120.5` →
+  `FRACTAL`). Without an endpoint the Target name prompt is prefilled the same
+  way. The offer to open the new session now also works outside tmux.
+- Bare `tm target` shows the targets and then offers add, update, rename,
+  delete, or export; `tm target list` (also `status`, `ls`) shows the table, and
+  actions accept unique prefixes (`tm target up os Linux`).
+- `tm ports add` without a file at a terminal offers the target folder's Nmap
+  output (`*.nmap`, `scans/*`) like the palette, with "Paste output…" last.
+  Piped input and an explicit file are unchanged.
+
 ## 3.4.1 — 2026-11-04
 
 ### Fixed

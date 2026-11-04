@@ -6,6 +6,17 @@ An engagement is an ordinary parent directory marked by `.tacmux/version`. Its t
 
 Use one engagement for one authorized body of work. Keep unrelated client, lab, and training activity in separate parents.
 
+## Start a box
+
+```bash
+tm init Fractal 192.168.120.5   # engagement Fractal + target FRACTAL, then offers its session
+tm target                       # targets table, then add/update/rename/delete/export
+tm stop ops                     # OPS is the operations session (also: tm status ops, tm snap ops)
+```
+
+Without an endpoint, `tm init NAME` asks for the first target with the name
+prefilled. Esc in any picker cancels quietly (exit 0, nothing recorded).
+
 ## Action palette
 
 Inside any TACMUX session, bare `tm` (or Prefix+`M` as a popup, or `tm menu`
@@ -134,8 +145,8 @@ disables it. The pane column matches the `Pane:` header of the pane logs.
 the local-time UTC offsets in effect when the logs were written.
 
 **`tm evidence [TARGET]`** refreshes readable logs and shell logs, prints
-counts (entries, failed commands, logs, captures, screenshots), and at a
-terminal lets you open any of them in `$PAGER`.
+counts (entries, failed commands, logs, Prefix+S exact captures, captures,
+screenshots), and at a terminal lets you open any of them in `$PAGER`.
 
 ```toml
 [behavior]
@@ -375,6 +386,7 @@ With saved Nmap output:
 
 ```bash
 tm ports add WEB01 targets/WEB01/scans/manual-nmap.txt
+tm ports add          # at a terminal: pick from *.nmap and scans/*, or "Paste output…"
 ```
 
 The raw input is copied into the target's `scans/` directory. TCP, UDP, and SCTP rows merge on `(port, protocol)`; new observations update state, service, and version while preserving Notes. Input containing no valid port rows makes no change.

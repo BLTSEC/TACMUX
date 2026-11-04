@@ -30,7 +30,7 @@ records what happened.
 ## Install
 
 ```bash
-git clone --branch v3.4.1 --depth 1 https://github.com/BLTSEC/TACMUX.git
+git clone --branch v3.4.2 --depth 1 https://github.com/BLTSEC/TACMUX.git
 cd TACMUX
 ./install.sh --workspace ~/workspace   # omit --workspace on reinstall
 exec "$SHELL" -l
@@ -46,9 +46,11 @@ to pick up the key bindings.
 ## Quick start
 
 ```bash
-tm init ACME          # creates the engagement, then offers to add the first
-                      # target and open its session: one command per box
-tm target add WEB01 192.0.2.10        # more targets; inside tmux it offers to open one
+tm init Fractal 192.0.2.10   # one box: engagement Fractal, target FRACTAL,
+                             # then it offers to open the session
+tm init ACME                 # or: create it, then add the first target (prompts)
+tm target add WEB01 192.0.2.10        # more targets; offers to open one
+tm target                             # list targets, then pick an action
 tm switch                             # pick any session (Prefix+E)
 ```
 
@@ -122,11 +124,11 @@ Record      tm log [OUTCOME] [-c] [-l] [-i IMAGE] TEXT  'Title :: details'; outc
 Inspect     tm status [TARGET] · tm history [TARGET] [--outcome O] · tm ports [TARGET]
             tm sitrep [SECTION|TARGET] · tm log edit [EVENT_ID]
             tm evidence [TARGET]                     everything recorded, opens any
-Targets     tm init [NAME] · tm target add|update|export|rename|delete
+Targets     tm init [NAME] [ENDPOINT] · tm target [add|update|export|rename|delete|list]
             tm notes [FOLDER|none|move]              notes folder for new engagements
             tm discover [nmap|hosts|netexec]         reviewed host import
 Sessions    tm (palette in a session, switcher elsewhere) · tm menu · tm switch
-            tm snap [TARGET] · tm close [TARGET|--engagement] · tm stop [TARGET]
+            tm snap [TARGET|ops] · tm close [TARGET|--engagement] · tm stop [TARGET|ops]
 Maintain    tm sitrep sync · tm health · tm help [COMMAND] · tm version
             eval "$(tacmux shell-init zsh)"          command journal (installer adds it)
 ```

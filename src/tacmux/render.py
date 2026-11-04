@@ -281,7 +281,7 @@ def log_target(path: Path) -> str:
     return match.group(1).strip() if match else ""
 
 
-def raw_logs(root: Path) -> list[Path]:
+def _log_files(root: Path, *, scrollback: bool) -> list[Path]:
     logs = root / "logs"
     if not logs.is_dir() or logs.is_symlink():
         return []
@@ -292,10 +292,19 @@ def raw_logs(root: Path) -> list[Path]:
         for path in sorted(day.glob("*.log")):
             if path.is_symlink() or not path.is_file():
                 continue
-            if path.name.startswith("scrollback_"):
-                continue
-            found.append(path)
+            if path.name.startswith("scrollback_") == scrollback:
+                found.append(path)
     return found
+
+
+def raw_logs(root: Path) -> list[Path]:
+    """Raw pipe-pane logs (the ones that get a readable `.txt` copy)."""
+    return _log_files(root, scrollback=False)
+
+
+def exact_captures(root: Path) -> list[Path]:
+    """Prefix+S captures: plain text already, so they need no readable copy."""
+    return _log_files(root, scrollback=True)
 
 
 def readable_path(raw: Path) -> Path:

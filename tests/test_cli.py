@@ -34,7 +34,9 @@ def test_prompt_eof_is_a_clean_cancel(monkeypatch, settings, capsys):
 def test_cli_operational_flow(monkeypatch, settings, workspace, engagement, capsys):
     _configure(monkeypatch, settings)
     monkeypatch.chdir(engagement)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")  # open session? no
     assert main(["target", "add", "WEB01", "192.0.2.10"]) == 0
+    assert "Open it with: tm switch (WEB01)" in capsys.readouterr().out
     monkeypatch.chdir(engagement / "targets/WEB01")
     assert main(["log", "partial", "Shell", "drops"]) == 0
     assert main(["done", "Obtained", "shell"]) == 0

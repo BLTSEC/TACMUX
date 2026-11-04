@@ -496,4 +496,22 @@ def test_palette_nmap_picker_ignores_loot_text_files(web01, workspace, monkeypat
         == 0
     )
     assert "hash.txt" not in offered
-    assert set(offered) == {"LEVRAM.nmap", "scans/manual.txt"}
+    assert set(offered) == {"LEVRAM.nmap", "scans/manual.txt", "Paste output…"}
+
+
+def test_ports_add_at_a_terminal_offers_target_folder_files(
+    web01, workspace, monkeypatch
+):
+    folder = web01 / "targets/WEB01"
+    (folder / "first.nmap").write_text("22/tcp open ssh\n")
+    offered = []
+
+    def fake_choose(choices, prompt, **_kwargs):
+        offered.extend(display for display, _value in choices)
+        return str(folder / "first.nmap")
+
+    monkeypatch.setattr("tacmux.cli.choose", fake_choose)
+    assert main(["ports", "add"]) == 0
+    assert offered == ["first.nmap", "Paste output…"]
+    rows = sitrep.read_target(workspace.read(web01), "WEB01", "PORTS")
+    assert rows and rows[0][0] == "22"
