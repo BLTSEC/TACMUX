@@ -39,19 +39,20 @@ alias tm='tacmux'                      # add to your shell rc; docs use tm
 ```
 
 The installer puts TACMUX under `~/.local/share/tacmux`, links `tacmux` into
-`~/.local/bin`, enables Zsh completion for `tacmux` and `tm`, and adds only its
-integration fragment to `~/.tmux.conf`. Reload tmux (`tmux source ~/.tmux.conf`)
-to pick up the key bindings.
+`~/.local/bin`, and adds one managed block to `~/.zshrc` (completion for
+`tacmux` and `tm`, plus the command journal) and one line to `~/.tmux.conf`.
+A running tmux server is reloaded for you; otherwise the key bindings load
+with the next tmux start.
 
 ## Quick start
 
 ```bash
-tm init Fractal 192.0.2.10   # one box: engagement Fractal, target FRACTAL,
-                             # then it offers to open the session
-tm init ACME                 # or: create it, then add the first target (prompts)
-tm target add WEB01 192.0.2.10        # more targets; offers to open one
-tm target                             # list targets, then pick an action
-tm switch                             # pick any session (Prefix+E)
+tm init Fractal 192.0.2.10       # one box: engagement Fractal, target FRACTAL,
+                                 # then it offers to open the session
+tm init ACME                     # or: create it, then add the first target (prompts)
+tm target add WEB01 192.0.2.10   # more targets; offers to open one
+tm target                        # list targets, then pick an action
+tm switch                        # pick any session (Prefix+E)
 ```
 
 Box reverted with a new IP? `tm target update WEB01 endpoint 192.0.2.11` from
@@ -63,12 +64,12 @@ happened. Each entry previews the direct command it runs:
 ```text
 ╭ TACMUX> ─ ACME / WEB01 · 192.0.2.10 · Access: none · Status: active ─────────╮
 │ ✗  Failed / dead end          │ Record what did not work. AARs and reports   │
-│ ✓  Step worked                │ are mostly about the detours.                │
-│ 🔑 Found credential            │                                              │
-│ 🔑 Credential works            │ Direct command:                              │
-│ 🧹 Add cleanup item            │   tm fail "EDB 50640 broken"                 │
-│ ↶  Undo last change           │                                              │
-│ ⇄  LIVE  ACME / DC01 …        │                                              │
+│ ✓  Step worked                │ are mostly about the detours, so log them as │
+│ ★  Got access                 │ they happen.                                 │
+│ ⚑  Proof / flag               │                                              │
+│ 🔑 Found credential           │ Direct command:                              │
+│ 🧹 Add cleanup item           │   tm fail 'EDB 50640 broken :: needs a       │
+│ ⇄  LIVE  ACME / DC01 …        │   project' -l                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -79,7 +80,7 @@ nmap -sV "$TARGET" | tm ports add          # merge ports into SITREP
 tm fail 'Default creds :: admin:admin rejected'   # Title :: details
 tm done 'Shell as app :: ```python3 exploit.py``` RCE works'   # code block
 tm creds add password 'admin:admin'        # store a credential (C001)
-tm creds confirm C001 auth 8000            # works on WEB01, service from Ports
+tm creds confirm C001 auth 80              # works on WEB01, service from Ports
 tm target update access                    # missing value → picker
 tm access user svc_web "file upload" --via "http :80"   # Access raised, one step
 tm proof root 49d8… /root/proof.txt        # flag + screenshot (alias tm flag)
@@ -91,7 +92,8 @@ tm close                                   # checklist, readable logs, stop
 ## How input works
 
 - **Any bracketed argument can be omitted**; TACMUX asks for only what is
-  missing. Inside a target session the target is implied.
+  missing, and Esc in a picker cancels without recording anything. Inside a
+  target session the target is implied.
 - **Words accept prefixes and aliases.** Fields: `acc`, `st`, `as` (principal),
   `via` (method), `host`. Access: `auth`, `shell`, `root` (admin), `dom`.
   Status: `done` (complete). `tm log f|p|s TEXT` sets the outcome. An ambiguous
@@ -118,10 +120,10 @@ Record      tm log [OUTCOME] [-c] [-l] [-i IMAGE] TEXT  'Title :: details'; outc
             tm access [LEVEL] [AS] [HOW…]            access gained, one undoable step
             tm proof|flag [user|root] [VALUE] [PATH] flag/proof with a screenshot
             tm creds [view [ID] | add | confirm]     credentials and where they work
-            tm ports add [TARGET] [FILE]             Nmap normal output (or stdin)
+            tm ports add [TARGET] [FILE]             Nmap output: FILE, stdin, or a picker
             tm todo | tm cleanup [add|done|reopen]   checklists in SITREP
             tm undo [--yes]
-Inspect     tm status [TARGET] · tm history [TARGET] [--outcome O] · tm ports [TARGET]
+Inspect     tm status [TARGET|ops] · tm history [TARGET] [--outcome O] · tm ports [TARGET]
             tm sitrep [SECTION|TARGET] · tm log edit [EVENT_ID]
             tm evidence [TARGET]                     everything recorded, opens any
 Targets     tm init [NAME] [ENDPOINT] · tm target [add|update|export|rename|delete|list]
@@ -154,7 +156,7 @@ so an unrecorded `none` stands out.
 `SITREP.md` keeps current state first (Targets, Credentials, TODO, Cleanup),
 then the Operations Log, where each entry is a callout colored by outcome:
 
-```markdown
+```text
 > [!success] Root via python3.10 cap_setuid
 > `E008` · `2026-11-03 05:52:10Z` · `LEVRAM`
 >
@@ -164,9 +166,10 @@ then the Operations Log, where each entry is a callout colored by outcome:
 >
 > proof.txt captured.
 ```
- It is plain Markdown: edit it in Obsidian or
-`$EDITOR`; checked boxes and prose between markers are understood. Rename
-targets with `tm target rename`, not by editing headings alone.
+
+`SITREP.md` is plain Markdown: edit it in Obsidian or `$EDITOR`; checked boxes
+and prose between markers are understood. Rename targets with
+`tm target rename`, not by editing headings alone.
 
 **Evidence:**
 - `tm done -c "…"` attaches the latest NOCAP capture on this target's route.
@@ -195,7 +198,7 @@ folder per course or client if you like:
 
 ```bash
 tm notes ~/notes/engagements/PG    # or tm notes PG once the folder is listed
-tm init Fractal                    # → ~/notes/engagements/PG/Fractal/SITREP.md
+tm init Fractal 192.0.2.10         # → ~/notes/engagements/PG/Fractal/SITREP.md
 tm notes HTB                       # next course; PG engagements keep working
 tm notes move Fractal OSCP         # optional: relocate a note folder (+ images)
 ```
