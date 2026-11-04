@@ -1,3 +1,3 @@
 """TACMUX — lean tmux-native engagement workspaces."""
 
-__version__ = "3.4.3"
+__version__ = "3.4.4"

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 3.4.4 — 2026-11-04
+
+### Fixed
+
+- Recording a proof no longer writes the flag title into Method/Path. When
+  `tm proof` also records the implied shell ("also record a system shell?"), it
+  raises Access and sets Principal but leaves Method/Path as it was.
+- `tm access` at the target's current Access level now updates Principal and
+  Method/Path, so recording how you got the shell after the proof gives the
+  real method. Access is still never lowered, and a lower-level access record
+  changes nothing in Details.
+
 ## 3.4.3 — 2026-11-04
 
 ### Added

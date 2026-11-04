@@ -1324,3 +1324,43 @@ def test_database_login_is_guarded_like_a_web_login(
     monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)
     assert main(["creds", "confirm", credential, "admin", "ms-sql-s :1433"]) == 0
     assert workspace.target_details(web01, "WEB01")["Access"][0] == "authenticated"
+
+
+def test_access_after_proof_records_the_real_method(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    """PG-Algernon: proof first (with the implied shell), then tm access."""
+    main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "OS", "Windows")
+    workspace.set_target_detail(web01, "WEB01", "Method/Path", "ftp anonymous access")
+    monkeypatch.setattr("tacmux.cli.confirm", lambda prompt, **_k: "shell" in prompt)
+    monkeypatch.setattr("tacmux.cli.choose", lambda *_a, **_k: "root")
+    monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: "7f53")
+    monkeypatch.setattr("tacmux.cli._choose_shell_pane", lambda *_a: "")
+    assert main(["proof"]) == 0  # guided; "also record a system shell?" → yes
+    details = workspace.target_details(web01, "WEB01")
+    assert details["Access"][0] == "system"
+    assert details["Method/Path"][0] == "ftp anonymous access"  # not "Root flag (…)"
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    assert (
+        main(
+            [
+                "access",
+                "system",
+                "SYSTEM",
+                "SmarterMail CVE-2019-7214",
+                "--via",
+                "remoting :17001",
+            ]
+        )
+        == 0
+    )
+    details = workspace.target_details(web01, "WEB01")
+    assert details["Access"][0] == "system"
+    assert details["Method/Path"][0] == "SmarterMail CVE-2019-7214 via remoting :17001"
+    assert "Principal and Method/Path updated" in capsys.readouterr().out
+    # A lower access record never lowers Access nor rewrites how it was reached.
+    assert main(["access", "user", "app", "other path"]) == 0
+    details = workspace.target_details(web01, "WEB01")
+    assert details["Access"][0] == "system"
+    assert details["Method/Path"][0] == "SmarterMail CVE-2019-7214 via remoting :17001"

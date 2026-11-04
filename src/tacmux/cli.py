@@ -2138,11 +2138,12 @@ def _access_command(
     )
     after = workspace.target_details(context.root, target)["Access"][0]
     print(f"Logged {identifier} success: {target} — {summary}")
-    print(
-        f"Access {current} → {after}"
-        if after != current
-        else f"Access stays {after} (already at or above {level})"
-    )
+    if after != current:
+        print(f"Access {current} → {after}")
+    elif level == after:
+        print(f"Access stays {after}; Principal and Method/Path updated")
+    else:
+        print(f"Access stays {after} (already above {level})")
     copied = _collect_shells(settings, workspace, context.root, target)
     if copied:
         print(f"Shell logs  {len(copied)} new file(s) → captures/…/shells/")
@@ -2303,7 +2304,8 @@ def _proof_command(
             )
             workspace.mutate(
                 context.root,
-                lambda text: raise_access(text, target, implied, owner, summary),
+                # No Method/Path: a flag shows the level, not how it was reached.
+                lambda text: raise_access(text, target, implied, owner),
             )
             print(f"Access {current} → {implied}")
         elif not interactive:

@@ -105,13 +105,25 @@ def validate_target_name(value: str) -> str:
 
 
 def raise_access(
-    text: str, target: str, access: str, principal: str = "", method: str = ""
+    text: str,
+    target: str,
+    access: str,
+    principal: str = "",
+    method: str = "",
+    *,
+    refine: bool = False,
 ) -> str:
-    """Raise a target's Access (never lower it); set Principal/Method with it."""
+    """Raise a target's Access (never lower it); set Principal/Method with it.
+
+    With `refine`, the same level also updates Principal/Method: an explicit
+    access record says how the current level was actually reached.
+    """
     current = sitrep.details_map(text, target)["Access"][0] or "none"
-    if ACCESS_LEVELS.index(access) <= ACCESS_LEVELS.index(current):
+    rank, now = ACCESS_LEVELS.index(access), ACCESS_LEVELS.index(current)
+    if rank < now or (rank == now and not refine):
         return text
-    text = sitrep.set_detail(text, target, "Access", access)
+    if rank > now:
+        text = sitrep.set_detail(text, target, "Access", access)
     if principal:
         text = sitrep.set_detail(text, target, "Principal", principal)
     if method:
@@ -996,7 +1008,7 @@ class Workspace:
             )
 
         def extra(text: str) -> str:
-            text = raise_access(text, target, access, principal, method)
+            text = raise_access(text, target, access, principal, method, refine=True)
             if credential:
                 text = confirmation_text(text, credential, target, confirmed, service)
             return text
