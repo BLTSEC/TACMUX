@@ -47,7 +47,25 @@ def latest_unattached_capture(
         return None
     if any(event.capture_id == record.identifier for event in events):
         return None
+    # Only output that is new since this target's last entry: an older scan
+    # was already passed over, so it is not offered again at every entry.
+    finished = _moment(record.finished)
+    if finished is not None and any(
+        event.target == target
+        and (logged := _moment(event.timestamp)) is not None
+        and logged >= finished
+        for event in events
+    ):
+        return None
     return record
+
+
+def _moment(value: str) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def offer_capture(

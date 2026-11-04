@@ -278,6 +278,7 @@ Forms:    tm sitrep [context|targets|credentials|todo|cleanup|log|TARGET]
 
 Forms:    tm init [NAME] [ENDPOINT]
 One box:  tm init Fractal 192.168.120.5   creates Fractal with target FRACTAL
+          (under a PG notes folder, tm init PG-Kevin IP gives target KEVIN)
           and offers to open its session (switch inside tmux, attach outside).
 Without ENDPOINT, at a terminal it offers to add the first target (name
 prefilled from the engagement name).

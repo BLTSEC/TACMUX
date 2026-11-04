@@ -1256,7 +1256,10 @@ def _credential_command(
         )
         print(f"Added {identifier} ({principal}, {secret_type})")
         if not supplied and confirm("Works somewhere now?", default=True):
-            return _confirm_credential(workspace, context, [identifier])
+            # Notes were just asked for the credential itself.
+            return _confirm_credential(
+                workspace, context, [identifier], ask_notes=False
+            )
         return 0
     if action == "confirm":
         return _confirm_credential(workspace, context, rest)
@@ -1326,7 +1329,11 @@ SHELL_SERVICES = re.compile(
     r"^(ssh|telnet|ms-wbt-server|rdp|winrm|wsman|vnc|rlogin|rsh)\b|:(22|23|3389|5985|5986)\b",
     re.IGNORECASE,
 )
-APP_SERVICES = re.compile(r"^(https?|ssl/http|http-\w+|ftp|www)\b", re.IGNORECASE)
+APP_SERVICES = re.compile(
+    r"^(https?|ssl/http|http-\w+|ftp|www|mysql|ms-sql-s|mssql|postgresql|redis"
+    r"|mongodb|oracle(-tns)?)\b",
+    re.IGNORECASE,
+)
 
 
 def _choose_credential_access(service: str) -> str:
@@ -1362,7 +1369,11 @@ def _checked_app_access(access: str, service: str, targets: Sequence[str]) -> st
 
 
 def _confirm_credential(
-    workspace: Workspace, context: Context, arguments: Sequence[str]
+    workspace: Workspace,
+    context: Context,
+    arguments: Sequence[str],
+    *,
+    ask_notes: bool = True,
 ) -> int:
     """creds confirm [ID] [TARGET…] [ACCESS] [SERVICE] [NOTES…]; asks for gaps."""
     text = workspace.read(context.root)
@@ -1419,7 +1430,7 @@ def _confirm_credential(
     if rest:
         notes = " ".join(rest)
     else:
-        notes = ask("Notes", required=False) if prompted else ""
+        notes = ask("Notes", required=False) if prompted and ask_notes else ""
     for target in targets:
         workspace.confirm_credential(
             context.root, credential, target, access, service, notes
@@ -2266,6 +2277,8 @@ def _proof_command(
     elif interactive and not forced_noninteractive():
         path = choose([*((p, p) for p in suggestions), ("Other…", "")], "Path> ")
         path = path or ask("Path")
+    elif not details["OS"][0].strip():
+        path = "local.txt" if kind == "user" else "proof.txt"  # OS unknown: no guess
     else:
         path = suggestions[0]
     filename = re.split(r"[\\/]", path)[-1] or path
@@ -2323,6 +2336,8 @@ def _proof_command(
         screenshot = confirm("Take the proof screenshot now?", default=True)
     if screenshot and not no_screenshot:
         schedule_screenshot(workspace, context.root, target, identifier, delay=delay)
+    if kind == "root":
+        print(f"Done with {target}? tm close (checklist, readable logs, stop)")
     return 0
 
 
@@ -2632,9 +2647,13 @@ def _dispatch(
                 )
         elif endpoint:
             # One box, one target: `tm init Fractal 192.168.1.5` → FRACTAL.
-            target = name.upper()
+            target = _default_target_name(settings, name)
         elif can_prompt() and confirm("Add the first target now?", default=True):
-            target = ask("Target name", default=name.upper(), prefill=True)
+            target = ask(
+                "Target name",
+                default=_default_target_name(settings, name),
+                prefill=True,
+            )
             endpoint = ask("Endpoint")
         if target:
             target = workspace.add_target(root, target, endpoint)
@@ -2726,6 +2745,16 @@ def _checked_arguments(command: str, arguments: Sequence[str]) -> list[str]:
             )
         checked.append(value)
     return checked
+
+
+def _default_target_name(settings: Settings, name: str) -> str:
+    """NAME in capitals, without a leading notes-folder prefix (PG-Kevin → KEVIN)."""
+    upper = name.upper()
+    folder = settings.sitrep_root.name.upper() if settings.sitrep_root else ""
+    prefix = f"{folder}-"
+    if folder and upper.startswith(prefix) and len(upper) > len(prefix):
+        return upper[len(prefix) :]
+    return upper
 
 
 def _shell_init(arguments: Sequence[str]) -> int:

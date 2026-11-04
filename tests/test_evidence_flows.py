@@ -8,7 +8,7 @@ import pytest
 
 from tacmux import sitrep
 from tacmux.errors import ConflictError, ValidationError
-from tacmux.workspace import CaptureRecord
+from tacmux.workspace import CaptureRecord, Workspace
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
 
@@ -453,6 +453,7 @@ def test_proof_direct_form_infers_path_and_never_raises_access(
     principal = "app"
     monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)  # no shot
     workspace.set_target_detail(web01, "WEB01", "Principal", principal)
+    workspace.set_target_detail(web01, "WEB01", "OS", "Linux")
     assert main(["proof", "u", "9a1d4ff100f424aa5d2f66366b365495"]) == 0
     event = sitrep.read_events(workspace.read(web01))[-1]
     assert event.summary == "User flag (local.txt)"
@@ -1242,3 +1243,84 @@ def test_web_login_cannot_silently_raise_os_access(
     monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")  # scripts keep explicit words
     assert main(["creds", "confirm", credential, "user", "ssh :22"]) == 0
     assert workspace.target_details(web01, "WEB01")["Access"][0] == "user"
+
+
+# --- 3.4.3: PG-Kevin review fixes ---------------------------------------------
+
+
+def test_capture_is_not_offered_again_after_a_later_entry(
+    workspace, web01, monkeypatch
+):
+    from tacmux.evidence import latest_unattached_capture
+
+    monkeypatch.setattr("tacmux.evidence.shutil.which", lambda _name: "/usr/bin/cap")
+    old = CaptureRecord(
+        "cap-1", "done", "nmapq", "WEB01/nmap.txt", "nmapq x", "2026-01-01T10:00:00Z"
+    )
+    monkeypatch.setattr(Workspace, "inspect_capture", lambda *_a, **_k: old)
+    assert latest_unattached_capture(workspace, web01, "WEB01") == old
+    workspace.add_event(web01, "WEB01", "success", "Web login works")  # passed over
+    assert latest_unattached_capture(workspace, web01, "WEB01") is None
+    newer = CaptureRecord(
+        "cap-2", "done", "ffuf", "WEB01/ffuf.txt", "ffuf", "2999-01-01T00:00:00Z"
+    )
+    monkeypatch.setattr(Workspace, "inspect_capture", lambda *_a, **_k: newer)
+    assert latest_unattached_capture(workspace, web01, "WEB01") == newer
+
+
+def test_creds_add_then_confirm_asks_notes_once(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    asked = []
+
+    def fake_ask(label, *_a, **_k):
+        asked.append(label)
+        return {"Principal": "admin", "Source": "web", "Notes": "default"}.get(
+            label, ""
+        )
+
+    monkeypatch.setattr("tacmux.cli.ask", fake_ask)
+    monkeypatch.setattr("tacmux.cli.getpass.getpass", lambda *_a: "admin")
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: True)  # works somewhere
+    picks = iter(["http :80", "authenticated"])
+    monkeypatch.setattr("tacmux.cli.choose", lambda *_a, **_k: next(picks))
+    assert main(["creds", "add", "password"]) == 0
+    assert asked.count("Notes") == 1
+
+
+def test_default_target_drops_the_notes_folder_prefix(tmp_path):
+    from tacmux.cli import _default_target_name
+    from tacmux.config import Settings
+
+    pg = Settings(
+        workspace=tmp_path / "ws",
+        config_file=tmp_path / "c.toml",
+        sitrep_root=tmp_path / "PG",
+    )
+    assert _default_target_name(pg, "PG-Kevin") == "KEVIN"
+    assert _default_target_name(pg, "Fractal") == "FRACTAL"
+    assert _default_target_name(pg, "PG-") == "PG-"
+    plain = Settings(workspace=tmp_path / "ws", config_file=tmp_path / "c.toml")
+    assert _default_target_name(plain, "PG-Kevin") == "PG-KEVIN"
+
+
+def test_root_proof_suggests_close_and_unknown_os_records_only_the_file(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)
+    assert main(["proof", "root", "49d8"]) == 0  # OS not recorded, no path given
+    event = sitrep.read_events(workspace.read(web01))[-1]
+    assert event.body.splitlines()[-1] == "proof.txt"
+    assert "Done with WEB01? tm close" in capsys.readouterr().out
+
+
+def test_database_login_is_guarded_like_a_web_login(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    credential = workspace.add_credential(web01, "sa", "sa", "password")
+    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)
+    assert main(["creds", "confirm", credential, "admin", "ms-sql-s :1433"]) == 0
+    assert workspace.target_details(web01, "WEB01")["Access"][0] == "authenticated"

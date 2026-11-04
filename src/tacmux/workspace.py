@@ -46,6 +46,7 @@ class CaptureRecord:
     tool: str
     path: str
     command: str
+    finished: str = ""  # NOCAP finished_at (or started_at), ISO 8601 UTC
 
 
 def utc_now() -> str:
@@ -1271,6 +1272,7 @@ class Workspace:
                     "capture command",
                     required=False,
                 ),
+                str(value.get("finished_at") or value.get("started_at") or ""),
             )
         except (KeyError, TypeError, json.JSONDecodeError) as exc:
             raise ExternalToolError("cap inspect returned invalid JSON") from exc

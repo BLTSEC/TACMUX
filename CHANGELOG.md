@@ -24,6 +24,21 @@
   recorded instead of assuming Linux, so Windows boxes get Windows proof paths
   and the Windows command line in the shell pane. The answer is saved to the
   target's OS field.
+- The same NOCAP capture is no longer offered (default Yes) at every success,
+  access, and proof entry: only output newer than the target's last entry is
+  offered.
+- `tm creds add` no longer asks for Notes a second time when it goes straight
+  on to "Works somewhere now?".
+- Database logins (MySQL, MSSQL, PostgreSQL, Redis, MongoDB, Oracle) get the
+  same `authenticated` guard as web and FTP logins.
+- A direct `tm proof KIND VALUE` without a path records just `proof.txt` or
+  `local.txt` when the OS is unknown, instead of a Linux path.
+
+### Changed
+
+- The suggested first target drops a leading notes-folder prefix:
+  `tm init PG-Kevin 192.0.2.5` under the `PG` folder creates target `KEVIN`.
+- A root proof ends with a one-line reminder: `Done with TARGET? tm close`.
 
 ## 3.4.2 — 2026-11-04
 
