@@ -1425,11 +1425,17 @@ class Workspace:
         self.mutate(root, operation)
 
     def merge_ports(
-        self, root: Path, target: str, ports: Sequence[Sequence[str]]
+        self,
+        root: Path,
+        target: str,
+        ports: Sequence[Sequence[str]],
+        os_name: str = "",
     ) -> int:
+        """Merge port rows; an empty target OS takes os_name in the same change."""
         target = self.canonical_target(root, target)
         if not ports:
             raise ValidationError("input contained no Nmap port rows")
+        os_name = validate_value(os_name, "OS", required=False)
 
         def operation(text: str) -> str:
             existing = sitrep.read_target(text, target, "PORTS")
@@ -1450,7 +1456,10 @@ class Workspace:
                 indexed.values(),
                 key=lambda row: (int(row[0]) if row[0].isdigit() else 65536, row[1]),
             )
-            return sitrep.write_target(text, target, "PORTS", rows)
+            text = sitrep.write_target(text, target, "PORTS", rows)
+            if os_name and not sitrep.details_map(text, target)["OS"][0].strip():
+                text = sitrep.set_detail(text, target, "OS", os_name)
+            return text
 
         self.mutate(root, operation)
         return len(ports)
@@ -1706,6 +1715,33 @@ def parse_nmap_ports(
         row = [port, protocol.lower(), state, service, (version or "").strip()]
         ports[(port, protocol.lower())] = row
     return list(ports.values())
+
+
+NMAP_SERVICE_OS = re.compile(r"(?m)^Service Info:.*?\bOS: ([^;\n]+)")
+NMAP_SMB_OS = re.compile(
+    r"(?m)^\|[ _]?smb-os-discovery:[ \t]*\n(?:\|[ \t]{2,}.*\n)*?\|[ _]\s*OS: (.+)$"
+)
+
+
+def parse_nmap_os(content: str) -> str:
+    """The OS a single-host Nmap report names, or "" when it is absent or unclear.
+
+    smb-os-discovery is the more specific source on Windows. Samba answers it
+    with a fake "Windows 6.1 (Samba ...)", so that value is ignored and the
+    Service Info line decides. Conflicting Service Info values are not guessed.
+    """
+    service = {value.strip() for value in NMAP_SERVICE_OS.findall(content)}
+    service.discard("")
+    smb = ""
+    match = NMAP_SMB_OS.search(content)
+    if match and "samba" not in match.group(1).casefold():
+        # "Windows Server 2016 Standard 14393 (Windows Server 2016 Standard 6.3)"
+        smb = re.sub(r"\s*\(.*\)\s*$", "", match.group(1)).strip()
+    if smb.casefold().startswith("windows"):
+        return smb
+    if len(service) == 1:
+        return service.pop()
+    return smb if not service else ""
 
 
 def parse_host_candidates(content: str, kind: str = "hosts") -> list[tuple[str, str]]:

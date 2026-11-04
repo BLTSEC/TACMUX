@@ -4,6 +4,14 @@
 
 ## 3.4.3 — 2026-11-04
 
+### Added
+
+- `tm ports add` fills an empty target OS from the Nmap report, in the same
+  SITREP change (and undo step) as the ports. It reads the `smb-os-discovery`
+  OS on Windows, otherwise the `Service Info: OS:` line. A recorded OS is never
+  overwritten, Samba's fake "Windows 6.1 (Samba …)" is ignored, and conflicting
+  values are left unset.
+
 ### Fixed
 
 - `tm creds confirm` no longer lets a web or FTP login raise a target to an

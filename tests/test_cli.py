@@ -121,6 +121,36 @@ def test_cli_ports_pipe(monkeypatch, settings, workspace, engagement, capsys):
     )
 
 
+def test_port_import_fills_empty_os_in_the_same_change(
+    monkeypatch, settings, workspace, engagement, tmp_path, capsys
+):
+    _configure(monkeypatch, settings)
+    workspace.add_target(engagement, "DC01", "192.0.2.10")
+    workspace.add_target(engagement, "WEB01", "192.0.2.11")
+    workspace.set_target_detail(engagement, "WEB01", "OS", "Linux")
+    monkeypatch.chdir(engagement)
+    source = tmp_path / "dc01.nmap"
+    source.write_text(
+        "Nmap scan report for 192.0.2.10\n"
+        "445/tcp open microsoft-ds?\n"
+        "Service Info: Host: DC01; OS: Windows; CPE: cpe:/o:microsoft:windows\n"
+    )
+    before = workspace.read(engagement)
+    assert main(["ports", "add", "DC01", str(source)]) == 0
+    assert "Updated DC01 OS: Windows (from Nmap)" in capsys.readouterr().out
+    text = workspace.read(engagement)
+    assert sitrep.details_map(text, "DC01")["OS"][0] == "Windows"
+    assert sitrep.read_target(text, "DC01", "PORTS")[0][0] == "445"
+    # Ports and OS are one SITREP change: one undo step restores both.
+    assert workspace.last_change(engagement)[1]["before"] == before
+
+    # A recorded OS is the operator's: Nmap never overwrites it.
+    source.write_text(source.read_text().replace("192.0.2.10", "192.0.2.11"))
+    assert main(["ports", "add", "WEB01", str(source)]) == 0
+    assert "OS" not in capsys.readouterr().out
+    assert workspace.target_details(engagement, "WEB01")["OS"][0] == "Linux"
+
+
 @pytest.mark.parametrize(
     "reports",
     [

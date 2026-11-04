@@ -13,6 +13,7 @@ from tacmux.workspace import (
     CaptureRecord,
     TARGET_DIRECTORIES,
     Workspace,
+    parse_nmap_os,
     parse_nmap_ports,
 )
 
@@ -782,6 +783,61 @@ def test_nmap_report_matches_hostnames_and_normalized_ips(reported, expected):
     assert rows == [["22", "tcp", "open", "ssh", "OpenSSH"]]
 
 
+SMB_WINDOWS = """Host script results:
+| smb-security-mode:
+|   account_used: guest
+|_  message_signing: disabled (dangerous, but default)
+| smb-os-discovery: 
+|   OS: Windows Server 2016 Standard 14393 (Windows Server 2016 Standard 6.3)
+|   Computer name: DC01
+|_  System time: 2026-11-04T12:00:00-08:00
+"""
+SMB_SAMBA = """Host script results:
+| smb-os-discovery: 
+|   OS: Windows 6.1 (Samba 4.7.6-Ubuntu)
+|_  Computer name: files
+"""
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        (
+            "22/tcp open ssh\nService Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel\n",
+            "Linux",
+        ),
+        (
+            "Service Info: Host: DC01; OS: Windows; CPE: cpe:/o:microsoft:windows\n",
+            "Windows",
+        ),
+        (
+            "Service Info: OS: Windows\n" + SMB_WINDOWS,
+            "Windows Server 2016 Standard 14393",
+        ),
+        (SMB_WINDOWS, "Windows Server 2016 Standard 14393"),
+        (
+            "Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel\n" + SMB_SAMBA,
+            "Linux",
+        ),
+        (SMB_SAMBA, ""),
+        ("Service Info: OS: Linux\nService Info: OS: Windows\n", ""),
+        ("Service Info: OSs: Unix, Linux; CPE: cpe:/o:linux:linux_kernel\n", ""),
+        ("22/tcp open ssh OpenSSH\n", ""),
+    ],
+)
+def test_parse_nmap_os(report, expected):
+    assert parse_nmap_os(report) == expected
+
+
+def test_merge_ports_fills_only_an_empty_os(workspace, engagement):
+    workspace.add_target(engagement, "WEB01", "192.0.2.10")
+    rows = [["22", "tcp", "open", "ssh", "OpenSSH"]]
+    workspace.merge_ports(engagement, "WEB01", rows, "Linux")
+    assert workspace.target_details(engagement, "WEB01")["OS"][0] == "Linux"
+    workspace.merge_ports(engagement, "WEB01", rows, "Windows")
+    assert workspace.target_details(engagement, "WEB01")["OS"][0] == "Linux"
+
+
 def test_parse_and_merge_nmap_ports_preserves_notes(workspace, engagement):
     workspace.add_target(engagement, "WEB01", "192.0.2.10")
     rows = parse_nmap_ports(
@@ -849,3 +905,14 @@ def test_sync_repairs_scaffolding_and_reports_reference_problems(workspace, enga
     assert workspace.repair_scaffolding(engagement, {}) == [
         "todo references missing target: MISSING"
     ]
+
+
+def test_smb_os_match_stays_inside_its_own_script_block():
+    report = (
+        "| smb-os-discovery: \n"
+        "|   Computer name: FILES\n"
+        "| other-script: \n"
+        "|   OS: Linux 5.x\n"
+        "Service Info: OS: Windows\n"
+    )
+    assert parse_nmap_os(report) == "Windows"

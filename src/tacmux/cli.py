@@ -48,6 +48,7 @@ from .workspace import (
     TARGET_STATUSES,
     Workspace,
     parse_host_candidates,
+    parse_nmap_os,
     parse_nmap_ports,
     raise_access,
 )
@@ -1467,8 +1468,13 @@ def _ports_command(
         if not ports:
             raise ValidationError("input contained no Nmap port rows")
         raw = workspace.store_scan(context.root, target, content)
-        count = workspace.merge_ports(context.root, target, ports)
+        os_name = "" if details["OS"][0].strip() else parse_nmap_os(content)
+        count = workspace.merge_ports(context.root, target, ports, os_name)
         print(f"Imported {count} port rows for {target}; raw input: {raw}")
+        if os_name:
+            updated = workspace.target_details(context.root, target)["OS"][0]
+            if updated == os_name:
+                print(f"Updated {target} OS: {os_name} (from Nmap)")
         return 0
     target = arguments[0] if arguments else context.target
     target = target or _target_choice(workspace, context.root)

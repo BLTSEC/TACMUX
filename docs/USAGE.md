@@ -389,7 +389,7 @@ tm ports add WEB01 targets/WEB01/scans/manual-nmap.txt
 tm ports add          # at a terminal: pick from *.nmap and scans/*, or "Paste output…"
 ```
 
-The raw input is copied into the target's `scans/` directory. TCP, UDP, and SCTP rows merge on `(port, protocol)`; new observations update state, service, and version while preserving Notes. Input containing no valid port rows makes no change.
+The raw input is copied into the target's `scans/` directory. TCP, UDP, and SCTP rows merge on `(port, protocol)`; new observations update state, service, and version while preserving Notes. Input containing no valid port rows makes no change. When the target's OS is empty, the same change fills it from the report: the `smb-os-discovery` OS for Windows (e.g. `Windows Server 2016 Standard 14393`), otherwise the `Service Info: OS:` value. A recorded OS is never overwritten; Samba's fake "Windows 6.1 (Samba …)" and conflicting Service Info values leave it empty.
 
 A full Nmap report must contain exactly one host matching the selected target's
 Endpoint or Hostnames. Multi-host and mismatched reports are refused before any
