@@ -895,10 +895,15 @@ def _copy_hosts_line(tmux: TmuxService, endpoint: str, names: Sequence[str]) -> 
     line = " ".join([endpoint, *names])
     note = "updates these names; preserves other aliases and comments"
     try:
-        clipboard_copy(tmux, command.encode())
+        # clipboard_copy raises only when no clipboard exists; a failing copy
+        # tool returns nonzero instead.
+        copied = clipboard_copy(tmux, command.encode()) == 0
+    except TacmuxError:
+        copied = False
+    if copied:
         # The command itself is long; the clipboard holds it, so show its effect.
         print(f"Copied: /etc/hosts → {line} (paste to run; {note})")
-    except TacmuxError:
+    else:
         print(f"Update /etc/hosts ({note}): {command}")
 
 

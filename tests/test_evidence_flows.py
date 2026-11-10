@@ -1213,7 +1213,7 @@ def test_new_endpoint_restarts_a_running_session_from_ops(
     out = capsys.readouterr().out
     copied = []
     monkeypatch.setattr(
-        "tacmux.cli.clipboard_copy", lambda _t, data: copied.append(data)
+        "tacmux.cli.clipboard_copy", lambda _t, data: copied.append(data) or 0
     )
     assert main(["target", "update", "WEB01", "endpoint", "192.0.2.11"]) == 0
     out += capsys.readouterr().out
@@ -1225,16 +1225,23 @@ def test_new_endpoint_restarts_a_running_session_from_ops(
     assert "python3" not in out
 
 
-def test_hosts_line_prints_the_full_command_without_a_clipboard(monkeypatch, capsys):
+@pytest.mark.parametrize("failure", ["raises", "returns 1"])
+def test_hosts_line_prints_the_full_command_when_copy_fails(
+    monkeypatch, capsys, failure
+):
     from tacmux.cli import _copy_hosts_line, _hosts_command
     from tacmux.errors import ExternalToolError
 
-    def no_clipboard(*_a):
-        raise ExternalToolError("no clipboard")
+    def broken(*_a):
+        if failure == "raises":
+            raise ExternalToolError("no clipboard")
+        return 1  # e.g. tmux load-buffer or xclip failed
 
-    monkeypatch.setattr("tacmux.cli.clipboard_copy", no_clipboard)
+    monkeypatch.setattr("tacmux.cli.clipboard_copy", broken)
     _copy_hosts_line(None, "192.0.2.9", ["box.offsec"])
-    assert _hosts_command("192.0.2.9", ["box.offsec"]) in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert _hosts_command("192.0.2.9", ["box.offsec"]) in out
+    assert "Copied" not in out
 
 
 def test_hosts_command_replaces_stale_lines_in_one_paste(tmp_path):

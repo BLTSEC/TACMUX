@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 3.4.8 — 2026-11-10
+
+### Fixed
+
+- When copying the `/etc/hosts` command fails (the clipboard tool exits
+  nonzero), TACMUX prints the full command again instead of saying "Copied".
+  3.4.7 hid it, so a failed copy left you pasting the old clipboard contents.
+
 ## 3.4.7 — 2026-11-10
 
 ### Changed
