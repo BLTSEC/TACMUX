@@ -1211,8 +1211,131 @@ def test_new_endpoint_restarts_a_running_session_from_ops(
     assert main(["target", "update", "WEB01", "endpoint", "192.0.2.99"]) == 0
     assert order == ["snap", "stop", ("start", "192.0.2.99")]
     out = capsys.readouterr().out
-    assert "echo '192.0.2.99 web01.example' | sudo tee -a /etc/hosts" in out
-    assert "remove the old 192.0.2.10 line" in out
+    copied = []
+    monkeypatch.setattr(
+        "tacmux.cli.clipboard_copy", lambda _t, data: copied.append(data)
+    )
+    assert main(["target", "update", "WEB01", "endpoint", "192.0.2.11"]) == 0
+    out += capsys.readouterr().out
+    from tacmux.cli import _hosts_command
+
+    # The clipboard holds the long command; the terminal shows one line.
+    assert copied == [_hosts_command("192.0.2.11", ["web01.example"]).encode()]
+    assert "Copied: /etc/hosts → 192.0.2.11 web01.example (paste to run;" in out
+    assert "python3" not in out
+
+
+def test_hosts_line_prints_the_full_command_without_a_clipboard(monkeypatch, capsys):
+    from tacmux.cli import _copy_hosts_line, _hosts_command
+    from tacmux.errors import ExternalToolError
+
+    def no_clipboard(*_a):
+        raise ExternalToolError("no clipboard")
+
+    monkeypatch.setattr("tacmux.cli.clipboard_copy", no_clipboard)
+    _copy_hosts_line(None, "192.0.2.9", ["box.offsec"])
+    assert _hosts_command("192.0.2.9", ["box.offsec"]) in capsys.readouterr().out
+
+
+def test_hosts_command_replaces_stale_lines_in_one_paste(tmp_path):
+    import subprocess
+
+    from tacmux.cli import _hosts_command
+
+    hosts = tmp_path / "hosts"
+    hosts.write_text(
+        "127.0.0.1\tlocalhost\n192.0.2.10 BOX.offsec\n10.0.0.5 dc01\n"
+        "192.0.2.10\tbox\n# boxXoffsec stays\n"
+    )
+    command = _hosts_command("192.0.2.99", ["box.offsec", "BOX"])
+    local = command.replace("sudo ", "").replace("/etc/hosts", str(hosts))
+    subprocess.run(["sh", "-c", local], check=True, capture_output=True)
+    assert hosts.read_text().splitlines() == [
+        "127.0.0.1\tlocalhost",
+        "10.0.0.5 dc01",
+        "# boxXoffsec stays",
+        "192.0.2.99 box.offsec BOX",
+    ]
+
+
+def test_hosts_command_falls_back_to_append_for_unusual_names():
+    from tacmux.cli import _hosts_command
+
+    # Unusual names retain the append-only fallback, with shell-safe quoting.
+    assert _hosts_command("192.0.2.9", ["we'ird"]) == (
+        "echo '192.0.2.9 we'\"'\"'ird' | sudo tee -a /etc/hosts"
+    )
+
+
+@pytest.mark.parametrize(
+    ("before", "preserved"),
+    [
+        (
+            "192.0.2.10 WEB01.example admin.web01.example # primary\n",
+            "192.0.2.10\tadmin.web01.example # primary\n",
+        ),
+        (
+            "192.0.2.10 admin.web01.example\tweb01.example\tapi.example\n",
+            "192.0.2.10\tadmin.web01.example api.example\n",
+        ),
+        (
+            "10.0.0.5 dc01 # web01.example\n  # web01.example stays\n",
+            "10.0.0.5 dc01 # web01.example\n  # web01.example stays\n",
+        ),
+        (
+            "192.0.2.10 web01.example# keep this comment\n",
+            "# keep this comment\n",
+        ),
+        (
+            "::1 localhost ip6-localhost\n192.0.2.10 web01Xexample\n",
+            "::1 localhost ip6-localhost\n192.0.2.10 web01Xexample\n",
+        ),
+        ("127.0.0.1 localhost", "127.0.0.1 localhost\n"),
+        ("", ""),
+    ],
+)
+def test_hosts_command_preserves_other_aliases_comments_and_file(
+    tmp_path, before, preserved
+):
+    import shlex
+    import subprocess
+
+    from tacmux.cli import _hosts_command
+
+    hosts = tmp_path / "hosts"
+    hosts.write_text(before)
+    hosts.chmod(0o640)
+    original = hosts.stat()
+    command = _hosts_command("192.0.2.99", ["web01.example"])
+    local = command.replace("sudo ", "").replace("/etc/hosts", shlex.quote(str(hosts)))
+    for _ in range(2):  # Repeated pastes must not accumulate duplicate entries.
+        subprocess.run(["sh", "-c", local], check=True, capture_output=True)
+        assert hosts.read_text() == preserved + "192.0.2.99 web01.example\n"
+    assert hosts.stat().st_ino == original.st_ino
+    assert hosts.stat().st_mode == original.st_mode
+
+
+@pytest.mark.parametrize(
+    ("action", "flag"), [("attach_capture", "-c"), ("screenshot", "-s")]
+)
+def test_palette_attach_without_entries_starts_a_new_entry(
+    settings, workspace, web01, monkeypatch, action, flag
+):
+    main = _cli(monkeypatch, settings, web01)
+    monkeypatch.setattr("tacmux.cli.choose", lambda *_a, **_k: action)
+    monkeypatch.setattr("tacmux.tmux.TmuxService.sessions", lambda self: [])
+    calls = []
+    real = __import__("tacmux.cli", fromlist=["_dispatch"])._dispatch
+
+    def spy(settings_, workspace_, tmux_, command, rest):
+        if command == "log":
+            calls.append(list(rest))
+            return 0
+        return real(settings_, workspace_, tmux_, command, rest)
+
+    monkeypatch.setattr("tacmux.cli._dispatch", spy)
+    assert main(["menu"]) == 0
+    assert calls == [[flag]]
 
 
 def test_target_add_and_init_offer_the_session_inside_tmux(

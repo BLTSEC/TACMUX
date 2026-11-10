@@ -38,7 +38,7 @@ the preview shows what the action does and its direct command.
 | ☐ / ☑ TODO | `tm todo add "task"` · `tm todo done [ID]` |
 | 🧹 Cleanup | `tm cleanup add "item"` · `tm cleanup done [ID]` |
 | ⇣ Import Nmap output | `tm ports add [TARGET] FILE` (picker of files in the target folder) |
-| 🏷 Add hostname / vhost (the palette also copies the `/etc/hosts` line) | `tm target update hostnames "a.example b.example"` |
+| 🏷 Add hostname / vhost (the palette also copies an `/etc/hosts` command that updates only those names, preserving other aliases and comments) | `tm target update hostnames "a.example b.example"` |
 | ✎ Edit a target field | `tm target update [TARGET] [FIELD] [VALUE]` |
 | ✎ Edit a log entry | `tm log edit [EVENT_ID]` |
 | ↶ Undo last change | `tm undo` |

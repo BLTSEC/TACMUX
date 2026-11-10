@@ -846,20 +846,60 @@ def _update_target(
         tmux.start(context.root, target)
         print(f"Restarted {target} with TARGET={value}; open it with tm switch.")
     if field == "Endpoint" and old != value and details["Hostnames"][0].strip():
-        _copy_hosts_line(tmux, value, details["Hostnames"][0].split(), old)
+        _copy_hosts_line(tmux, value, details["Hostnames"][0].split())
     return 0
 
 
-def _copy_hosts_line(
-    tmux: TmuxService, endpoint: str, names: Sequence[str], old: str = ""
-) -> None:
-    command = f"echo '{endpoint} {' '.join(names)}' | sudo tee -a /etc/hosts"
-    note = f" (and remove the old {old} line)" if old else ""
+HOSTS_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# Keep the existing inode/permissions and change only the requested aliases.
+# Matching shell tokens with sed would also match comments or drop other aliases.
+HOSTS_UPDATE = """import sys
+path, endpoint, *names = sys.argv[1:]
+wanted = {name.lower() for name in names}
+with open(path, "r+", newline="") as hosts:
+    lines = []
+    for line in hosts.read().splitlines(keepends=True):
+        body, marker, comment = line.partition("#")
+        fields = body.split()
+        aliases = [name for name in fields[1:] if name.lower() not in wanted]
+        if len(aliases) == len(fields[1:]):
+            lines.append(line)
+        elif aliases:
+            suffix = " #" + comment.rstrip("\\r\\n") if marker else ""
+            lines.append(fields[0] + "\\t" + " ".join(aliases) + suffix + "\\n")
+        elif marker:
+            lines.append("#" + comment.rstrip("\\r\\n") + "\\n")
+    text = "".join(lines)
+    if text and not text.endswith("\\n"):
+        text += "\\n"
+    text += " ".join([endpoint, *names]) + "\\n"
+    hosts.seek(0)
+    hosts.write(text)
+    hosts.truncate()
+"""
+
+
+def _hosts_command(endpoint: str, names: Sequence[str]) -> str:
+    """One paste: replace these names, preserving other aliases and comments."""
+    add = f"echo {shlex.quote(' '.join([endpoint, *names]))} | sudo tee -a /etc/hosts"
+    if not names or not all(HOSTS_NAME.match(name) for name in names):
+        return add
+    return shlex.join(
+        ["sudo", "python3", "-c", HOSTS_UPDATE, "/etc/hosts", endpoint, *names]
+    )
+
+
+def _copy_hosts_line(tmux: TmuxService, endpoint: str, names: Sequence[str]) -> None:
+    command = _hosts_command(endpoint, names)
+    line = " ".join([endpoint, *names])
+    note = "updates these names; preserves other aliases and comments"
     try:
         clipboard_copy(tmux, command.encode())
-        print(f"Copied to clipboard{note}: {command}")
+        # The command itself is long; the clipboard holds it, so show its effect.
+        print(f"Copied: /etc/hosts → {line} (paste to run; {note})")
     except TacmuxError:
-        print(f"Update /etc/hosts{note}: {command}")
+        print(f"Update /etc/hosts ({note}): {command}")
 
 
 def _print_status(
@@ -1119,11 +1159,17 @@ def _log_command(
     return 0
 
 
-def _choose_event(workspace: Workspace, context: Context, prompt: str) -> str:
-    """Pick an Operations Log entry, newest first; the current target's only."""
+def _target_events(workspace: Workspace, context: Context) -> list:
+    """Operations Log entries; inside a target session, that target's only."""
     events = sitrep.read_events(workspace.read(context.root))
     if context.target:
         events = [event for event in events if event.target == context.target]
+    return events
+
+
+def _choose_event(workspace: Workspace, context: Context, prompt: str) -> str:
+    """Pick an Operations Log entry, newest first; the current target's only."""
+    events = _target_events(workspace, context)
     if not events:
         raise ValidationError("no Operations Log entries to attach to")
     return choose(
@@ -1925,6 +1971,13 @@ def _palette(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int
             result = _add_hostname(workspace, tmux, context)
         elif action.key == "edit_entry":
             result = _edit_log_entry(settings, workspace, tmux, context)
+        elif action.key in {"attach_capture", "screenshot"} and not _target_events(
+            workspace, context
+        ):
+            # Nothing to attach to yet: start the entry with it instead.
+            print("No log entries yet; starting a new one with it.")
+            flag = "-c" if action.key == "attach_capture" else "-s"
+            result = _dispatch(settings, workspace, tmux, "log", [flag])
         elif action.key == "attach_capture":
             result = _attach_capture_action(workspace, context)
         elif action.key == "screenshot":

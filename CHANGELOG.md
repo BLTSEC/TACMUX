@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 3.4.7 — 2026-11-10
+
+### Changed
+
+- The `/etc/hosts` command TACMUX copies (new endpoint, or a hostname added in
+  the palette) now removes only those hostname aliases from older mappings before
+  adding the current one, preserving other aliases and comments. After a box
+  reset the old mapping no longer stays first and wins.
+  The terminal shows a one-line summary; the long command is on the clipboard.
+- "📎 Attach latest capture" and "📷 Screenshot → entry" in the palette start
+  a new entry (`tm log -c` / `tm log -s`) when there is none to attach to,
+  instead of stopping with an error.
+
 ## 3.4.6 — 2026-11-10
 
 ### Changed

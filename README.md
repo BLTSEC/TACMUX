@@ -30,7 +30,7 @@ records what happened.
 ## Install
 
 ```bash
-git clone --branch v3.4.6 --depth 1 https://github.com/BLTSEC/TACMUX.git
+git clone --branch v3.4.7 --depth 1 https://github.com/BLTSEC/TACMUX.git
 cd TACMUX
 ./install.sh --workspace ~/workspace   # omit --workspace on reinstall
 exec "$SHELL" -l
@@ -56,7 +56,8 @@ tm switch                        # pick any session (Prefix+E)
 ```
 
 Box reverted with a new IP? `tm target update WEB01 endpoint 192.0.2.11` from
-OPS saves its logs, restarts the session, and copies the new `/etc/hosts` line.
+OPS saves its logs, restarts the session, and copies one `/etc/hosts` command that
+updates its hostname mappings while preserving unrelated aliases and comments.
 
 Inside a target session, press **Prefix+`M`** (or type `tm`) and pick what
 happened. Each entry previews the direct command it runs:

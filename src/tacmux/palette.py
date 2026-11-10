@@ -128,8 +128,8 @@ ACTIONS: tuple[Action, ...] = (
     Action(
         "hostname",
         "🏷  Add hostname / vhost",
-        "Add names to the target's Hostnames and copy the matching "
-        "/etc/hosts command to the clipboard.",
+        "Add names to the target's Hostnames and copy an /etc/hosts "
+        "command that updates only those names, preserving other aliases/comments.",
         'tm target update hostnames "levram.pg"',
     ),
     Action(
