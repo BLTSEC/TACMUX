@@ -1762,6 +1762,8 @@ def _internal(arguments: Sequence[str]) -> int:
                 "-e",
                 f"TMUX_PANE={pane}",
                 "-e",
+                f"TACMUX_CLIENT={client}",
+                "-e",
                 "TACMUX_POPUP=1",
                 executable,
                 "menu",
@@ -2178,21 +2180,57 @@ REMOTE_SHELL_HINTS = (
 )
 
 
+def _pane_number(pane: str) -> int:
+    digits = pane.lstrip("%")
+    return int(digits) if digits.isdigit() else 0
+
+
+def _preview_text(lines: list[str]) -> str:
+    # The picker shows this through printf '%b', so escape it first.
+    return "\\n".join(line.replace("\\", "\\\\") for line in lines)
+
+
 def _choose_shell_pane(tmux: TmuxService, root: Path, target: str) -> str:
     """Pick the pane holding the target shell; never a plain local shell."""
+    here = os.environ.get("TMUX_PANE", "")
+    popup = bool(os.environ.get("TACMUX_POPUP"))
+    # Run directly, the current pane is this command (tmux reports it as python,
+    # like penelope), so hide it. From the popup it is the pane you came from.
     panes = [
-        (pane, command)
-        for pane, command in tmux.panes(tmux.session_name(root, target))
-        if command and command not in SHELL_COMMANDS
+        info
+        for info in tmux.pane_info(tmux.session_name(root, target))
+        if info.command
+        and info.command not in SHELL_COMMANDS
+        and (popup or info.pane != here)
     ]
     if not panes:
         print(f"No pane in {target}'s session runs a remote shell; not showing proof.")
         return ""
-    panes.sort(key=lambda item: item[1] not in REMOTE_SHELL_HINTS)
+    panes.sort(
+        key=lambda info: (
+            info.command not in REMOTE_SHELL_HINTS,
+            not (info.pane == here if popup else info.last),
+            -info.activity,
+            -_pane_number(info.pane),
+        )
+    )
+    choices = []
+    for info in panes:
+        tail = tmux.pane_tail(info.pane)
+        prompt_line = tail[-1].strip() if tail else ""
+        if len(prompt_line) > 60:
+            prompt_line = prompt_line[:59] + "…"
+        label = "  ".join(
+            part for part in (info.index, info.command, info.title, prompt_line) if part
+        )
+        choices.append((label, info.pane, _preview_text(tail)))
+    choices.append(("Skip", "", ""))
     try:
         return choose(
-            [*((f"{pane}  {command}", pane) for pane, command in panes), ("Skip", "")],
+            choices,
             "Show proof in pane> ",
+            default=panes[0].pane,
+            header="Enter = best guess · right: the pane's last lines",
         )
     except Cancelled:
         return ""
@@ -2308,12 +2346,14 @@ def _proof_command(
                 if kind == "user"
                 else ("SYSTEM" if windows else "root")
             )
+            # The flag shows the level, not how it was reached: ask now, while
+            # the operator knows. Skipping leaves Method/Path empty.
+            how = ask("How did you get it? (Enter to skip)", required=False)
             workspace.mutate(
                 context.root,
-                # No Method/Path: a flag shows the level, not how it was reached.
-                lambda text: raise_access(text, target, implied, owner),
+                lambda text: raise_access(text, target, implied, owner, how),
             )
-            print(f"Access {current} → {implied}")
+            print(f"Access {current} → {implied}" + (f" ({how})" if how else ""))
         elif not interactive:
             print(
                 f"hint: Access is {current}; record a shell with tm access {implied} …"
@@ -2342,11 +2382,66 @@ def _proof_command(
         print(f"Shell logs  {len(copied)} new file(s) → captures/…/shells/")
     if not screenshot and not no_screenshot and (interactive or can_prompt()):
         screenshot = confirm("Take the proof screenshot now?", default=True)
+    # Ask before scheduling: from the palette popup, the popup must close before
+    # the screenshot fires, so close-out then follows the shot in a new popup.
+    close_after = (
+        kind == "root"
+        and (interactive or can_prompt())
+        and confirm(
+            f"Close out {target} after this (checklist, readable logs, stop)?",
+            default=False,
+        )
+    )
+    popup = bool(os.environ.get("TACMUX_POPUP"))
+    scheduled = False
     if screenshot and not no_screenshot:
-        schedule_screenshot(workspace, context.root, target, identifier, delay=delay)
-    if kind == "root":
+        follow = _close_popup(context.root, target) if close_after and popup else None
+        scheduled = schedule_screenshot(
+            workspace,
+            context.root,
+            target,
+            identifier,
+            delay=delay,
+            then=follow,
+            # A normal tmux pane has no popup to dismiss. Wait here rather
+            # than putting the checklist (or a stopped session) in the shot.
+            wait=close_after and not popup,
+        )
+    if close_after and popup and scheduled:
+        print(f"Close-out for {target} opens after the screenshot.")
+    elif close_after:
+        return _close_command(settings, workspace, tmux, [target])
+    elif kind == "root":
         print(f"Done with {target}? tm close (checklist, readable logs, stop)")
     return 0
+
+
+def _close_popup(root: Path, target: str) -> list[str]:
+    """A popup running tm close for the target, waiting for Enter at the end."""
+    executable = shutil.which("tacmux") or str(Path.home() / ".local/bin/tacmux")
+    client = os.environ.get("TACMUX_CLIENT", "")
+    pane = os.environ.get("TMUX_PANE", "")
+    return [
+        "tmux",
+        "display-popup",
+        "-E",
+        *(["-c", client] if client else []),
+        *(["-t", pane] if pane else []),
+        "-d",
+        str(root),
+        "-w",
+        "80%",
+        "-h",
+        "75%",
+        *(["-e", f"TMUX_PANE={pane}"] if pane else []),
+        "-e",
+        "TACMUX_POPUP=1",
+        "sh",
+        "-c",
+        '"$0" close "$1"; printf "\\nPress Enter to close. "; read -r _',
+        executable,
+        target,
+    ]
 
 
 PROOF_SUMMARY = re.compile(r"^(user|root) flag\b", re.IGNORECASE)

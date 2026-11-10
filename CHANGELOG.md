@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## 3.4.6 — 2026-11-10
+
+### Changed
+
+- The `tm proof --show` pane picker now tells panes apart. Each row shows the
+  on-screen `window.pane` number, the `@pinned_title` pane option, the running
+  program and the pane's last line (usually the remote prompt), and the preview
+  shows its recent output. The pane you came from (or the pane the Prefix+M
+  palette was opened from) is the default, so Enter usually picks the shell.
+- When `tm proof` records the shell it implies, it asks how you got it
+  (Enter skips) and stores the answer in Method/Path. A flag shows the level,
+  not the path, so this left Method/Path blank on most boxes.
+- After a root proof, `tm proof` offers `tm close` (default no). In a normal
+  pane the screenshot finishes before the checklist opens. From the Prefix+M
+  popup the close-out opens in a new popup after the screenshot, so the popup
+  is never in the proof screenshot.
+
+### Fixed
+
+- When tmux can't schedule the screenshot, TACMUX reports the tmux error
+  instead of saying "select a region" for a screenshot that never comes.
+- `tm proof --show` no longer offers the pane running `tm proof` itself. tmux
+  reports it as `python`, the same as penelope, so it could rank first.
+
 ## 3.4.5 — 2026-11-04
 
 ### Fixed

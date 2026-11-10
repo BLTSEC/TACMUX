@@ -134,11 +134,17 @@ Easiest:  tm → ⚑ Proof / flag
 Forms:    tm proof [user|root] [VALUE] [PATH] [--show] [-s | --no-screenshot]
 Path:     suggested from OS and Principal (local.txt / proof.txt, Windows Desktop)
 Access:   never raised automatically — reading a flag is not a shell; the
-          interactive flow asks, scripts get a hint (tm access …)
+          interactive flow asks (and how you got it, for Method/Path), scripts
+          get a hint (tm access …)
 --show:   types hostname/whoami/ip/cat into a target-shell pane you pick
-          (penelope, nc, ssh, evil-winrm…; never a local shell) before the shot
+          (penelope, nc, ssh, evil-winrm…; never a local shell) before the shot.
+          Panes show as window.pane, @pinned_title and their last line (the
+          remote prompt); Enter takes the pane you came from
 Shot:     offered (default yes) whenever you are at a terminal; -s forces it,
           --no-screenshot skips it; scripts and agents never get one
+Close:    after a root proof, offers tm close (default no); from the Prefix+M
+          popup it opens in a new popup once the screenshot is taken. In a
+          normal pane, capture finishes before the checklist opens.
 Examples: tm proof user 9a1d4ff1… /home/<user>/local.txt
           tm flag root 49d89584…            (path defaults to /root/proof.txt)
 """,

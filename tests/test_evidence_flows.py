@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from tacmux import sitrep
 from tacmux.errors import ConflictError, ValidationError
+from tacmux.tmux import PaneInfo
 from tacmux.workspace import CaptureRecord, Workspace
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
@@ -289,17 +291,52 @@ def test_screenshot_is_deferred_until_the_popup_closes(workspace, web01, monkeyp
     from tacmux import evidence
 
     calls = []
+    monkeypatch.setattr(evidence, "_SCHEDULED", False)
     monkeypatch.setenv("TMUX", "/tmp/sock,1,0")
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(evidence.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
-        evidence.subprocess, "run", lambda argv, **_kw: calls.append(argv)
+        evidence.subprocess,
+        "run",
+        lambda argv, **_kw: calls.append(argv)
+        or subprocess.CompletedProcess(argv, 0, "", ""),
     )
     assert evidence.schedule_screenshot(workspace, web01, "WEB01", "E001") is True
     argv = calls[0]
     assert argv[:3] == ["tmux", "run-shell", "-b"]
     assert argv[3].startswith("sleep 0.4; env DISPLAY=:0 ")
     assert argv[3].endswith(f"_internal shot {web01} WEB01 E001")
+    assert evidence.screenshot_scheduled()
+
+
+@pytest.mark.parametrize("captured", [False, True])
+def test_synchronous_screenshot_runs_followup_only_after_capture(
+    workspace, web01, monkeypatch, captured
+):
+    from tacmux import evidence
+
+    monkeypatch.setattr(evidence.shutil, "which", lambda name: f"/mock/{name}")
+    monkeypatch.setattr(evidence, "_SCHEDULED", False)
+    order = []
+
+    def shot(*_args):
+        order.append("capture completed")
+        return Path("proof.png") if captured else None
+
+    def follow(argv, **_kwargs):
+        order.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(evidence, "take_screenshot", shot)
+    monkeypatch.setattr(evidence.subprocess, "run", follow)
+    assert (
+        evidence.schedule_screenshot(
+            workspace, web01, "WEB01", "E001", then=["follow-up", "WEB01"]
+        )
+        is captured
+    )
+    assert order == ["capture completed", ["follow-up", "WEB01"]]
+    assert not evidence.screenshot_scheduled()
 
 
 def test_offer_capture_skips_attached_and_noninteractive(workspace, web01, monkeypatch):
@@ -480,24 +517,34 @@ def test_proof_interactive_asks_before_raising_and_can_show_in_pane(
         or __import__("subprocess").CompletedProcess(args, 0, "", ""),
     )
     monkeypatch.setattr(
-        "tacmux.tmux.TmuxService.panes",
-        lambda self, name: [("%1", "zsh"), ("%3", "penelope"), ("%4", "nvim")],
+        "tacmux.tmux.TmuxService.pane_info",
+        lambda self, name: [
+            PaneInfo("%1", "zsh", "1.1", "", False, 5),
+            PaneInfo("%3", "penelope", "1.2", "", False, 5),
+            PaneInfo("%4", "nvim", "1.3", "", False, 5),
+        ],
     )
+    monkeypatch.setattr("tacmux.tmux.TmuxService.pane_tail", lambda self, pane: [])
     offered = []
 
     def fake_choose(choices, prompt, **_kwargs):
         if prompt == "Show proof in pane> ":
-            offered.extend(value for _display, value in choices)
+            offered.extend(value for _display, value, *_ in choices)
             return "%3"
         return {"Proof> ": "root", "Path> ": "/root/proof.txt"}[prompt]
 
     monkeypatch.setattr("tacmux.cli.choose", fake_choose)
-    monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: "49d89584")
-    monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "tacmux.cli.ask",
+        lambda label, *_a, **_k: "" if label.startswith("How") else "49d89584",
+    )
+    monkeypatch.setattr(
+        "tacmux.cli.confirm", lambda prompt, **_k: not prompt.startswith("Close out")
+    )
     monkeypatch.setattr("tacmux.evidence.offer_capture", lambda *_a: None)
     monkeypatch.setattr(
         "tacmux.evidence.schedule_screenshot",
-        lambda _ws, _root, _target, ident, delay="0.4": scheduled.append(
+        lambda _ws, _root, _target, ident, delay="0.4", **_k: scheduled.append(
             (ident, delay)
         ),
     )
@@ -512,6 +559,243 @@ def test_proof_interactive_asks_before_raising_and_can_show_in_pane(
         "hostname; whoami; ip a; cat /root/proof.txt",
     ]
     assert scheduled == [("E001", "1.5")]
+
+
+def _picker(monkeypatch, panes, tails):
+    from tacmux.cli import _choose_shell_pane
+    from tacmux.tmux import TmuxService
+
+    monkeypatch.setattr(TmuxService, "session_name", lambda self, root, target="": "s")
+    monkeypatch.setattr(TmuxService, "pane_info", lambda self, name: panes)
+    monkeypatch.setattr(
+        TmuxService, "pane_tail", lambda self, pane: tails.get(pane, [])
+    )
+    seen = {}
+
+    def fake_choose(choices, prompt, **kwargs):
+        seen["choices"], seen["default"] = choices, kwargs.get("default")
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr("tacmux.cli.choose", fake_choose)
+    tmux = TmuxService.__new__(TmuxService)
+    return _choose_shell_pane(tmux, Path("."), "T"), seen
+
+
+def test_proof_picker_labels_panes_and_hides_the_invoking_pane(monkeypatch):
+    panes = [
+        PaneInfo("%2", "python", "1.1", "", False, 10),
+        PaneInfo("%5", "python", "1.2", "", False, 10),  # tm proof runs here
+        PaneInfo("%6", "python", "1.3", "root-shell", True, 10),
+    ]
+    tails = {
+        "%2": ["kali@kali:~/exploits$ python exploit.py"],
+        "%6": ["uid=0(root)", "root@exfiltrated:~# "],
+    }
+    monkeypatch.setenv("TMUX_PANE", "%5")
+    monkeypatch.delenv("TACMUX_POPUP", raising=False)
+    chosen, seen = _picker(monkeypatch, panes, tails)
+    values = [value for _label, value, *_ in seen["choices"]]
+    assert "%5" not in values  # never the pane running tm proof
+    assert chosen == "%6" and seen["default"] == "%6"  # the pane you came from
+    assert seen["choices"][0][0] == "1.3  python  root-shell  root@exfiltrated:~#"
+    assert seen["choices"][0][2] == "uid=0(root)\\nroot@exfiltrated:~# "
+
+
+def test_proof_picker_from_popup_prefers_the_pane_it_opened_from(monkeypatch):
+    panes = [
+        PaneInfo("%3", "python", "1.1", "", False, 10),
+        PaneInfo("%4", "python", "1.2", "", True, 10),
+    ]
+    monkeypatch.setenv("TMUX_PANE", "%3")
+    monkeypatch.setenv("TACMUX_POPUP", "1")
+    chosen, seen = _picker(monkeypatch, panes, {})
+    assert chosen == "%3"
+    assert [value for _l, value, *_ in seen["choices"]] == ["%3", "%4", ""]
+
+
+def test_proof_picker_preview_escapes_backslashes():
+    from tacmux.cli import _preview_text
+
+    assert _preview_text(["C:\\Users\\a>", "x"]) == "C:\\\\Users\\\\a>\\nx"
+
+
+def test_pane_info_parses_list_panes(monkeypatch, settings):
+    from subprocess import CompletedProcess
+
+    from tacmux.tmux import TmuxService
+
+    out = "%1\tzsh\t1.1\t\t0\t100\n%6\tpython\t1.3\troot-shell\t1\t200\nbad\n"
+    monkeypatch.setattr(
+        TmuxService, "run", lambda self, args, **_k: CompletedProcess(args, 0, out, "")
+    )
+    assert TmuxService(settings).pane_info("s") == [
+        PaneInfo("%1", "zsh", "1.1", "", False, 100),
+        PaneInfo("%6", "python", "1.3", "root-shell", True, 200),
+    ]
+
+
+def _root_proof(monkeypatch, *, how="", close=False, popup=False, shot=True):
+    calls = {"closed": [], "scheduled": [], "waited": []}
+    monkeypatch.setattr(
+        "tacmux.cli.ask",
+        lambda label, *_a, **_k: how if label.startswith("How") else "49d89584",
+    )
+
+    def fake_confirm(prompt, **_k):
+        if prompt.startswith("Close out"):
+            return close
+        if prompt.startswith("Take the proof screenshot"):
+            return shot
+        return not prompt.startswith("Show the proof")
+
+    monkeypatch.setattr("tacmux.cli.confirm", fake_confirm)
+    monkeypatch.setattr(
+        "tacmux.cli.choose",
+        lambda _c, prompt, **_k: {"Proof> ": "root", "Path> ": "/root/proof.txt"}[
+            prompt
+        ],
+    )
+    monkeypatch.setattr("tacmux.evidence.offer_capture", lambda *_a: None)
+
+    def fake_schedule(_ws, _root, _target, ident, delay="0.4", then=None, wait=False):
+        calls["scheduled"].append(then)
+        calls["waited"].append(wait)
+        return True
+
+    monkeypatch.setattr("tacmux.evidence.schedule_screenshot", fake_schedule)
+    monkeypatch.setattr(
+        "tacmux.cli._close_command",
+        lambda _s, _w, _t, args: calls["closed"].append(list(args)) or 0,
+    )
+    if popup:
+        monkeypatch.setenv("TACMUX_POPUP", "1")
+        monkeypatch.setenv("TACMUX_CLIENT", "/dev/pts/3")
+        monkeypatch.setenv("TMUX_PANE", "%2")
+    return calls
+
+
+def test_proof_raise_records_how_when_given(settings, workspace, web01, monkeypatch):
+    main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "OS", "Linux")
+    _root_proof(monkeypatch, how="exiftool root cron (CVE-2021-22204)")
+    assert main(["proof"]) == 0
+    details = workspace.target_details(web01, "WEB01")
+    assert (details["Access"][0], details["Principal"][0]) == ("admin", "root")
+    assert details["Method/Path"][0] == "exiftool root cron (CVE-2021-22204)"
+
+
+def test_root_proof_offers_close_out_in_a_terminal(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "OS", "Linux")
+    calls = _root_proof(monkeypatch, close=True)
+    assert main(["proof"]) == 0
+    assert calls["scheduled"] == [None]  # nothing chained outside a popup
+    assert calls["waited"] == [True]
+    assert calls["closed"] == [["WEB01"]]
+
+
+def test_root_proof_close_out_follows_the_shot_from_the_popup(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "OS", "Linux")
+    calls = _root_proof(monkeypatch, close=True, popup=True)
+    assert main(["proof"]) == 0
+    assert calls["closed"] == []  # the popup must close before the shot
+    assert calls["waited"] == [False]
+    (follow,) = calls["scheduled"]
+    assert follow[:3] == ["tmux", "display-popup", "-E"]
+    assert ["-c", "/dev/pts/3"] == follow[3:5] and follow[-2:][1] == "WEB01"
+    assert '"$0" close "$1"' in follow[-3]
+    assert "opens after the screenshot" in capsys.readouterr().out
+
+
+def test_root_proof_close_out_runs_now_without_a_screenshot(
+    settings, workspace, web01, monkeypatch
+):
+    main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "OS", "Linux")
+    calls = _root_proof(monkeypatch, close=True, popup=True, shot=False)
+    assert main(["proof"]) == 0
+    assert calls["scheduled"] == [] and calls["closed"] == [["WEB01"]]
+
+
+@pytest.mark.parametrize("in_tmux", [False, True])
+@pytest.mark.parametrize("captured", [False, True])
+def test_terminal_proof_finishes_screenshot_before_close(
+    settings, workspace, web01, monkeypatch, in_tmux, captured
+):
+    from tacmux import evidence
+    from tacmux.context import Context
+
+    main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "OS", "Linux")
+    real_schedule = evidence.schedule_screenshot
+    _root_proof(monkeypatch, close=True)
+    monkeypatch.setattr(evidence, "schedule_screenshot", real_schedule)
+    monkeypatch.setattr(evidence, "_SCHEDULED", False)
+    monkeypatch.setattr(evidence.shutil, "which", lambda name: f"/mock/{name}")
+    monkeypatch.setattr("tacmux.cli.resolve", lambda *_a, **_k: Context(web01, "WEB01"))
+    monkeypatch.setattr("tacmux.cli._collect_shells", lambda *_a: [])
+    if in_tmux:
+        monkeypatch.setenv("TMUX", "/tmp/test.sock,1,0")
+    order, delays = [], []
+    monkeypatch.setattr("time.sleep", delays.append)
+
+    def take_shot(*_args):
+        order.append("screenshot finished")
+        return web01 / "targets/WEB01/screenshots/proof.png" if captured else None
+
+    def queued(argv, **_kwargs):
+        order.append("screenshot queued")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def close(*_args):
+        order.append("close entered")
+        return 0
+
+    monkeypatch.setattr(evidence, "take_screenshot", take_shot)
+    monkeypatch.setattr(evidence.subprocess, "run", queued)
+    monkeypatch.setattr("tacmux.cli._close_command", close)
+    assert main(["proof"]) == 0
+    assert order == ["screenshot finished", "close entered"]
+    assert delays == [0.4]
+    assert not evidence.screenshot_scheduled()
+
+
+@pytest.mark.parametrize("failure", ["exit", "missing-executable"])
+def test_failed_screenshot_queue_keeps_popup_close_fallback(
+    settings, workspace, web01, monkeypatch, capsys, failure
+):
+    from tacmux import evidence
+    from tacmux.context import Context
+
+    main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "OS", "Linux")
+    real_schedule = evidence.schedule_screenshot
+    calls = _root_proof(monkeypatch, close=True, popup=True)
+    monkeypatch.setenv("TMUX", "/tmp/test.sock,1,0")
+    monkeypatch.setattr("tacmux.cli.resolve", lambda *_a, **_k: Context(web01, "WEB01"))
+    monkeypatch.setattr("tacmux.cli._collect_shells", lambda *_a: [])
+    monkeypatch.setattr(evidence, "schedule_screenshot", real_schedule)
+    monkeypatch.setattr(evidence, "_SCHEDULED", False)
+    monkeypatch.setattr(evidence.shutil, "which", lambda name: f"/mock/{name}")
+
+    def fail_queue(argv, **_kwargs):
+        if failure == "missing-executable":
+            raise FileNotFoundError("tmux disappeared")
+        return subprocess.CompletedProcess(argv, 1, "", "tmux rejected screenshot job")
+
+    monkeypatch.setattr(evidence.subprocess, "run", fail_queue)
+    assert main(["proof"]) == 0
+    assert calls["closed"] == [["WEB01"]]
+    assert not evidence.screenshot_scheduled()
+    captured = capsys.readouterr()
+    assert "could not schedule screenshot" in captured.err
+    assert "opens after the screenshot" not in captured.out
+    assert "select a region" not in captured.out
 
 
 # --- 2.6 tm close --------------------------------------------------------------
@@ -811,8 +1095,10 @@ def test_windows_proof_line_works_in_cmd_and_powershell(
         or __import__("subprocess").CompletedProcess(args, 0, "", ""),
     )
     monkeypatch.setattr(
-        "tacmux.tmux.TmuxService.panes", lambda self, name: [("%2", "evil-winrm")]
+        "tacmux.tmux.TmuxService.pane_info",
+        lambda self, name: [PaneInfo("%2", "evil-winrm", "1.2", "", False, 5)],
     )
+    monkeypatch.setattr("tacmux.tmux.TmuxService.pane_tail", lambda self, pane: [])
     monkeypatch.setattr("tacmux.cli.choose", lambda *_a, **_k: "%2")
     monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)
     assert main(["proof", "root", "abc123", "--show"]) == 0
@@ -832,7 +1118,8 @@ def test_show_without_a_remote_shell_pane_sends_nothing(
         "tacmux.tmux.TmuxService.run", lambda self, args, **_k: sent.append(args)
     )
     monkeypatch.setattr(
-        "tacmux.tmux.TmuxService.panes", lambda self, name: [("%1", "zsh")]
+        "tacmux.tmux.TmuxService.pane_info",
+        lambda self, name: [PaneInfo("%1", "zsh", "1.1", "", False, 5)],
     )
     monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: False)
     assert main(["proof", "user", "abc", "--show"]) == 0
@@ -847,7 +1134,7 @@ def test_direct_proof_offers_the_screenshot_at_a_terminal(
     monkeypatch.setattr("tacmux.cli.confirm", lambda *_a, **_k: True)
     monkeypatch.setattr(
         "tacmux.evidence.schedule_screenshot",
-        lambda _ws, _root, _target, ident, delay="0.4": scheduled.append(ident),
+        lambda _ws, _root, _target, ident, delay="0.4", **_k: scheduled.append(ident),
     )
     assert main(["proof", "user", "9a1d"]) == 0
     assert scheduled == ["E001"]
@@ -1373,9 +1660,14 @@ def test_access_after_proof_records_the_real_method(
     workspace.set_target_detail(web01, "WEB01", "Method/Path", "ftp anonymous access")
     monkeypatch.setattr("tacmux.cli.confirm", lambda prompt, **_k: "shell" in prompt)
     monkeypatch.setattr("tacmux.cli.choose", lambda *_a, **_k: "root")
-    monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: "7f53")
+    monkeypatch.setattr(
+        "tacmux.cli.ask",
+        lambda label, *_a, **_k: "" if label.startswith("How") else "7f53",
+    )
     monkeypatch.setattr("tacmux.cli._choose_shell_pane", lambda *_a: "")
-    assert main(["proof"]) == 0  # guided; "also record a system shell?" → yes
+    assert (
+        main(["proof"]) == 0
+    )  # guided; "also record a system shell?" → yes, HOW skipped
     details = workspace.target_details(web01, "WEB01")
     assert details["Access"][0] == "system"
     # Neither the flag title nor the stale authenticated-level method.

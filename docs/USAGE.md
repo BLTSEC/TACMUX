@@ -92,13 +92,24 @@ tm access                      # pickers: level, principal, via (Ports), credent
 `tm proof` (alias `tm flag`) records a flag or proof file. The path is
 suggested from the target OS and Principal. Reading a flag is not a shell, so
 proof never raises Access on its own: the interactive flow asks, and scripts
-get a hint. `--show` lets you pick the pane holding the target shell (penelope,
-`nc`, `ssh`, evil-winrm; never a plain local shell) and types
-`hostname; whoami; ip a; cat <path>` there first, or
-`cmd /c "hostname & whoami & ipconfig & type <path>"` on Windows, which works in
-both cmd and PowerShell. The screenshot then carries the proof the way OSCP
-expects. At a terminal the proof screenshot is offered by default; scripts and
-agents never get one.
+get a hint. When you record the shell there, it also asks how you got it, so
+Method/Path isn't left blank (Enter skips). `--show` lets you pick the pane
+holding the target shell (penelope, `nc`, `ssh`, evil-winrm; never a plain
+local shell) and types `hostname; whoami; ip a; cat <path>` there first, or
+`cmd /c "hostname & whoami & ipconfig & type <path>"` on Windows, which works
+in both cmd and PowerShell. The screenshot then carries the proof the way OSCP
+expects. Each pane is listed by its on-screen `window.pane` number, the title
+pinned in `@pinned_title` (operator-loadout sets it with Prefix+P), and its
+last line (usually the remote prompt, such as `root@host:~#`), with the pane's
+recent output in the preview. The pane you came from is first, so Enter usually
+picks it, and the pane running `tm proof` itself is never offered. At a
+terminal the proof screenshot is offered by default; scripts and agents never
+get one. After a root proof, TACMUX offers `tm close` (default no). From the
+Prefix+M popup, the close-out opens in a new popup once the screenshot is
+taken, so the popup never ends up in the proof screenshot. In a normal
+terminal pane, capture finishes before the close-out checklist opens. If
+queuing the screenshot fails, TACMUX reports the error and runs close-out
+inline instead of waiting for a nonexistent background job.
 
 ```bash
 tm proof user 9a1d4ff1… /home/<user>/local.txt

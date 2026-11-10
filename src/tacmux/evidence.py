@@ -9,6 +9,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
+from typing import Sequence
 
 from . import sitrep
 from .errors import TacmuxError
@@ -111,8 +113,15 @@ def schedule_screenshot(
     identifier: str,
     *,
     delay: str = "0.4",
+    then: Sequence[str] | None = None,
+    wait: bool = False,
 ) -> bool:
-    """Take the screenshot after any popup closes, then attach it to the entry."""
+    """Take the screenshot after any popup closes, then attach it to the entry.
+
+    `then` runs once the shot finishes (flameshot blocks until you select).
+    With `wait`, capture inline, after the delay, so this terminal can safely
+    continue to an interactive close-out only after the screenshot finishes.
+    """
     if not shutil.which("flameshot"):
         print(
             "tacmux: flameshot is not installed; attach an image later with "
@@ -137,16 +146,35 @@ def schedule_screenshot(
         ]
     )
     global _SCHEDULED
-    if os.environ.get("TMUX") and shutil.which("tmux"):
+    if not wait and os.environ.get("TMUX") and shutil.which("tmux"):
         # The palette popup closes as soon as this process exits; the delay
         # makes sure it is gone before flameshot freezes the screen.
+        follow = f"; {shlex.join(then)}" if then else ""
+        try:
+            result = subprocess.run(
+                ["tmux", "run-shell", "-b", f"sleep {delay}; {command}{follow}"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as exc:
+            print(f"tacmux: could not schedule screenshot: {exc}", file=sys.stderr)
+            return False
+        if result.returncode:
+            detail = (
+                result.stderr or result.stdout or f"tmux exited {result.returncode}"
+            ).strip()
+            print(f"tacmux: could not schedule screenshot: {detail}", file=sys.stderr)
+            return False
         _SCHEDULED = True
-        subprocess.run(
-            ["tmux", "run-shell", "-b", f"sleep {delay}; {command}"], check=False
-        )
         print(f"Screenshot: select a region for {identifier} (Esc cancels).")
         return True
-    return take_screenshot(workspace, root, target, identifier) is not None
+    if wait:
+        time.sleep(float(delay))
+    captured = take_screenshot(workspace, root, target, identifier) is not None
+    if then:
+        subprocess.run(then, check=False)
+    return captured
 
 
 def take_screenshot(

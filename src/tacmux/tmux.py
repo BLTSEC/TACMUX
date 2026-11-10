@@ -25,6 +25,16 @@ class Session:
     target: str
 
 
+@dataclass(slots=True, frozen=True)
+class PaneInfo:
+    pane: str
+    command: str
+    index: str  # window.pane, as shown on screen
+    title: str  # @pinned_title, when the operator set one
+    last: bool  # the pane you were in before the current one
+    activity: int
+
+
 def _safe_session_part(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", value).strip("-")
     return (cleaned or "engagement")[:40]
@@ -109,6 +119,50 @@ class TmuxService:
             if pane:
                 panes.append((pane, command))
         return panes
+
+    def pane_info(self, name: str) -> list[PaneInfo]:
+        """Panes in a session with what an operator needs to tell them apart."""
+        result = self.run(
+            [
+                "list-panes",
+                "-s",
+                "-t",
+                f"={name}:",
+                "-F",
+                "#{pane_id}\t#{pane_current_command}\t#{window_index}.#{pane_index}"
+                "\t#{@pinned_title}\t#{pane_last}\t#{window_activity}",
+            ],
+            check=False,
+        )
+        if result.returncode:
+            return []
+        panes = []
+        for line in result.stdout.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 6 or not fields[0]:
+                continue
+            pane, command, index, title, last, activity = fields
+            panes.append(
+                PaneInfo(
+                    pane,
+                    command,
+                    index,
+                    title.strip(),
+                    last == "1",
+                    int(activity) if activity.isdigit() else 0,
+                )
+            )
+        return panes
+
+    def pane_tail(self, pane: str, lines: int = 12) -> list[str]:
+        """The last non-blank lines on a pane's screen (empty if unavailable)."""
+        result = self.run(["capture-pane", "-p", "-J", "-t", pane], check=False)
+        if result.returncode:
+            return []
+        text = [line.rstrip() for line in result.stdout.splitlines()]
+        while text and not text[-1]:
+            text.pop()
+        return text[-lines:]
 
     def logging_panes(self, name: str) -> set[str]:
         """Pane IDs in a session whose output is currently piped to a log."""
