@@ -195,7 +195,8 @@ Forms:    tm close [TARGET | --engagement] [--yes] [--no-stop]
 Target:   checklist (Access, open TODO, cleanup release gate, proof, confirmed
           credential — Enter fixes a line), Status, optional final summary,
           readable logs + shell logs, then stop. Panes still running programs
-          (penelope, nc, claude) need confirmation.
+          (penelope, nc, claude) need confirmation. A complete target with
+          Hostnames is offered an /etc/hosts removal command (default no).
 Engagement: overview, cleanup gate, readable logs and shell logs for every
           target, then stop other targets, OPS, and last the session running
           the command.

@@ -1221,8 +1221,100 @@ def test_new_endpoint_restarts_a_running_session_from_ops(
 
     # The clipboard holds the long command; the terminal shows one line.
     assert copied == [_hosts_command("192.0.2.11", ["web01.example"]).encode()]
-    assert "Copied: /etc/hosts → 192.0.2.11 web01.example (paste to run;" in out
+    assert "Copied: /etc/hosts → 192.0.2.11 web01.example; preserves" in out
+    assert "(paste to run)" in out
     assert "python3" not in out
+
+
+def test_hosts_removal_command_only_removes(tmp_path):
+    import shlex
+    import subprocess
+
+    from tacmux.cli import HOSTS_UPDATE
+
+    hosts = tmp_path / "hosts"
+    hosts.write_text("127.0.0.1 localhost\n192.0.2.10 box.offsec other # keep\n")
+    argv = ["python3", "-c", HOSTS_UPDATE, str(hosts), "", "box.offsec"]
+    subprocess.run(argv, check=True, capture_output=True)
+    assert hosts.read_text() == "127.0.0.1 localhost\n192.0.2.10\tother # keep\n"
+    assert shlex.join(argv)  # the command stays quotable
+
+
+def test_close_offers_to_remove_the_box_hostnames(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    main = _cli(monkeypatch, settings, web01)
+    workspace.set_target_detail(web01, "WEB01", "Hostnames", "web01.example")
+    copied = []
+    monkeypatch.setattr(
+        "tacmux.cli.clipboard_copy", lambda _t, data: copied.append(data) or 0
+    )
+    monkeypatch.setattr(
+        "tacmux.cli.choose",
+        lambda _c, prompt, **_k: "continue"
+        if prompt.startswith("Close")
+        else "complete",
+    )
+    monkeypatch.setattr("tacmux.cli.ask", lambda *_a, **_k: "")
+    asked = []
+    monkeypatch.setattr(
+        "tacmux.cli.confirm",
+        lambda prompt, **_k: asked.append(prompt) or prompt.startswith("Remove"),
+    )
+    monkeypatch.setattr("tacmux.cli._snapshot", lambda *_a, **_k: ([], []))
+    assert main(["close", "WEB01", "--no-stop"]) == 0
+    assert "Remove web01.example from /etc/hosts?" in asked
+    assert len(copied) == 1 and b"web01.example" in copied[0]
+    assert "Copied: remove web01.example from /etc/hosts" in capsys.readouterr().out
+    copied.clear()
+    assert main(["close", "WEB01", "--yes", "--no-stop"]) == 0  # never asks with --yes
+    assert copied == []
+
+
+def test_verb_first_commands_run_the_real_form(settings, workspace, web01, monkeypatch):
+    main = _cli(monkeypatch, settings, web01)
+    seen = []
+    monkeypatch.setattr(
+        "tacmux.cli._dispatch",
+        lambda _s, _w, _t, command, rest: seen.append((command, rest)) or 0,
+    )
+    assert main(["add", "ports", "scan.txt"]) == 0
+    assert main(["update", "target", "WEB01", "os", "Linux"]) == 0
+    assert seen == [
+        ("ports", ["add", "scan.txt"]),
+        ("target", ["update", "WEB01", "os", "Linux"]),
+    ]
+
+
+def test_access_from_ops_without_a_terminal_names_the_ways_to_pick_a_target(
+    settings, workspace, web01, monkeypatch, capsys
+):
+    monkeypatch.setenv("TACMUX_WORKSPACE", str(settings.workspace))
+    monkeypatch.setenv("TACMUX_CONFIG", str(settings.config_file))
+    monkeypatch.setenv("TACMUX_ROOT", str(web01))
+    monkeypatch.setenv("TACMUX_NONINTERACTIVE", "1")
+    monkeypatch.chdir(web01)
+    from tacmux.cli import main
+
+    assert main(["access", "admin", "root", "how"]) != 0
+    assert "TACMUX_TARGET_NAME=<TARGET>" in capsys.readouterr().err
+
+
+def test_target_guidance_inside_tmux_skips_the_env_var(monkeypatch):
+    from tacmux.cli import _flow_target
+    from tacmux.context import Context
+    from tacmux.errors import NonInteractiveError
+
+    def no_picker(*_a, **_k):
+        raise NonInteractiveError("missing target")
+
+    monkeypatch.setattr("tacmux.cli._target_choice", no_picker)
+    monkeypatch.setattr("tacmux.cli._recent_target", lambda *_a: "")
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    with pytest.raises(NonInteractiveError) as caught:
+        _flow_target(None, Context(Path("."), ""))
+    assert "TACMUX_TARGET_NAME" not in str(caught.value)
+    assert "target's session" in str(caught.value)
 
 
 @pytest.mark.parametrize("failure", ["raises", "returns 1"])

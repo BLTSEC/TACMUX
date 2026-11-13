@@ -170,7 +170,9 @@ shell_log_dirs = ["~/.penelope/sessions"]   # [] disables the copy
 `tm close` walks a checklist: Access, open TODO, the cleanup release gate,
 proof, and a confirmed credential. Enter on a line fixes it inline. It then
 sets Status (default `complete`), takes an optional final summary, writes
-readable logs and copies shell logs, and stops the session. Sessions whose panes still run programs (penelope,
+readable logs and copies shell logs, and stops the session. If the target is
+complete and has Hostnames, it offers an `/etc/hosts` command that removes them
+(default no). Sessions whose panes still run programs (penelope,
 `nc`, an agent) need confirmation. In the operations session, `tm close`
 (or `--engagement`) shows every target, the engagement-wide cleanup gate, and
 writes readable logs and stops all sessions: other targets, then OPS, then the session

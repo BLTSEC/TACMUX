@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 3.4.9 — 2026-11-13
+
+### Changed
+
+- `tm close` on a complete target with Hostnames offers to copy an
+  `/etc/hosts` command that removes those names (default no), so finished
+  boxes' vhosts stop piling up. Other aliases and comments are kept.
+- `tm add ports`, `tm add target|creds|todo|cleanup` and `tm update target`
+  run as `tm ports add`, `tm target update` and so on.
+
+### Fixed
+
+- `tm access` and `tm proof` with no target session and no terminal now say
+  how to choose one (run in the target's session, `TACMUX_TARGET_NAME` outside
+  tmux, or a terminal) instead of "pass it as an argument"; they take no target
+  argument.
+
 ## 3.4.8 — 2026-11-10
 
 ### Fixed

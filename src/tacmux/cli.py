@@ -225,6 +225,11 @@ def _switch(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
     return _attach_selection(tmux, selected)
 
 
+VERB_FIRST = {
+    "add": frozenset({"ports", "target", "creds", "todo", "cleanup"}),
+    "update": frozenset({"target"}),
+}
+
 SHELL_COMMANDS = frozenset(
     {"zsh", "bash", "sh", "dash", "fish", "tmux", "-zsh", "-bash"}
 )
@@ -873,7 +878,8 @@ with open(path, "r+", newline="") as hosts:
     text = "".join(lines)
     if text and not text.endswith("\\n"):
         text += "\\n"
-    text += " ".join([endpoint, *names]) + "\\n"
+    if endpoint:  # an empty endpoint only removes the names
+        text += " ".join([endpoint, *names]) + "\\n"
     hosts.seek(0)
     hosts.write(text)
     hosts.truncate()
@@ -890,10 +896,8 @@ def _hosts_command(endpoint: str, names: Sequence[str]) -> str:
     )
 
 
-def _copy_hosts_line(tmux: TmuxService, endpoint: str, names: Sequence[str]) -> None:
-    command = _hosts_command(endpoint, names)
-    line = " ".join([endpoint, *names])
-    note = "updates these names; preserves other aliases and comments"
+def _copy_command(tmux: TmuxService | None, command: str, summary: str) -> None:
+    """Copy a long command; show its effect, or the command if copying failed."""
     try:
         # clipboard_copy raises only when no clipboard exists; a failing copy
         # tool returns nonzero instead.
@@ -901,10 +905,32 @@ def _copy_hosts_line(tmux: TmuxService, endpoint: str, names: Sequence[str]) -> 
     except TacmuxError:
         copied = False
     if copied:
-        # The command itself is long; the clipboard holds it, so show its effect.
-        print(f"Copied: /etc/hosts → {line} (paste to run; {note})")
+        print(f"Copied: {summary} (paste to run)")
     else:
-        print(f"Update /etc/hosts ({note}): {command}")
+        print(f"{summary}: {command}")
+
+
+def _copy_hosts_line(tmux: TmuxService, endpoint: str, names: Sequence[str]) -> None:
+    line = " ".join([endpoint, *names])
+    _copy_command(
+        tmux,
+        _hosts_command(endpoint, names),
+        f"/etc/hosts → {line}; preserves other aliases and comments",
+    )
+
+
+def _copy_hosts_removal(tmux: TmuxService, names: Sequence[str]) -> None:
+    if not all(HOSTS_NAME.match(name) for name in names):
+        print(f"Remove {' '.join(names)} from /etc/hosts by hand.")
+        return
+    command = shlex.join(
+        ["sudo", "python3", "-c", HOSTS_UPDATE, "/etc/hosts", "", *names]
+    )
+    _copy_command(
+        tmux,
+        command,
+        f"remove {' '.join(names)} from /etc/hosts; keeps other aliases and comments",
+    )
 
 
 def _print_status(
@@ -2060,9 +2086,19 @@ def _flow_target(workspace: Workspace, context: Context) -> str:
     """The current target, or a picker defaulting to the most recent one."""
     if context.target:
         return context.target
-    return _target_choice(
-        workspace, context.root, _recent_target(workspace, context.root)
-    )
+    try:
+        return _target_choice(
+            workspace, context.root, _recent_target(workspace, context.root)
+        )
+    except NonInteractiveError:
+        # These commands take no target argument; say what does work instead.
+        # Inside tmux the pane's own target must match TACMUX_TARGET_NAME, so
+        # that variable only helps outside tmux.
+        outside = "" if os.environ.get("TMUX") else ", set TACMUX_TARGET_NAME=<TARGET>"
+        raise NonInteractiveError(
+            f"missing target: run this in the target's session{outside}, "
+            "or run it at a terminal to pick one"
+        ) from None
 
 
 def _take_option(words: list[str], names: set[str], *, value: bool = False):
@@ -2643,6 +2679,15 @@ def _close_target(
         print(f"Reminder: {len(still_open)} cleanup item(s) still open on {target}:")
         for task in still_open:
             print(f"  {task.identifier}  {task.item}")
+    names = workspace.target_details(root, target)["Hostnames"][0].split()
+    # A finished box's vhosts otherwise pile up in /etc/hosts across boxes.
+    if (
+        names
+        and status == "complete"
+        and not yes
+        and confirm(f"Remove {' '.join(names)} from /etc/hosts?", default=False)
+    ):
+        _copy_hosts_removal(tmux, names)
     if not no_stop:
         _stop_after_close(tmux, root, target, yes=yes)
     return 0
@@ -2965,6 +3010,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments == ["switch"]:
             return _switch(settings, workspace, tmux)
         command, *rest = arguments
+        # Verb first ("tm add ports") is a common slip; run the real form.
+        if rest and rest[0] in VERB_FIRST.get(command, ()):
+            command, rest = rest[0], [command, *rest[1:]]
         rest = _checked_arguments(command, rest)
         return _dispatch(settings, workspace, tmux, command, rest)
     except Cancelled:
