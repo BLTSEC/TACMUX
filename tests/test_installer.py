@@ -69,6 +69,8 @@ def test_installer_refuses_unrelated_command(tmp_path):
 def test_tmux_fragment_contains_only_tacmux_integration():
     text = (ROOT / "tmux/tacmux-integration.conf").read_text()
     assert "tacmux switch" in text
+    # The switcher popup marks itself so its picker fills the popup.
+    assert "-e TACMUX_POPUP=1 '$HOME/.local/bin/tacmux switch'" in text
     for general_setting in (
         "prefix C-space",
         "mouse on",

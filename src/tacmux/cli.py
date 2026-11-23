@@ -500,7 +500,7 @@ def _evidence_command(
         return 0
     while True:
         try:
-            selected = choose(choices, "Evidence> ")
+            selected = choose(choices, "Evidence> ", preview_window="down,45%,wrap")
         except ValidationError:
             return 0
         if selected == "\x1fjournal":
@@ -2274,6 +2274,10 @@ REMOTE_SHELL_HINTS = (
 )
 
 
+def _article(word: str) -> str:
+    return "an" if word[:1].lower() in "aeio" else "a"  # "a user"
+
+
 def _pane_number(pane: str) -> int:
     digits = pane.lstrip("%")
     return int(digits) if digits.isdigit() else 0
@@ -2324,7 +2328,9 @@ def _choose_shell_pane(tmux: TmuxService, root: Path, target: str) -> str:
             choices,
             "Show proof in pane> ",
             default=panes[0].pane,
-            header="Enter = best guess · right: the pane's last lines",
+            header="Enter = best guess · below: the pane's last lines",
+            # Labels carry the remote prompt; give them the full width.
+            preview_window="down,55%,wrap",
         )
     except Cancelled:
         return ""
@@ -2432,7 +2438,8 @@ def _proof_command(
     current = details["Access"][0] or "none"
     if ACCESS_LEVELS.index(current) < ACCESS_LEVELS.index(implied):
         if interactive and confirm(
-            f"Access is {current}. Also record a {implied} shell (only if you have one)?",
+            f"Access is {current}. Also record {_article(implied)} {implied} shell "
+            "(only if you have one)?",
             default=True,
         ):
             owner = (

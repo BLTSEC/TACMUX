@@ -71,3 +71,28 @@ def test_escape_in_a_picker_raises_cancelled(monkeypatch):
         choose([("a", "a")], "Pick> ")
     with pytest.raises(Cancelled):
         choose_many([("a", "a")], "Pick> ")
+
+
+def test_pickers_fill_a_popup_but_stay_compact_inline(monkeypatch):
+    from tacmux.interaction import _picker_argv
+
+    monkeypatch.delenv("TACMUX_POPUP", raising=False)
+    assert "--height=60%" in _picker_argv("fzf", "Pick> ")
+    monkeypatch.setenv("TACMUX_POPUP", "1")
+    assert "--height=100%" in _picker_argv("fzf", "Pick> ")
+
+
+def test_pickers_can_put_the_preview_below():
+    from tacmux.interaction import _picker_argv
+
+    assert "--preview-window=right,45%,wrap" in _picker_argv(
+        "fzf", "Pick> ", preview=True
+    )
+    argv = _picker_argv("fzf", "Pick> ", preview=True, preview_window="down,55%,wrap")
+    assert "--preview-window=down,55%,wrap" in argv
+
+
+def test_access_raise_prompt_uses_the_right_article():
+    from tacmux.cli import _article
+
+    assert (_article("admin"), _article("user"), _article("system")) == ("an", "a", "a")

@@ -101,6 +101,11 @@ def confirm(prompt: str, *, default: bool = False) -> bool:
     return answer in {"y", "yes"}
 
 
+def _height() -> str:
+    # A popup is already sized; inline, leave room for the pane above.
+    return "--height=100%" if os.environ.get("TACMUX_POPUP") else "--height=60%"
+
+
 def _picker_argv(
     binary: str,
     prompt: str,
@@ -108,6 +113,7 @@ def _picker_argv(
     header: str = "",
     preview: bool = False,
     query: str = "",
+    preview_window: str = "right,45%,wrap",
 ) -> list[str]:
     argv = [
         binary,
@@ -115,7 +121,7 @@ def _picker_argv(
         "--with-nth=1",
         "--prompt",
         prompt,
-        "--height=60%",
+        _height(),
         "--reverse",
         "--border=rounded",
     ]
@@ -126,7 +132,7 @@ def _picker_argv(
             [
                 "--preview",
                 "printf '%b\\n' {3}",
-                "--preview-window=right,45%,wrap",
+                f"--preview-window={preview_window}",
             ]
         )
     if query:
@@ -141,6 +147,7 @@ def choose(
     default: str = "",
     header: str = "",
     query: str = "",
+    preview_window: str = "right,45%,wrap",
 ) -> str:
     """Select (display, value[, preview]) with fzf, placing a default first."""
     if not choices:
@@ -169,7 +176,14 @@ def choose(
         for item in ordered
     )
     result = subprocess.run(
-        _picker_argv(binary, prompt, header=header, preview=preview, query=query),
+        _picker_argv(
+            binary,
+            prompt,
+            header=header,
+            preview=preview,
+            query=query,
+            preview_window=preview_window,
+        ),
         input=payload,
         text=True,
         capture_output=True,
@@ -205,7 +219,7 @@ def choose_many(choices: Sequence[tuple[str, str]], prompt: str) -> list[str]:
             "--with-nth=1",
             "--prompt",
             prompt,
-            "--height=60%",
+            _height(),
             "--reverse",
             "--border=rounded",
         ],

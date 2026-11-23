@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 3.4.11 — 2026-11-22
+
+### Changed
+
+- Pickers fill a popup (the Prefix+M palette and the Prefix+E switcher) instead
+  of using 60% of it; inline pickers keep 60% so the pane stays visible.
+- The `tm proof --show` pane picker and `tm evidence` show their preview below
+  the list, so a pane's remote prompt and long file names are no longer cut off.
+
+### Fixed
+
+- The palette's "Add hostname / vhost" icon was misaligned in some terminals.
+- The access prompt reads "Also record an admin shell" (was "a admin").
+
 ## 3.4.10 — 2026-11-22
 
 ### Fixed
