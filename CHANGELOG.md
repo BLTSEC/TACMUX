@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Documentation
+
+- The endpoint-after-revert help says TACMUX *offers* to save logs and restart
+  the session, and that scripts and agents stop the target first.
+
 ## 3.4.12 — 2026-11-22
 
 ### Fixed

@@ -242,8 +242,9 @@ Forms:    tm target                             targets, then pick an action
           tm target add [NAME] [ENDPOINT]           (offers to open its session)
           tm target update [TARGET] [FIELD] [VALUE|--clear]
           New IP after a box revert: tm target update TARGET endpoint IP from
-          OPS saves its logs, restarts the session, copies one /etc/hosts
-          command that updates its hostnames, preserving other aliases/comments
+          OPS offers to save its logs and restart the session, and copies one
+          /etc/hosts command that updates its hostnames, preserving other
+          aliases/comments. Scripts and agents: tm stop TARGET first
           tm target export [--all|--none|TARGET…]
           tm target rename [OLD] [NEW]          (session must be stopped)
           tm target delete [TARGET]             (mistakes only; exact name)
