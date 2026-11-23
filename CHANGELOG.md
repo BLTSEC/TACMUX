@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.4.13 — 2026-11-23
+
 ### Documentation
 
 - The endpoint-after-revert help says TACMUX *offers* to save logs and restart
