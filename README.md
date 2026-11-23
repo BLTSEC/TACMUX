@@ -118,8 +118,8 @@ logging · `S` save an exact pane capture. An optional status-line badge,
 └── .tacmux/             # engagement marker, lock, undo journal
 ```
 
-The SITREP format, evidence attachments, logging layers, and notes folders:
-[docs/WORKSPACE.md](docs/WORKSPACE.md). Every command: [docs/COMMANDS.md](docs/COMMANDS.md).
+Every command: `tm help`. The SITREP format, evidence, logging, and notes
+folders: [operator guide](docs/USAGE.md#logs-evidence-and-closing-out).
 
 ## Boundaries and safety
 
@@ -135,8 +135,7 @@ well as the workspace.
 
 ## Docs
 
-- [Operator guide](docs/USAGE.md): every workflow in detail
-- [Command map](docs/COMMANDS.md) · [Workspace, SITREP, and evidence](docs/WORKSPACE.md)
+- [Operator guide](docs/USAGE.md): every workflow in detail; `tm help` in the terminal
 - [Keybindings and status line](docs/KEYBINDINGS.md) · [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md)
 
 ## Remove

@@ -442,6 +442,9 @@ This keeps one NOCAP metadata root at `captures/.nocap` while routing files bene
 
 This route-prefix behavior requires NOCAP 2.3 or newer. `tacmux health` rejects an installed older version while continuing to treat an absent NOCAP installation as optional.
 
+`cap grab` reads the last command from your history file, so set
+`setopt INC_APPEND_HISTORY_TIME` in `~/.zshrc`.
+
 Pane logs are centralized under `logs/YYYYMMDD/`. TACMUX installs logging hooks only on TACMUX-owned sessions, so new windows and splits start logging automatically. Reopening an existing session repairs missing hooks without re-enabling panes you deliberately toggled off. Prefix+`T` toggles current-pane logging and Prefix+`S` saves an exact capture
 of the pane (wrapped lines joined). Readable `.txt` copies of every raw log are
 written by `tm snap`, `tm stop`, `tm close`, and `tm evidence`.
