@@ -10,10 +10,10 @@
 </p>
 
 TACMUX is a lean tmux workspace for authorized penetration tests and red-team
-operations. Each engagement gets one tmux session per target, central pane logs,
-and a single editable `SITREP.md` that holds targets, ports, credentials, tasks,
-cleanup, and a chronological Operations Log. You stay in your shells; TACMUX
-records what happened.
+operations. Each target gets its own session, every pane is logged, and one
+editable `SITREP.md` holds targets, ports, credentials, tasks, cleanup, and an
+Operations Log. Recording a dead end, an access level, or a flag takes one key
+and a sentence, so it happens while the evidence is still on screen.
 
 > Use TACMUX only with explicit authorization. You remain responsible for scope,
 > rules of engagement, testing windows, evidence handling, and retention.
@@ -69,50 +69,30 @@ with the next tmux start.
 
 ## Quick start
 
+One box, start to finish (the screenshots above):
+
 ```bash
-tm init Fractal 192.0.2.10       # one box: engagement Fractal, target FRACTAL,
-                                 # then it offers to open the session
-tm init ACME                     # or: create it, then add the first target (prompts)
-tm target add WEB01 192.0.2.10   # more targets; offers to open one
-tm target                        # list targets, then pick an action
-tm switch                        # pick any session (Prefix+E)
+tm init Orchid 192.0.2.10                  # engagement Orchid, target ORCHID; opens its session
+nmap -sCV -p- "$TARGET" | tm ports add     # ports into SITREP, OS from Nmap
+tm log 'Build console on :8080 :: http-title redirects to /console/'
+tm fail 'SMB null session :: shares list, nothing readable'
+tm creds add password 'admin:admin'        # C001
+tm creds confirm C001 auth 8080            # it works on ORCHID's :8080
+tm access user svc_build "command injection in the job runner" --via "http :8080"
+tm cleanup add "Remove /tmp/linpeas.sh"
+tm proof                                   # flag, path, how you got it, proof in your shell pane
+tm evidence                                # every log, command, capture, screenshot
+tm close                                   # checklist with cleanup as the release gate
 ```
 
-Box reverted with a new IP? `tm target update WEB01 endpoint 192.0.2.11` from
+In a target session, **Prefix+`M`** (or plain `tm`) opens the palette with all of
+these; each entry previews its direct command. **Prefix+`E`** (`tm switch`) jumps
+between engagements and targets. More targets: `tm target add WEB01 192.0.2.20`.
+
+Box reverted with a new IP? `tm target update ORCHID endpoint 192.0.2.11` from
 OPS offers to save its logs and restart the session, and copies one `/etc/hosts`
-command that updates its hostname mappings while preserving unrelated aliases and
-comments. Scripts and agents (no prompt) run `tm stop WEB01` first.
-
-Inside a target session, press **Prefix+`M`** (or type `tm`) and pick what
-happened. Each entry previews the direct command it runs:
-
-```text
-╭ TACMUX> ─ ACME / WEB01 · 192.0.2.10 · Access: none · Status: active ─────────╮
-│ ✗  Failed / dead end          │ Record what did not work. AARs and reports   │
-│ ✓  Step worked                │ are mostly about the detours, so log them as │
-│ ★  Got access                 │ they happen.                                 │
-│ ⚑  Proof / flag               │                                              │
-│ 🔑 Found credential           │ Direct command:                              │
-│ 🧹 Add cleanup item           │   tm fail 'EDB 50640 broken :: needs a       │
-│ ⇄  LIVE  ACME / DC01 …        │   project' -l                                │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-The same flow from the shell:
-
-```bash
-nmap -sV "$TARGET" | tm ports add          # merge ports into SITREP
-tm fail 'Default creds :: admin:admin rejected'   # Title :: details
-tm done 'Shell as app :: ```python3 exploit.py``` RCE works'   # code block
-tm creds add password 'admin:admin'        # store a credential (C001)
-tm creds confirm C001 auth 80              # works on WEB01, service from Ports
-tm target update access                    # missing value → picker
-tm access user svc_web "file upload" --via "http :80"   # Access raised, one step
-tm proof root 49d8… /root/proof.txt        # flag + screenshot (alias tm flag)
-tm undo                                    # revert the last TACMUX change
-tm evidence                                # pane logs, commands, shells, captures
-tm close                                   # checklist, readable logs, stop
-```
+command for its hostnames. Scripts and agents (no prompt) run `tm stop ORCHID`
+first.
 
 ## How input works
 
@@ -168,14 +148,14 @@ logging · `S` save an exact pane capture. An optional status-line badge,
 ## Workspace and SITREP
 
 ```text
-~/workspace/ACME/
+~/workspace/Orchid/
 ├── SITREP.md            # the record (file, or link to sitrep_root)
 ├── targets.txt          # tm target export: one endpoint per line
 ├── credentials/         # creds, users, passwords, hashes .txt (from SITREP); keys/
 ├── captures/            # NOCAP evidence, one folder per target
 ├── logs/YYYYMMDD/       # raw pane logs (.log) + readable copies (.txt)
-├── logs/commands.tsv    # command journal: time, duration, exit, target, pane
-├── targets/WEB01/       # scans/ payloads/ loot/ screenshots/ working/
+├── logs/commands.tsv    # command journal: time, duration, exit, target, pane, cwd, command
+├── targets/ORCHID/      # scans/ payloads/ loot/ screenshots/ working/
 └── .tacmux/             # engagement marker, lock, undo journal
 ```
 
@@ -183,14 +163,14 @@ logging · `S` save an exact pane capture. An optional status-line badge,
 then the Operations Log, where each entry is a callout colored by outcome:
 
 ```text
-> [!success] Root via python3.10 cap_setuid
-> `E008` · `2026-11-03 05:52:10Z` · `LEVRAM`
+> [!success] Shell as svc_build
+> `E003` · `2026-11-23 14:14:49Z` · `ORCHID`
 >
 > ```bash
-> /usr/bin/python3.10 -c 'import os; os.setuid(0); os.system("/bin/bash")'
+> curl -s http://192.0.2.10:8080/console/run -d 'job=id'
 > ```
 >
-> proof.txt captured.
+> Command injection in the job runner; penelope caught the shell.
 ```
 
 `SITREP.md` is plain Markdown: edit it in Obsidian or `$EDITOR`; checked boxes
@@ -223,10 +203,10 @@ NOCAP users: `cap grab` reads the last command from your history file, so set
 folder per course or client if you like:
 
 ```bash
-tm notes ~/notes/engagements/PG    # or tm notes PG once the folder is listed
-tm init Fractal 192.0.2.10         # → ~/notes/engagements/PG/Fractal/SITREP.md
-tm notes HTB                       # next course; PG engagements keep working
-tm notes move Fractal OSCP         # optional: relocate a note folder (+ images)
+tm notes ~/notes/engagements/Lab    # later, by name: tm notes Lab
+tm init Orchid 192.0.2.10           # → ~/notes/engagements/Lab/Orchid/SITREP.md
+tm notes ~/notes/engagements/HTB    # next course; Lab engagements keep working
+tm notes move Orchid HTB            # optional: relocate a note folder (+ images)
 ```
 
 `tm notes` sets `[paths] sitrep_root` in `~/.config/tacmux/config.toml`. Each
