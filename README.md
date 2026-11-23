@@ -160,8 +160,9 @@ Maintain    tm sitrep sync · tm health · tm help [COMMAND] · tm version
 ```
 
 **Keys** (after your tmux prefix): `M` palette · `E` switcher · `T` toggle pane
-logging · `S` save an exact pane capture. The status line shows `[WEB01 · user · LOG]`
-so an unrecorded `none` stands out.
+logging · `S` save an exact pane capture. An optional status-line badge,
+`[WEB01 · user · LOG]`, makes an unrecorded `none` stand out
+([three lines of tmux config](docs/KEYBINDINGS.md#status-line-optional)).
 
 ## Workspace and SITREP
 
