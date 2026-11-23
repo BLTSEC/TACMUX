@@ -138,8 +138,9 @@ Access:   never raised automatically — reading a flag is not a shell; the
           get a hint (tm access …)
 --show:   types hostname/whoami/ip/cat into a target-shell pane you pick
           (penelope, nc, ssh, evil-winrm…; never a local shell) before the shot.
-          Panes show as window.pane, @pinned_title and their last line (the
-          remote prompt); Enter takes the pane you came from
+          Panes show as window.pane, program, @pinned_title and last line
+          (the remote prompt); Enter takes the best guess: a remote-shell
+          program first, then the pane you came from
 Shot:     offered (default yes) whenever you are at a terminal; -s forces it,
           --no-screenshot skips it; scripts and agents never get one
 Close:    after a root proof, offers tm close (default no); from the Prefix+M

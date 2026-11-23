@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- In the Prefix+M popup, pickers that follow printed output (the `tm evidence`
+  counts, the `tm close` status table, the `tm proof` prompts) use 60% again;
+  at full height fzf scrolled that output away (3.4.11). Only the palette and
+  the switcher fill their popup.
+- `tm proof --help` and the operator guide describe the pane picker's order:
+  remote-shell programs first, then the pane you came from.
+
+### Documentation
+
+- The keybindings guide shows the optional status-line lines for the
+  engagement name and the `[TARGET · access · LOG]` badge.
+
 ## 3.4.11 — 2026-11-22
 
 ### Changed

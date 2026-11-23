@@ -26,3 +26,18 @@ The `fzf` palette and switcher use standard fzf controls:
 | `Ctrl+C` / `Escape` | Cancel |
 
 General tmux shortcuts belong in an operator loadout or personal `~/.tmux.conf`.
+
+## Status line (optional)
+
+TACMUX leaves the status line alone. To show the engagement on the left and
+`[TARGET · access · LOG]` on the right in TACMUX sessions, add this to
+`~/.tmux.conf`:
+
+```tmux
+set -g status-left-length 30
+set -g status-left '#{?@tacmux_root,[#{b:@tacmux_root}] ,[#{session_name}] }'
+set -g status-right '#($HOME/.local/bin/tacmux _internal status-segment) %H:%M '
+```
+
+Other sessions keep `[session]` and show no badge. The badge has its own dark
+background, so it stays readable on any status bar color.

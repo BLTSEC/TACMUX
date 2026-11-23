@@ -101,9 +101,12 @@ def confirm(prompt: str, *, default: bool = False) -> bool:
     return answer in {"y", "yes"}
 
 
-def _height() -> str:
-    # A popup is already sized; inline, leave room for the pane above.
-    return "--height=100%" if os.environ.get("TACMUX_POPUP") else "--height=60%"
+def _height(fill: bool = False) -> str:
+    # Only a popup's first picker (palette, switcher) fills it: at 100% fzf
+    # scrolls away what a flow printed above it (evidence map, close status).
+    return (
+        "--height=100%" if fill and os.environ.get("TACMUX_POPUP") else "--height=60%"
+    )
 
 
 def _picker_argv(
@@ -114,6 +117,7 @@ def _picker_argv(
     preview: bool = False,
     query: str = "",
     preview_window: str = "right,45%,wrap",
+    fill: bool = False,
 ) -> list[str]:
     argv = [
         binary,
@@ -121,7 +125,7 @@ def _picker_argv(
         "--with-nth=1",
         "--prompt",
         prompt,
-        _height(),
+        _height(fill),
         "--reverse",
         "--border=rounded",
     ]
@@ -148,6 +152,7 @@ def choose(
     header: str = "",
     query: str = "",
     preview_window: str = "right,45%,wrap",
+    fill: bool = False,
 ) -> str:
     """Select (display, value[, preview]) with fzf, placing a default first."""
     if not choices:
@@ -183,6 +188,7 @@ def choose(
             preview=preview,
             query=query,
             preview_window=preview_window,
+            fill=fill,
         ),
         input=payload,
         text=True,

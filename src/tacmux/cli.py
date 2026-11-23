@@ -221,7 +221,7 @@ def _attach_selection(tmux: TmuxService, selected: str) -> int:
 
 
 def _switch(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int:
-    selected = choose(_session_choices(workspace, tmux), "Session> ")
+    selected = choose(_session_choices(workspace, tmux), "Session> ", fill=True)
     return _attach_selection(tmux, selected)
 
 
@@ -1989,6 +1989,7 @@ def _palette(settings: Settings, workspace: Workspace, tmux: TmuxService) -> int
             choices,
             "TACMUX> ",
             header=_palette_header(workspace, context),
+            fill=True,
         )
     except Cancelled:
         return 0

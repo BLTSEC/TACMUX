@@ -98,11 +98,13 @@ holding the target shell (penelope, `nc`, `ssh`, evil-winrm; never a plain
 local shell) and types `hostname; whoami; ip a; cat <path>` there first, or
 `cmd /c "hostname & whoami & ipconfig & type <path>"` on Windows, which works
 in both cmd and PowerShell. The screenshot then carries the proof the way OSCP
-expects. Each pane is listed by its on-screen `window.pane` number, the title
-pinned in `@pinned_title` (operator-loadout sets it with Prefix+P), and its
-last line (usually the remote prompt, such as `root@host:~#`), with the pane's
-recent output in the preview. The pane you came from is first, so Enter usually
-picks it, and the pane running `tm proof` itself is never offered. At a
+expects. Each pane is listed by its on-screen `window.pane` number, the program
+it runs, the title pinned in `@pinned_title` (`tmux set -p @pinned_title NAME`;
+operator-loadout binds it to Prefix+P), and its last line (usually the remote
+prompt, such as `root@host:~#`), with the pane's recent output below. Panes
+running a remote-shell program (penelope, `nc`, `ssh`…) come first, then the
+pane you came from, so Enter usually picks the right one. The pane running
+`tm proof` itself is never offered. At a
 terminal the proof screenshot is offered by default; scripts and agents never
 get one. After a root proof, TACMUX offers `tm close` (default no). From the
 Prefix+M popup, the close-out opens in a new popup once the screenshot is

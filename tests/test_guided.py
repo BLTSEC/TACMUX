@@ -366,6 +366,7 @@ def test_palette_choices_carry_direct_command_previews(web01, monkeypatch):
     def fake_choose(choices, prompt, **kwargs):
         captured["choices"] = choices
         captured["header"] = kwargs.get("header", "")
+        captured["fill"] = kwargs.get("fill", False)
         return "status"
 
     monkeypatch.setattr("tacmux.cli.choose", fake_choose)
@@ -376,6 +377,7 @@ def test_palette_choices_carry_direct_command_previews(web01, monkeypatch):
     assert "tm creds confirm" in previews["cred_confirm"]
     assert "WEB01" in captured["header"] and "Access: none" in captured["header"]
     assert any(value.startswith("session\x1f") for value in previews)
+    assert captured["fill"]  # the palette fills its Prefix+M popup
 
 
 def test_status_segment_shows_cached_access(

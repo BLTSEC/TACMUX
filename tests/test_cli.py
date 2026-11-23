@@ -230,7 +230,8 @@ def test_switcher_keeps_healthy_engagement_accessible(
     tmux = TmuxService(settings)
     monkeypatch.setattr(tmux, "sessions", lambda: [])
 
-    def choose(choices, _prompt):
+    def choose(choices, _prompt, *, fill=False):
+        assert fill  # the switcher fills its Prefix+E popup
         assert any("HEALTHY / GOOD" in display for display, _ in choices)
         return next(value for display, value in choices if "HEALTHY / GOOD" in display)
 

@@ -73,13 +73,16 @@ def test_escape_in_a_picker_raises_cancelled(monkeypatch):
         choose_many([("a", "a")], "Pick> ")
 
 
-def test_pickers_fill_a_popup_but_stay_compact_inline(monkeypatch):
+def test_only_the_first_popup_picker_fills_the_popup(monkeypatch):
     from tacmux.interaction import _picker_argv
 
     monkeypatch.delenv("TACMUX_POPUP", raising=False)
     assert "--height=60%" in _picker_argv("fzf", "Pick> ")
+    assert "--height=60%" in _picker_argv("fzf", "Pick> ", fill=True)
     monkeypatch.setenv("TACMUX_POPUP", "1")
-    assert "--height=100%" in _picker_argv("fzf", "Pick> ")
+    assert "--height=100%" in _picker_argv("fzf", "Pick> ", fill=True)
+    # Later pickers keep room for what the flow printed (evidence map, status).
+    assert "--height=60%" in _picker_argv("fzf", "Pick> ")
 
 
 def test_pickers_can_put_the_preview_below():
