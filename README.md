@@ -20,7 +20,7 @@ records what happened.
 
 ## What it looks like
 
-Shots from a Proving Grounds box (flags redacted). Full walkthrough:
+Shots from a demo box (flags redacted). Full walkthrough:
 [bltsec.com/blog/tacmux](https://bltsec.com/blog/tacmux/).
 
 **Prefix+M: one palette for everything you record.** The preview shows the
