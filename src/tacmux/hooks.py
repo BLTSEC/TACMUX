@@ -239,6 +239,9 @@ def _cached_access(
     return access
 
 
+BADGE_BG = "black"
+
+
 def status_segment(settings: Settings, tmux: TmuxService) -> str:
     if not os.environ.get("TMUX"):
         return ""
@@ -259,13 +262,15 @@ def status_segment(settings: Settings, tmux: TmuxService) -> str:
         return ""
     state = "LOG" if active == "1" else "---"
     color = "green,bold" if active == "1" else "yellow"
+    # Own background: on a green or yellow status bar, bare fg colors vanish.
+    badge = f"bg={BADGE_BG},fg={color}"
     label = (name or Path(root).name).replace("#", "").replace("\n", " ")
     access = _cached_access(settings, tmux, session, root, name) if session else ""
     if access:
         access_style = "yellow,bold" if access == "none" else color
         access = access.replace("#", "")
         return (
-            f"#[fg={color}][{label} · #[fg={access_style}]{access}"
+            f"#[{badge}][{label} · #[fg={access_style}]{access}"
             f"#[fg={color}] · {state}]#[default]"
         )
-    return f"#[fg={color}][{label} {state}]#[default]"
+    return f"#[{badge}][{label} {state}]#[default]"

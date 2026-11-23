@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 3.4.10 — 2026-11-22
+
+### Fixed
+
+- The status-line badge (`[TARGET · access · LOG]`) brings its own dark
+  background. On a green or yellow status bar, such as the operator-loadout
+  theme, its green or yellow text was invisible.
+
 ## 3.4.9 — 2026-11-13
 
 ### Changed

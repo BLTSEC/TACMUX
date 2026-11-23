@@ -31,4 +31,7 @@ def test_status_segment_uses_engagement_name_for_operations_session(
             return subprocess.CompletedProcess(args, 0, f"\t{engagement}\t1\n", "")
 
     monkeypatch.setenv("TMUX", "1")
-    assert f"[{engagement.name} LOG]" in status_segment(settings, FakeTmux())
+    segment = status_segment(settings, FakeTmux())
+    assert f"[{engagement.name} LOG]" in segment
+    # Readable on any status-bar color (the operator loadout's bar is green).
+    assert segment.startswith("#[bg=black,")
