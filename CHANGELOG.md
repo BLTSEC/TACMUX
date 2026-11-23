@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.4.12 — 2026-11-22
+
 ### Fixed
 
 - In the Prefix+M popup, pickers that follow printed output (the `tm evidence`
