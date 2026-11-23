@@ -18,6 +18,29 @@ records what happened.
 > Use TACMUX only with explicit authorization. You remain responsible for scope,
 > rules of engagement, testing windows, evidence handling, and retention.
 
+## What it looks like
+
+Shots from a Proving Grounds box (flags redacted). Full walkthrough:
+[bltsec.com/blog/tacmux](https://bltsec.com/blog/tacmux/).
+
+**Prefix+M: one palette for everything you record.** The preview shows the
+direct command.
+
+<img src="assets/screenshots/palette.webp" alt="TACMUX palette popup with actions such as Failed / dead end, Got access, Proof / flag and Add cleanup item, previewing the direct command" width="100%">
+
+**`tm proof`: asks how you got the access, then types the proof line into the
+shell pane you pick.**
+
+<img src="assets/screenshots/proof.webp" alt="tm proof raising access from user to admin, then a picker listing the target-shell pane by number, program, pinned title and last line, with its recent output below" width="100%">
+
+**`tm close`: a checklist with cleanup as the release gate.**
+
+<img src="assets/screenshots/close.webp" alt="tm close checklist showing recorded access, an open cleanup item marked as the release gate, both proofs, and no confirmed credential" width="100%">
+
+**The SITREP in Obsidian: every entry is a callout colored by outcome.**
+
+<img src="assets/screenshots/obsidian.webp" alt="Operations Log in Obsidian with a blue info callout, a red failure callout, and green success callouts for access and the user flag" width="100%">
+
 ## Requirements
 
 - Linux, Python 3.11+, tmux, [fzf](https://github.com/junegunn/fzf), and
